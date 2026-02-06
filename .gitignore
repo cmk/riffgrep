@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+.localized
+
+# Editor
+.swp
+
+# Audio files
+.wav
+.WAV
+.aif
+.aiff
+.mp3
+.flac
+.ogg
+.snd
+.SND
+
+# Images & documents (tracked elsewhere)
+.jpg
+.png
+.pdf
+.xmp
+
+# Cache & analysis files (regenerated)
+.asd
+.reapeaks
+.ncw
+.nkc
+.ndx
+.nov
