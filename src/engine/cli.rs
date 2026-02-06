@@ -74,9 +74,25 @@ pub struct Opts {
     #[bpaf(long, argument("N"), fallback(0usize))]
     pub threads: usize,
 
-    /// Databaseless mode (no-op in MVP, accepted for compatibility)
+    /// Databaseless mode — force filesystem walk even when DB exists
     #[bpaf(long("no-db"))]
     pub no_db: bool,
+
+    /// Build or update the SQLite index
+    #[bpaf(long)]
+    pub index: bool,
+
+    /// Explicit path to the SQLite database file
+    #[bpaf(long("db-path"), argument("PATH"))]
+    pub db_path: Option<PathBuf>,
+
+    /// Display database index statistics
+    #[bpaf(long("db-stats"))]
+    pub db_stats: bool,
+
+    /// Force full re-index (ignore mtime, reparse all files)
+    #[bpaf(long("force-reindex"))]
+    pub force_reindex: bool,
 
     /// Search paths (default: current directory)
     #[bpaf(positional("PATH"))]

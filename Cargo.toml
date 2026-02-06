@@ -13,9 +13,11 @@ ignore = "0.4"
 mimalloc = "0.1"
 rayon = "1"
 regex = "1"
+rusqlite = { version = "0.33", features = ["bundled", "modern_sqlite", "functions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+zstd = "0.13"
 
 [dev-dependencies]
 assert_cmd = "2"
@@ -26,6 +28,10 @@ proptest = "1"
 
 [[bench]]
 name = "metadata_read"
+harness = false
+
+[[bench]]
+name = "sqlite_ops"
 harness = false
 
 [profile.release]

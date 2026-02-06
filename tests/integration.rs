@@ -112,3 +112,304 @@ fn regex_filter() {
         .success()
         .stdout(predicate::str::contains("clean_base.wav"));
 }
+
+// --- SQLite E2E tests ---
+
+#[test]
+fn index_test_files() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_index.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Indexed 9 files"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn index_idempotent() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_idempotent.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    // Index twice.
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success();
+
+    // Second index should find 0 new files (all mtimes match).
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Indexed 0 files"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn sqlite_search_after_index() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_search.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    // Index.
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success();
+
+    // Search using SQLite mode.
+    riffgrep()
+        .args([
+            "--vendor",
+            "IART",
+            "--db-path",
+            db_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("all_riff_info_tags_with_numbers"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn sqlite_count_mode() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_count.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success();
+
+    riffgrep()
+        .args([
+            "--count",
+            "--db-path",
+            db_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("9 matches"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn no_db_overrides_sqlite() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_nodb.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success();
+
+    // --no-db forces filesystem mode even though DB exists.
+    riffgrep()
+        .args([
+            "--no-db",
+            "--count",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("9 matches"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn db_stats_after_index() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_stats.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success();
+
+    riffgrep()
+        .args([
+            "--db-stats",
+            "--db-path",
+            db_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Files:    9"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn db_stats_no_db_error() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_nostats.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    riffgrep()
+        .args([
+            "--db-stats",
+            "--db-path",
+            db_path.to_str().unwrap(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("database not found"));
+}
+
+#[test]
+fn force_reindex() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_force.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success();
+
+    // Force re-index should re-parse all files.
+    riffgrep()
+        .args([
+            "--index",
+            "--force-reindex",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Indexed 9 files"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn sqlite_verbose_output() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_verbose.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success();
+
+    riffgrep()
+        .args([
+            "--verbose",
+            "--vendor",
+            "IART",
+            "--db-path",
+            db_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("vendor: IART-Artist"))
+        .stdout(predicate::str::contains("category: IGNR-Genre"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn sqlite_json_output() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_json.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "./test_files/",
+        ])
+        .assert()
+        .success();
+
+    let output = riffgrep()
+        .args([
+            "--json",
+            "--vendor",
+            "IART",
+            "--db-path",
+            db_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let line = String::from_utf8(output).unwrap();
+    let _: serde_json::Value = serde_json::from_str(line.trim()).expect("valid JSON");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn index_nonexistent_path() {
+    let db_path = std::env::temp_dir().join("riffgrep_e2e_nonexistent.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    riffgrep()
+        .args([
+            "--index",
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "/nonexistent/directory/abc123",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Indexed 0 files"));
+
+    let _ = std::fs::remove_file(&db_path);
+}

@@ -163,6 +163,8 @@ pub struct BextFields {
     pub library: String,
     /// BEXT UMID (bytes 348-411) as hex string.
     pub umid: String,
+    /// BEXT Reserved (bytes 422-601) as peak data (180 u8 values).
+    pub peaks: Vec<u8>,
 
     // --- Packed Description fields (when schema detected) ---
     /// Whether the packed schema was detected in the Description field.
@@ -197,6 +199,15 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
     let library = decode_fixed_ascii(&buf[288..320]);
     let umid = decode_umid(&buf[348..412]);
 
+    // Extract 180-byte Reserved field (bytes 422-601) as peak data.
+    // Skip if all zeros (no peaks stored).
+    let peaks_raw = &buf[422..602];
+    let peaks = if peaks_raw.iter().all(|&b| b == 0) {
+        Vec::new()
+    } else {
+        peaks_raw.to_vec()
+    };
+
     // Detect packed schema: check version bytes [008:012].
     // Packed if major=0, minor=1 (version 0.1).
     let version_major = u16::from_le_bytes([buf[8], buf[9]]);
@@ -210,6 +221,7 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
             vendor,
             library,
             umid,
+            peaks,
             packed: true,
             recid: u64::from_le_bytes([
                 buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
@@ -231,6 +243,7 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
             vendor,
             library,
             umid,
+            peaks,
             description: decode_fixed_ascii(&buf[0..256]),
             ..Default::default()
         }

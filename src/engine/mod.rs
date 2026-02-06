@@ -4,9 +4,12 @@ pub mod bext;
 pub mod cli;
 pub mod filesystem;
 pub mod riff_info;
+pub mod sqlite;
 
+use std::collections::HashSet;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -71,6 +74,20 @@ pub fn read_metadata(path: &Path) -> Result<UnifiedMetadata, RiffError> {
     let info = riff_info::parse_riff_info(&mut reader, &map)?;
 
     Ok(merge_metadata(path, bext, info))
+}
+
+/// Read metadata and extract raw BEXT peaks from a single WAV file.
+/// Returns `(metadata, peaks_bytes)` where peaks may be empty.
+pub fn read_metadata_with_peaks(path: &Path) -> Result<(UnifiedMetadata, Vec<u8>), RiffError> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::with_capacity(8192, file);
+
+    let map = bext::scan_chunks(&mut reader)?;
+    let bext = bext::parse_bext_data(&mut reader, &map)?;
+    let peaks = bext.peaks.clone();
+    let info = riff_info::parse_riff_info(&mut reader, &map)?;
+
+    Ok((merge_metadata(path, bext, info), peaks))
 }
 
 /// Merge BEXT and INFO fields. BEXT takes priority; INFO fills empty fields.
@@ -272,28 +289,84 @@ pub fn build_query(opts: &cli::Opts) -> anyhow::Result<SearchQuery> {
     })
 }
 
+// --- Search mode selection ---
+
+/// Which search backend to use.
+enum SearchMode {
+    /// SQLite index search.
+    Sqlite(PathBuf),
+    /// Filesystem walk.
+    Filesystem(Vec<PathBuf>),
+}
+
+/// Determine the search mode based on CLI options and DB existence.
+fn determine_mode(opts: &cli::Opts) -> anyhow::Result<SearchMode> {
+    // --no-db always forces filesystem.
+    if opts.no_db {
+        let roots = resolve_roots(&opts.paths)?;
+        return Ok(SearchMode::Filesystem(roots));
+    }
+
+    // Check if DB exists.
+    let db_path = sqlite::resolve_db_path(opts.db_path.as_deref())?;
+    if db_path.exists() {
+        Ok(SearchMode::Sqlite(db_path))
+    } else {
+        let roots = resolve_roots(&opts.paths)?;
+        Ok(SearchMode::Filesystem(roots))
+    }
+}
+
+/// Resolve search root paths from CLI args.
+fn resolve_roots(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
+    if paths.is_empty() {
+        Ok(vec![std::env::current_dir()?])
+    } else {
+        Ok(paths.to_vec())
+    }
+}
+
 /// Run the search pipeline with the given CLI options.
 pub fn run(opts: cli::Opts) -> anyhow::Result<()> {
-    use std::io::{Write, BufWriter};
+    // Dispatch to subcommands first.
+    if opts.index {
+        return run_index(&opts);
+    }
+    if opts.db_stats {
+        return run_db_stats(&opts);
+    }
+
+    use std::io::{BufWriter, Write};
     use std::thread;
 
     let query = build_query(&opts)?;
     let mode = opts.output_mode();
 
-    let roots = if opts.paths.is_empty() {
-        vec![std::env::current_dir()?]
-    } else {
-        opts.paths.clone()
-    };
-
-    let finder = filesystem::FilesystemFinder::new(roots, opts.threads);
     let (tx, rx) = crossbeam_channel::bounded::<UnifiedMetadata>(2048);
 
-    // Spawn walker on background thread.
-    let walk_query = query.clone();
-    let walker = thread::spawn(move || {
-        finder.walk(&walk_query, tx);
-    });
+    let search_mode = determine_mode(&opts)?;
+    let walker = match search_mode {
+        SearchMode::Sqlite(db_path) => {
+            let query = query.clone();
+            thread::spawn(move || {
+                let db = match sqlite::Database::open(&db_path) {
+                    Ok(db) => db,
+                    Err(e) => {
+                        eprintln!("riffgrep: database error: {e}");
+                        return;
+                    }
+                };
+                db.search(&query, &tx);
+            })
+        }
+        SearchMode::Filesystem(roots) => {
+            let finder = filesystem::FilesystemFinder::new(roots, opts.threads);
+            let walk_query = query.clone();
+            thread::spawn(move || {
+                finder.walk(&walk_query, tx);
+            })
+        }
+    };
 
     // Consume results on main thread.
     let stdout = std::io::stdout().lock();
@@ -337,6 +410,243 @@ pub fn run(opts: cli::Opts) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+// --- Indexing pipeline ---
+
+/// Run the `--index` subcommand: walk filesystem and populate SQLite database.
+fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
+    use ignore::types::TypesBuilder;
+    use ignore::WalkBuilder;
+
+    let db_path = sqlite::resolve_db_path(opts.db_path.as_deref())?;
+    let db = sqlite::Database::open(&db_path)?;
+
+    let roots = resolve_roots(&opts.paths)?;
+
+    // For incremental indexing, get existing mtimes.
+    let existing_mtimes = if opts.force_reindex {
+        std::collections::HashMap::new()
+    } else {
+        db.get_path_mtimes()?
+    };
+
+    let start = Instant::now();
+
+    // Build walker (reuse same config as FilesystemFinder).
+    let mut types = TypesBuilder::new();
+    types.add("wav", "*.wav").expect("valid glob");
+    types.add("wav", "*.WAV").expect("valid glob");
+    types.select("wav");
+    let types = types.build().expect("valid types");
+
+    let mut builder = WalkBuilder::new(&roots[0]);
+    for root in &roots[1..] {
+        builder.add(root);
+    }
+    builder.types(types);
+    builder.hidden(false);
+    builder.git_ignore(false);
+    if opts.threads > 0 {
+        builder.threads(opts.threads);
+    }
+
+    // Channel for walker → writer.
+    let (tx, rx) = crossbeam_channel::bounded::<(UnifiedMetadata, i64, Option<Vec<u8>>)>(2048);
+
+    // Track all discovered paths for deletion detection.
+    let (path_tx, path_rx) = crossbeam_channel::unbounded::<PathBuf>();
+
+    // Spawn writer thread.
+    let writer = std::thread::spawn(move || -> anyhow::Result<usize> {
+        db.index_writer(&rx, 1000)
+    });
+
+    // Walk in parallel.
+    let existing_mtimes_ref = &existing_mtimes;
+    builder.build_parallel().run(|| {
+        let tx = tx.clone();
+        let path_tx = path_tx.clone();
+        Box::new(move |entry| {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("riffgrep: {e}");
+                    return ignore::WalkState::Continue;
+                }
+            };
+
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                return ignore::WalkState::Continue;
+            }
+
+            let path = entry.path().to_path_buf();
+            let _ = path_tx.send(path.clone());
+
+            // Check mtime for incremental indexing.
+            let mtime = sqlite::file_mtime(&path).unwrap_or(0);
+            if let Some(&stored_mtime) = existing_mtimes_ref.get(&path) {
+                if stored_mtime == mtime {
+                    return ignore::WalkState::Continue; // unchanged
+                }
+            }
+
+            match read_metadata_with_peaks(&path) {
+                Ok((meta, peaks)) => {
+                    let compressed_peaks = if peaks.is_empty() {
+                        None
+                    } else {
+                        Some(sqlite::compress_peaks(&peaks))
+                    };
+                    if tx.send((meta, mtime, compressed_peaks)).is_err() {
+                        return ignore::WalkState::Quit;
+                    }
+                }
+                Err(_) => {
+                    // Skip files we can't parse.
+                }
+            }
+
+            ignore::WalkState::Continue
+        })
+    });
+
+    // Drop senders so writer knows we're done.
+    drop(tx);
+    drop(path_tx);
+
+    let indexed = writer.join().map_err(|_| anyhow::anyhow!("writer thread panicked"))??;
+
+    // Collect discovered paths for deletion detection.
+    let discovered: HashSet<PathBuf> = path_rx.iter().collect();
+
+    // Delete rows for files that no longer exist.
+    if !opts.force_reindex && !existing_mtimes.is_empty() {
+        let to_delete: Vec<&Path> = existing_mtimes
+            .keys()
+            .filter(|p| !discovered.contains(p.as_path()))
+            .map(|p| p.as_path())
+            .collect();
+
+        if !to_delete.is_empty() {
+            let db = sqlite::Database::open(&db_path)?;
+            let deleted = db.delete_paths(&to_delete)?;
+            if deleted > 0 {
+                eprintln!("Removed {deleted} stale entries");
+            }
+        }
+    }
+
+    let elapsed = start.elapsed();
+    eprintln!("Indexed {indexed} files in {:.1}s", elapsed.as_secs_f64());
+
+    Ok(())
+}
+
+// --- DB stats ---
+
+/// Run the `--db-stats` subcommand.
+fn run_db_stats(opts: &cli::Opts) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let db_path = sqlite::resolve_db_path(opts.db_path.as_deref())?;
+    if !db_path.exists() {
+        anyhow::bail!("database not found: {}", db_path.display());
+    }
+
+    let db = sqlite::Database::open(&db_path)?;
+    let stats = db.stats()?;
+    let (stale, sampled) = db.check_staleness(100)?;
+
+    let file_size = std::fs::metadata(&db_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let stdout = std::io::stdout().lock();
+    let mut out = std::io::BufWriter::new(stdout);
+
+    writeln!(out, "Database: {}", db_path.display())?;
+    writeln!(out, "Size:     {}", format_size(file_size))?;
+    writeln!(out, "Files:    {}", format_count(stats.file_count))?;
+
+    if let Some(mtime) = stats.last_mtime {
+        writeln!(out, "Last indexed: {}", format_timestamp(mtime))?;
+    }
+
+    if sampled > 0 {
+        writeln!(out, "Stale paths:  {stale} (of {sampled} sampled)")?;
+    }
+
+    if !stats.top_vendors.is_empty() {
+        writeln!(out)?;
+        writeln!(out, "Top vendors:")?;
+        for (vendor, count) in &stats.top_vendors {
+            writeln!(out, "  {vendor:<24} {}", format_count(*count as u64))?;
+        }
+    }
+
+    out.flush()?;
+    Ok(())
+}
+
+/// Format a byte size as human-readable.
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// Format a count with comma separators.
+fn format_count(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
+/// Format a Unix timestamp as UTC.
+fn format_timestamp(epoch: i64) -> String {
+    // Simple UTC formatting without pulling in chrono.
+    let secs_per_day: i64 = 86400;
+    let days = epoch / secs_per_day;
+    let time_of_day = epoch % secs_per_day;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Days since Unix epoch to Y-M-D (simplified).
+    let (year, month, day) = days_to_ymd(days);
+    format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02} UTC")
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_ymd(days: i64) -> (i64, u32, u32) {
+    // Civil calendar algorithm from Howard Hinnant.
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 /// Write verbose output for a single result.
@@ -497,5 +807,101 @@ mod tests {
         meta.description = "plain text".to_string();
         meta.comment = "Sequential Circuits Prophet-10".to_string();
         assert!(q.matches(&meta));
+    }
+
+    // --- Ticket 7: Dual-mode dispatch ---
+
+    #[test]
+    fn test_determine_mode_no_db_flag() {
+        let opts = cli::Opts {
+            no_db: true,
+            paths: vec![PathBuf::from("test_files")],
+            ..default_opts()
+        };
+        let mode = determine_mode(&opts).unwrap();
+        assert!(matches!(mode, SearchMode::Filesystem(_)));
+    }
+
+    #[test]
+    fn test_determine_mode_db_missing() {
+        // Point to a valid dir but a non-existent .db file.
+        let dir = std::env::temp_dir().join("riffgrep_test_mode_missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("does_not_exist.db");
+
+        let opts = cli::Opts {
+            no_db: false,
+            db_path: Some(db_path),
+            paths: vec![PathBuf::from("test_files")],
+            ..default_opts()
+        };
+        let mode = determine_mode(&opts).unwrap();
+        assert!(matches!(mode, SearchMode::Filesystem(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_determine_mode_db_exists() {
+        let dir = std::env::temp_dir().join("riffgrep_test_mode");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("test.db");
+
+        // Create a real DB.
+        let _db = sqlite::Database::open(&db_path).unwrap();
+        drop(_db);
+
+        let opts = cli::Opts {
+            no_db: false,
+            db_path: Some(db_path),
+            paths: vec![PathBuf::from("test_files")],
+            ..default_opts()
+        };
+        let mode = determine_mode(&opts).unwrap();
+        assert!(matches!(mode, SearchMode::Sqlite(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_format_count() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1000), "1,000");
+        assert_eq!(format_count(1234567), "1,234,567");
+    }
+
+    #[test]
+    fn test_format_size() {
+        assert_eq!(format_size(500), "500 bytes");
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1048576), "1.0 MB");
+    }
+
+    /// Helper to construct default opts for testing.
+    fn default_opts() -> cli::Opts {
+        cli::Opts {
+            vendor: None,
+            library: None,
+            category: None,
+            sound_id: None,
+            description: None,
+            bpm: None,
+            key: None,
+            regex: false,
+            or_mode: false,
+            verbose: false,
+            json: false,
+            count: false,
+            threads: 0,
+            no_db: false,
+            index: false,
+            db_path: None,
+            db_stats: false,
+            force_reindex: false,
+            paths: vec![],
+        }
     }
 }
