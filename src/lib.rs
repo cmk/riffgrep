@@ -4,4 +4,5 @@
 #![warn(missing_docs)]
 
 pub mod engine;
+pub mod ui;
 pub mod util;

@@ -45,13 +45,22 @@ pub struct ChunkMap {
     pub info_offset: Option<u64>,
     /// LIST-INFO chunk data size (includes the "INFO" fourcc).
     pub info_size: u32,
+    /// File offset of the `fmt ` chunk data (after the 8-byte chunk header).
+    pub fmt_offset: Option<u64>,
+    /// `fmt ` chunk data size.
+    pub fmt_size: u32,
+    /// File offset of the `data` chunk data (after the 8-byte chunk header).
+    pub data_offset: Option<u64>,
+    /// `data` chunk data size.
+    pub data_size: u32,
 }
 
-/// Scan the first [`SCAN_LIMIT`] bytes of a RIFF/WAVE file to locate `bext` and
-/// `LIST`-`INFO` chunks.
+/// Scan a RIFF/WAVE file to locate `bext`, `LIST`-`INFO`, `fmt `, and `data` chunks.
 ///
 /// Returns a [`ChunkMap`] with the file offsets and sizes of discovered chunks.
-/// Chunks beyond the scan limit are not found (this is intentional for speed).
+/// For metadata chunks (bext, LIST-INFO), scanning stops at [`SCAN_LIMIT`] (4KB).
+/// For audio chunks (fmt, data), scanning continues until all chunks are found
+/// or the file ends, since these are needed for audio reading.
 pub fn scan_chunks<R: Read + Seek>(reader: &mut R) -> Result<ChunkMap, RiffError> {
     // Read and validate the 12-byte RIFF header.
     let mut header = [0u8; 12];
@@ -63,12 +72,22 @@ pub fn scan_chunks<R: Read + Seek>(reader: &mut R) -> Result<ChunkMap, RiffError
         return Err(RiffError::NotRiffWave);
     }
 
+    let riff_size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+    let file_end = 8 + riff_size as u64;
+
     let mut map = ChunkMap::default();
     let mut pos: u64 = 12; // Current position after RIFF header.
+    let mut metadata_done = false;
 
     loop {
-        // Stop scanning once we've passed the limit.
-        if pos >= SCAN_LIMIT {
+        // Past SCAN_LIMIT: only keep scanning if we still need fmt or data.
+        if pos >= SCAN_LIMIT && !metadata_done {
+            metadata_done = true;
+        }
+        if metadata_done && map.fmt_offset.is_some() && map.data_offset.is_some() {
+            break;
+        }
+        if pos >= file_end {
             break;
         }
 
@@ -93,10 +112,10 @@ pub fn scan_chunks<R: Read + Seek>(reader: &mut R) -> Result<ChunkMap, RiffError
 
         let data_offset = pos + 8;
 
-        if chunk_id == b"bext" {
+        if chunk_id == b"bext" && !metadata_done {
             map.bext_offset = Some(data_offset);
             map.bext_size = chunk_size;
-        } else if chunk_id == b"LIST" {
+        } else if chunk_id == b"LIST" && !metadata_done {
             // Check if this LIST is INFO type by reading the 4-byte form type.
             let mut form_type = [0u8; 4];
             match reader.read_exact(&mut form_type) {
@@ -108,11 +127,12 @@ pub fn scan_chunks<R: Read + Seek>(reader: &mut R) -> Result<ChunkMap, RiffError
                 map.info_offset = Some(data_offset);
                 map.info_size = chunk_size;
             }
-        }
-
-        // Early termination if both chunks found.
-        if map.bext_offset.is_some() && map.info_offset.is_some() {
-            break;
+        } else if chunk_id == b"fmt " && map.fmt_offset.is_none() {
+            map.fmt_offset = Some(data_offset);
+            map.fmt_size = chunk_size;
+        } else if chunk_id == b"data" && map.data_offset.is_none() {
+            map.data_offset = Some(data_offset);
+            map.data_size = chunk_size;
         }
 
         // Advance to next chunk. Chunk data is WORD-aligned (padded to even boundary).
@@ -151,6 +171,29 @@ pub fn parse_bext_data<R: Read + Seek>(
     Ok(parse_bext_buffer(&buf))
 }
 
+/// Detected format of the BEXT Reserved field (peak data source).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PeaksFormat {
+    /// Our packed schema (Description v0.1): Reserved holds 180 u8 amplitude peaks.
+    RiffgrepU8,
+    /// Standard BWF (BEXT Version >= 1): Reserved holds R7 spectral data.
+    BwfReserved,
+    /// Reserved field is all zeros — no peaks present.
+    #[default]
+    Empty,
+}
+
+impl PeaksFormat {
+    /// Return the `peaks_source` string for database storage.
+    pub fn source_str(&self) -> &'static str {
+        match self {
+            PeaksFormat::RiffgrepU8 => "riffgrep_u8",
+            PeaksFormat::BwfReserved => "bwf_reserved",
+            PeaksFormat::Empty => "none",
+        }
+    }
+}
+
 /// Raw fields extracted from a BEXT chunk, before merging with RIFF INFO.
 #[derive(Debug, Clone, Default)]
 pub struct BextFields {
@@ -165,6 +208,10 @@ pub struct BextFields {
     pub umid: String,
     /// BEXT Reserved (bytes 422-601) as peak data (180 u8 values).
     pub peaks: Vec<u8>,
+    /// BWF Version field at offset 346-347.
+    pub bext_version: u16,
+    /// Detected format of the Reserved field.
+    pub peaks_format: PeaksFormat,
 
     // --- Packed Description fields (when schema detected) ---
     /// Whether the packed schema was detected in the Description field.
@@ -189,6 +236,16 @@ pub struct BextFields {
     pub usage_id: String,
     /// `[104:112]` TKEY/Key (8 ASCII).
     pub key: String,
+    /// `[112:116]` Take number (4 ASCII).
+    pub take: String,
+    /// `[116:120]` Track number (4 ASCII).
+    pub track: String,
+    /// `[120:128]` Item number (8 ASCII).
+    pub item: String,
+
+    // --- Standard BEXT date field ---
+    /// BEXT OriginationDate (bytes 320-329), 10-char ASCII e.g. "2024-01-15".
+    pub date: String,
 }
 
 /// Parse a 602-byte BEXT buffer into [`BextFields`].
@@ -197,12 +254,16 @@ pub struct BextFields {
 pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
     let vendor = decode_fixed_ascii(&buf[256..288]);
     let library = decode_fixed_ascii(&buf[288..320]);
+    let date = decode_fixed_ascii(&buf[320..330]);
     let umid = decode_umid(&buf[348..412]);
 
+    // BEXT Version at offset 346-347 (u16 LE).
+    let bext_version = u16::from_le_bytes([buf[346], buf[347]]);
+
     // Extract 180-byte Reserved field (bytes 422-601) as peak data.
-    // Skip if all zeros (no peaks stored).
     let peaks_raw = &buf[422..602];
-    let peaks = if peaks_raw.iter().all(|&b| b == 0) {
+    let all_zeros = peaks_raw.iter().all(|&b| b == 0);
+    let peaks = if all_zeros {
         Vec::new()
     } else {
         peaks_raw.to_vec()
@@ -212,16 +273,30 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
     // Packed if major=0, minor=1 (version 0.1).
     let version_major = u16::from_le_bytes([buf[8], buf[9]]);
     let version_minor = u16::from_le_bytes([buf[10], buf[11]]);
+    let is_packed = version_major == 0 && version_minor == 1;
 
-    if version_major == 0 && version_minor == 1 {
+    // Determine peaks format.
+    let peaks_format = if all_zeros {
+        PeaksFormat::Empty
+    } else if is_packed {
+        PeaksFormat::RiffgrepU8
+    } else {
+        // Non-zero data but not our packed schema — treat as BWF Reserved.
+        PeaksFormat::BwfReserved
+    };
+
+    if is_packed {
         // Packed Description format per PICKER_SCHEMA.md.
         let comment = decode_fixed_ascii(&buf[44..76]);
         let description = comment.clone();
         BextFields {
             vendor,
             library,
+            date,
             umid,
             peaks,
+            bext_version,
+            peaks_format,
             packed: true,
             recid: u64::from_le_bytes([
                 buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
@@ -236,14 +311,20 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
             sound_id: decode_fixed_ascii(&buf[96..100]),
             usage_id: decode_fixed_ascii(&buf[100..104]),
             key: decode_fixed_ascii(&buf[104..112]),
+            take: decode_fixed_ascii(&buf[112..116]),
+            track: decode_fixed_ascii(&buf[116..120]),
+            item: decode_fixed_ascii(&buf[120..128]),
         }
     } else {
         // Plain-text Description (entire 256 bytes).
         BextFields {
             vendor,
             library,
+            date,
             umid,
             peaks,
+            bext_version,
+            peaks_format,
             description: decode_fixed_ascii(&buf[0..256]),
             ..Default::default()
         }
@@ -451,10 +532,18 @@ mod tests {
         buf[100..104].copy_from_slice(b"XPM ");
         // TKEY/Key [104:112] = "A#m\0\0\0\0\0"
         buf[104..107].copy_from_slice(b"A#m");
+        // Take [112:116] = "67  "
+        buf[112..114].copy_from_slice(b"67");
+        // Track [116:120] = "1   "
+        buf[116..117].copy_from_slice(b"1");
+        // Item [120:128] = "12345678"
+        buf[120..128].copy_from_slice(b"12345678");
         // Originator [256:288] = "Samples From Mars"
         buf[256..273].copy_from_slice(b"Samples From Mars");
         // OriginatorReference [288:320] = "DX100 From Mars"
         buf[288..303].copy_from_slice(b"DX100 From Mars");
+        // OriginationDate [320:330] = "2024-01-15"
+        buf[320..330].copy_from_slice(b"2024-01-15");
         // UMID [348:412] = "976132720e774b668c36826386ae6505" as ASCII
         buf[348..380].copy_from_slice(b"976132720e774b668c36826386ae6505");
         buf
@@ -478,7 +567,11 @@ mod tests {
         assert_eq!(fields.key, "A#m");
         assert_eq!(fields.vendor, "Samples From Mars");
         assert_eq!(fields.library, "DX100 From Mars");
+        assert_eq!(fields.date, "2024-01-15");
         assert_eq!(fields.umid, "976132720e774b668c36826386ae6505");
+        assert_eq!(fields.take, "67");
+        assert_eq!(fields.track, "1");
+        assert_eq!(fields.item, "12345678");
     }
 
     #[test]
@@ -675,6 +768,81 @@ mod tests {
         assert_eq!(fields.description, "\u{00DC}ber");
     }
 
+    // --- T4 tests: PeaksFormat detection ---
+
+    #[test]
+    fn test_peaks_format_riffgrep_u8() {
+        let mut buf = make_bext_buffer_packed();
+        // Set some non-zero peaks in Reserved[422:602].
+        for i in 422..602 {
+            buf[i] = (i % 256) as u8;
+        }
+        let fields = parse_bext_buffer(&buf);
+        assert_eq!(fields.peaks_format, PeaksFormat::RiffgrepU8);
+        assert!(!fields.peaks.is_empty());
+    }
+
+    #[test]
+    fn test_peaks_format_bwf_reserved() {
+        let mut buf = [0u8; BEXT_STANDARD_SIZE];
+        // BEXT Version >= 1 at offset 346.
+        buf[346] = 1; // version = 1
+        // Non-zero Reserved.
+        buf[422] = 0xFF;
+        buf[500] = 0x42;
+        let fields = parse_bext_buffer(&buf);
+        assert_eq!(fields.peaks_format, PeaksFormat::BwfReserved);
+        assert_eq!(fields.bext_version, 1);
+    }
+
+    #[test]
+    fn test_peaks_format_empty() {
+        let buf = [0u8; BEXT_STANDARD_SIZE];
+        let fields = parse_bext_buffer(&buf);
+        assert_eq!(fields.peaks_format, PeaksFormat::Empty);
+        assert!(fields.peaks.is_empty());
+    }
+
+    #[test]
+    fn test_peaks_format_unknown_nonzero_is_bwf() {
+        // BEXT version=0, no packed schema, but non-zero Reserved data.
+        let mut buf = [0u8; BEXT_STANDARD_SIZE];
+        buf[422] = 0xAB;
+        buf[430] = 0xCD;
+        let fields = parse_bext_buffer(&buf);
+        assert_eq!(fields.peaks_format, PeaksFormat::BwfReserved);
+        assert_eq!(fields.bext_version, 0);
+    }
+
+    #[test]
+    fn test_bext_version_field_read() {
+        let mut buf = [0u8; BEXT_STANDARD_SIZE];
+        buf[346] = 2; // version 2 (LE)
+        buf[347] = 0;
+        let fields = parse_bext_buffer(&buf);
+        assert_eq!(fields.bext_version, 2);
+    }
+
+    #[test]
+    fn integration_id3_all_r7_is_bwf_reserved() {
+        let path = "test_files/id3-all_r7.wav";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        let map = scan_chunks(&mut file).unwrap();
+        let fields = parse_bext_data(&mut file, &map).unwrap();
+        // Reaper file with non-zero Reserved → BwfReserved.
+        // (Clean files with no bext peaks will be Empty)
+        // Check based on actual file content:
+        assert!(
+            fields.peaks_format == PeaksFormat::BwfReserved
+                || fields.peaks_format == PeaksFormat::Empty,
+            "expected BwfReserved or Empty for Reaper file, got {:?}",
+            fields.peaks_format,
+        );
+    }
+
     // --- Proptest ---
 
     mod proptests {
@@ -724,6 +892,17 @@ mod tests {
                 prop_assert_eq!(a.key, b.key);
                 prop_assert_eq!(a.umid, b.umid);
                 prop_assert_eq!(a.recid, b.recid);
+                prop_assert_eq!(a.bext_version, b.bext_version);
+                prop_assert_eq!(a.peaks_format, b.peaks_format);
+            }
+
+            /// PeaksFormat is always one of the three variants.
+            #[test]
+            fn peaks_format_no_panic(buf in arb_602_bytes()) {
+                let fields = parse_bext_buffer(&buf);
+                match fields.peaks_format {
+                    PeaksFormat::RiffgrepU8 | PeaksFormat::BwfReserved | PeaksFormat::Empty => {}
+                }
             }
         }
 

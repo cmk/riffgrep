@@ -413,3 +413,55 @@ fn index_nonexistent_path() {
 
     let _ = std::fs::remove_file(&db_path);
 }
+
+// --- Sprint 3: TUI-related E2E tests ---
+
+#[test]
+fn headless_e2e_still_works() {
+    // --no-tui with search filters should produce same headless output as before.
+    riffgrep()
+        .args(["--no-tui", "--vendor", "IART", "./test_files/"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("all_riff_info_tags_with_numbers"));
+}
+
+#[test]
+fn piped_output_headless() {
+    // Piped output (non-TTY) should remain headless.
+    // assert_cmd captures stdout, so it's not a TTY.
+    riffgrep()
+        .args(["--count", "./test_files/"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("9 matches"));
+}
+
+#[test]
+fn no_tui_forces_headless() {
+    // --no-tui prevents TUI even without search filters.
+    riffgrep()
+        .args(["--no-tui", "--count", "./test_files/"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("9 matches"));
+}
+
+#[test]
+fn theme_flag_parsed() {
+    // --theme is accepted without error (headless mode with filter).
+    riffgrep()
+        .args(["--no-tui", "--theme", "ableton", "--count", "./test_files/"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("9 matches"));
+}
+
+#[test]
+fn no_tui_flag_parsed() {
+    // --no-tui flag is accepted.
+    riffgrep()
+        .args(["--no-tui", "--vendor", "nonexistent_xyz", "./test_files/"])
+        .assert()
+        .code(1);
+}

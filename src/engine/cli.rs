@@ -94,6 +94,18 @@ pub struct Opts {
     #[bpaf(long("force-reindex"))]
     pub force_reindex: bool,
 
+    /// Regenerate peaks from audio data (ignores existing BEXT peaks)
+    #[bpaf(long("regenerate-peaks"))]
+    pub regenerate_peaks: bool,
+
+    /// Disable interactive TUI (force headless output)
+    #[bpaf(long("no-tui"))]
+    pub no_tui: bool,
+
+    /// TUI color theme
+    #[bpaf(long, argument("THEME"))]
+    pub theme: Option<String>,
+
     /// Search paths (default: current directory)
     #[bpaf(positional("PATH"))]
     pub paths: Vec<PathBuf>,
@@ -111,5 +123,16 @@ impl Opts {
         } else {
             OutputMode::Path
         }
+    }
+
+    /// Returns true if any search filter flags are set.
+    pub fn has_search_filters(&self) -> bool {
+        self.vendor.is_some()
+            || self.library.is_some()
+            || self.category.is_some()
+            || self.sound_id.is_some()
+            || self.description.is_some()
+            || self.bpm.is_some()
+            || self.key.is_some()
     }
 }

@@ -2,9 +2,13 @@
 
 pub mod bext;
 pub mod cli;
+pub mod config;
 pub mod filesystem;
+pub mod marks;
+pub mod playback;
 pub mod riff_info;
 pub mod sqlite;
+pub mod wav;
 
 use std::collections::HashSet;
 use std::io::BufReader;
@@ -15,6 +19,20 @@ use serde::Serialize;
 
 use bext::{BextFields, RiffError};
 use riff_info::InfoFields;
+
+/// A TUI-specific wrapper around `UnifiedMetadata` with display fields.
+///
+/// Keeps TUI-specific state (marked, audio_info) separate from the engine
+/// data model so that headless/JSON output paths are unaffected.
+#[derive(Debug, Clone)]
+pub struct TableRow {
+    /// Core metadata from BEXT/RIFF INFO.
+    pub meta: UnifiedMetadata,
+    /// Audio format info (populated from DB in SQLite mode, None in filesystem mode).
+    pub audio_info: Option<wav::AudioInfo>,
+    /// Whether this file is marked/selected.
+    pub marked: bool,
+}
 
 /// Merged metadata from BEXT and RIFF INFO chunks.
 ///
@@ -57,6 +75,14 @@ pub struct UnifiedMetadata {
     pub usage_id: String,
     /// `[104:112]` TKEY/Key (8 ASCII).
     pub key: String,
+    /// `[112:116]` Take number (4 ASCII, packed only).
+    pub take: String,
+    /// `[116:120]` Track number (4 ASCII, packed only).
+    pub track: String,
+    /// `[120:128]` Item number (8 ASCII, packed only).
+    pub item: String,
+    /// BEXT OriginationDate (bytes 320-329), e.g. "2024-01-15".
+    pub date: String,
 }
 
 /// Read and merge metadata from a single WAV file.
@@ -90,6 +116,23 @@ pub fn read_metadata_with_peaks(path: &Path) -> Result<(UnifiedMetadata, Vec<u8>
     Ok((merge_metadata(path, bext, info), peaks))
 }
 
+/// Read metadata, extract BEXT peaks, and return the detected peaks format.
+/// Returns `(metadata, peaks_bytes, peaks_format)`.
+pub fn read_metadata_with_peaks_format(
+    path: &Path,
+) -> Result<(UnifiedMetadata, Vec<u8>, bext::PeaksFormat), RiffError> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::with_capacity(8192, file);
+
+    let map = bext::scan_chunks(&mut reader)?;
+    let bext = bext::parse_bext_data(&mut reader, &map)?;
+    let peaks = bext.peaks.clone();
+    let peaks_format = bext.peaks_format;
+    let info = riff_info::parse_riff_info(&mut reader, &map)?;
+
+    Ok((merge_metadata(path, bext, info), peaks, peaks_format))
+}
+
 /// Merge BEXT and INFO fields. BEXT takes priority; INFO fills empty fields.
 fn merge_metadata(path: &Path, bext: BextFields, info: InfoFields) -> UnifiedMetadata {
     let mut meta = UnifiedMetadata {
@@ -108,6 +151,10 @@ fn merge_metadata(path: &Path, bext: BextFields, info: InfoFields) -> UnifiedMet
         sound_id: bext.sound_id,
         usage_id: bext.usage_id,
         key: bext.key,
+        take: bext.take,
+        track: bext.track,
+        item: bext.item,
+        date: bext.date,
     };
 
     // Fill empty fields from RIFF INFO.
@@ -211,6 +258,8 @@ pub struct SearchQuery {
     pub key: Option<Pattern>,
     /// AND or OR logic.
     pub match_mode: MatchMode,
+    /// Free-text search across all text fields (for TUI search box).
+    pub freetext: Option<String>,
 }
 
 impl SearchQuery {
@@ -223,12 +272,37 @@ impl SearchQuery {
             && self.description.is_none()
             && self.bpm.is_none()
             && self.key.is_none()
+            && self.freetext_is_empty()
+    }
+
+    /// Returns true if freetext is None or empty string.
+    fn freetext_is_empty(&self) -> bool {
+        match &self.freetext {
+            None => true,
+            Some(s) => s.is_empty(),
+        }
     }
 
     /// Test whether metadata matches this query.
     pub fn matches(&self, meta: &UnifiedMetadata) -> bool {
         if self.is_empty() {
             return true;
+        }
+
+        // Free-text: OR across all text fields (case-insensitive substring).
+        if let Some(text) = &self.freetext {
+            if !text.is_empty() {
+                let lower = text.to_ascii_lowercase();
+                let any_match = meta.vendor.to_ascii_lowercase().contains(&lower)
+                    || meta.library.to_ascii_lowercase().contains(&lower)
+                    || meta.category.to_ascii_lowercase().contains(&lower)
+                    || meta.sound_id.to_ascii_lowercase().contains(&lower)
+                    || meta.description.to_ascii_lowercase().contains(&lower)
+                    || meta.comment.to_ascii_lowercase().contains(&lower)
+                    || meta.key.to_ascii_lowercase().contains(&lower)
+                    || meta.path.to_string_lossy().to_ascii_lowercase().contains(&lower);
+                return any_match;
+            }
         }
 
         let checks: Vec<Option<bool>> = vec![
@@ -286,6 +360,7 @@ pub fn build_query(opts: &cli::Opts) -> anyhow::Result<SearchQuery> {
         } else {
             MatchMode::And
         },
+        freetext: None,
     })
 }
 
@@ -451,19 +526,26 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
         builder.threads(opts.threads);
     }
 
-    // Channel for walker → writer.
-    let (tx, rx) = crossbeam_channel::bounded::<(UnifiedMetadata, i64, Option<Vec<u8>>)>(2048);
+    // Channel for walker → writer: (metadata, mtime, compressed_peaks, peaks_source, audio_info).
+    let (tx, rx) = crossbeam_channel::bounded::<(
+        UnifiedMetadata,
+        i64,
+        Option<Vec<u8>>,
+        String,
+        Option<wav::AudioInfo>,
+    )>(2048);
 
     // Track all discovered paths for deletion detection.
     let (path_tx, path_rx) = crossbeam_channel::unbounded::<PathBuf>();
 
     // Spawn writer thread.
     let writer = std::thread::spawn(move || -> anyhow::Result<usize> {
-        db.index_writer(&rx, 1000)
+        db.index_writer_with_audio(&rx, 1000)
     });
 
     // Walk in parallel.
     let existing_mtimes_ref = &existing_mtimes;
+    let regenerate_peaks = opts.regenerate_peaks;
     builder.build_parallel().run(|| {
         let tx = tx.clone();
         let path_tx = path_tx.clone();
@@ -491,14 +573,37 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
                 }
             }
 
-            match read_metadata_with_peaks(&path) {
-                Ok((meta, peaks)) => {
+            match read_metadata_with_peaks_format(&path) {
+                Ok((meta, bext_peaks, peaks_format)) => {
+                    // Determine whether to generate peaks from audio.
+                    let (peaks, source) =
+                        if regenerate_peaks || peaks_format == bext::PeaksFormat::Empty {
+                            match wav::compute_peaks_stereo_from_path(&path) {
+                                Ok(p) if !p.is_empty() && p.iter().any(|&v| v > 0) => {
+                                    (p, "generated".to_string())
+                                }
+                                _ => (bext_peaks, peaks_format.source_str().to_string()),
+                            }
+                        } else {
+                            (bext_peaks, peaks_format.source_str().to_string())
+                        };
+
                     let compressed_peaks = if peaks.is_empty() {
                         None
                     } else {
                         Some(sqlite::compress_peaks(&peaks))
                     };
-                    if tx.send((meta, mtime, compressed_peaks)).is_err() {
+
+                    // Compute audio info for the DB.
+                    let audio_info = (|| {
+                        let file = std::fs::File::open(&path).ok()?;
+                        let mut rdr = std::io::BufReader::with_capacity(8192, file);
+                        let map = bext::scan_chunks(&mut rdr).ok()?;
+                        let fmt = wav::parse_fmt(&mut rdr, &map).ok()?;
+                        Some(wav::AudioInfo::from_fmt(&fmt, map.data_size))
+                    })();
+
+                    if tx.send((meta, mtime, compressed_peaks, source, audio_info)).is_err() {
                         return ignore::WalkState::Quit;
                     }
                 }
@@ -582,6 +687,14 @@ fn run_db_stats(opts: &cli::Opts) -> anyhow::Result<()> {
         writeln!(out, "Top vendors:")?;
         for (vendor, count) in &stats.top_vendors {
             writeln!(out, "  {vendor:<24} {}", format_count(*count as u64))?;
+        }
+    }
+
+    if !stats.peaks_breakdown.is_empty() {
+        writeln!(out)?;
+        writeln!(out, "Peaks:")?;
+        for (source, count) in &stats.peaks_breakdown {
+            writeln!(out, "  {source:<24} {}", format_count(*count as u64))?;
         }
     }
 
@@ -880,6 +993,60 @@ mod tests {
         assert_eq!(format_size(1048576), "1.0 MB");
     }
 
+    // --- Ticket T2: Free-text filesystem matching ---
+
+    #[test]
+    fn test_freetext_filesystem_matches_any_field() {
+        let mut meta = UnifiedMetadata::default();
+        meta.vendor = "Samples From Mars".to_string();
+        meta.path = PathBuf::from("/test/file.wav");
+
+        let query = SearchQuery {
+            freetext: Some("mars".to_string()),
+            ..Default::default()
+        };
+        assert!(query.matches(&meta), "freetext should match vendor");
+
+        let mut meta2 = UnifiedMetadata::default();
+        meta2.description = "punchy kick drum".to_string();
+        meta2.path = PathBuf::from("/test/file.wav");
+        let query2 = SearchQuery {
+            freetext: Some("kick".to_string()),
+            ..Default::default()
+        };
+        assert!(query2.matches(&meta2), "freetext should match description");
+    }
+
+    #[test]
+    fn test_freetext_empty_matches_all() {
+        let meta = UnifiedMetadata::default();
+
+        let query_none = SearchQuery {
+            freetext: None,
+            ..Default::default()
+        };
+        assert!(query_none.matches(&meta));
+
+        let query_empty = SearchQuery {
+            freetext: Some(String::new()),
+            ..Default::default()
+        };
+        assert!(query_empty.matches(&meta));
+    }
+
+    #[test]
+    fn test_freetext_no_match() {
+        let mut meta = UnifiedMetadata::default();
+        meta.vendor = "Splice".to_string();
+        meta.path = PathBuf::from("/test/file.wav");
+
+        let query = SearchQuery {
+            freetext: Some("zzzznonexistent".to_string()),
+            ..Default::default()
+        };
+        assert!(!query.matches(&meta));
+    }
+
     /// Helper to construct default opts for testing.
     fn default_opts() -> cli::Opts {
         cli::Opts {
@@ -901,6 +1068,9 @@ mod tests {
             db_path: None,
             db_stats: false,
             force_reindex: false,
+            regenerate_peaks: false,
+            no_tui: false,
+            theme: None,
             paths: vec![],
         }
     }

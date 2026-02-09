@@ -14,7 +14,26 @@ use rusqlite::{Connection, params};
 use super::{MatchMode, Pattern, SearchQuery, UnifiedMetadata};
 
 /// Current schema version, tracked via `PRAGMA user_version`.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 4;
+
+/// SQL for inserting/replacing a sample row (28 parameters).
+const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
+    path, name, parent_folder,
+    vendor, library, category, sound_id,
+    description, comment, key, bpm,
+    rating, subcategory, genre_id, usage_id,
+    umid, recid, mtime, peaks, peaks_source,
+    duration, sample_rate, bit_depth, channels,
+    date, take, track, item
+) VALUES (
+    ?1, ?2, ?3,
+    ?4, ?5, ?6, ?7,
+    ?8, ?9, ?10, ?11,
+    ?12, ?13, ?14, ?15,
+    ?16, ?17, ?18, ?19, ?20,
+    ?21, ?22, ?23, ?24,
+    ?25, ?26, ?27, ?28
+)";
 
 /// SQLite index database.
 pub struct Database {
@@ -22,12 +41,13 @@ pub struct Database {
 }
 
 impl Database {
-    /// Open or create a database at the given path. Applies performance pragmas
-    /// and creates the schema idempotently.
+    /// Open or create a database at the given path. Applies performance pragmas,
+    /// creates the schema idempotently, and migrates from older versions.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
         apply_pragmas(&conn)?;
         create_schema(&conn)?;
+        migrate(&conn)?;
         register_regexp_udf(&conn)?;
         Ok(Self { conn })
     }
@@ -37,6 +57,7 @@ impl Database {
         let conn = Connection::open_in_memory()?;
         apply_pragmas(&conn)?;
         create_schema(&conn)?;
+        migrate(&conn)?;
         register_regexp_udf(&conn)?;
         Ok(Self { conn })
     }
@@ -47,23 +68,18 @@ impl Database {
         &self,
         records: &[(UnifiedMetadata, i64, Option<Vec<u8>>)],
     ) -> anyhow::Result<usize> {
+        self.insert_batch_with_source(records, "none")
+    }
+
+    /// Insert a batch of records with an explicit peaks_source value.
+    pub fn insert_batch_with_source(
+        &self,
+        records: &[(UnifiedMetadata, i64, Option<Vec<u8>>)],
+        peaks_source: &str,
+    ) -> anyhow::Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
         {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO samples (
-                    path, name, parent_folder,
-                    vendor, library, category, sound_id,
-                    description, comment, key, bpm,
-                    rating, subcategory, genre_id, usage_id,
-                    umid, recid, mtime, peaks
-                ) VALUES (
-                    ?1, ?2, ?3,
-                    ?4, ?5, ?6, ?7,
-                    ?8, ?9, ?10, ?11,
-                    ?12, ?13, ?14, ?15,
-                    ?16, ?17, ?18, ?19
-                )",
-            )?;
+            let mut stmt = tx.prepare_cached(INSERT_SQL)?;
 
             for (meta, mtime, peaks) in records {
                 let name = meta
@@ -98,6 +114,15 @@ impl Database {
                     meta.recid as i64,
                     mtime,
                     peaks.as_deref(),
+                    peaks_source,
+                    Option::<f64>::None,   // duration
+                    Option::<i32>::None,   // sample_rate
+                    Option::<i32>::None,   // bit_depth
+                    Option::<i32>::None,   // channels
+                    meta.date,
+                    meta.take,
+                    meta.track,
+                    meta.item,
                 ])?;
             }
         }
@@ -130,6 +155,180 @@ impl Database {
         }
 
         Ok(total)
+    }
+
+    /// Consume records with per-record peaks_source from a channel.
+    /// Returns the total number of records inserted.
+    pub fn index_writer_with_source(
+        &self,
+        rx: &Receiver<(UnifiedMetadata, i64, Option<Vec<u8>>, String)>,
+        batch_size: usize,
+    ) -> anyhow::Result<usize> {
+        let mut total = 0;
+        let mut batch: Vec<(UnifiedMetadata, i64, Option<Vec<u8>>)> = Vec::with_capacity(batch_size);
+        let mut sources: Vec<String> = Vec::with_capacity(batch_size);
+
+        for (meta, mtime, peaks, source) in rx {
+            batch.push((meta, mtime, peaks));
+            sources.push(source);
+            if batch.len() >= batch_size {
+                total += self.insert_batch_individually(&batch, &sources)?;
+                batch.clear();
+                sources.clear();
+            }
+        }
+
+        if !batch.is_empty() {
+            total += self.insert_batch_individually(&batch, &sources)?;
+        }
+
+        Ok(total)
+    }
+
+    /// Consume records with per-record peaks_source and audio info from a channel.
+    /// Returns the total number of records inserted.
+    pub fn index_writer_with_audio(
+        &self,
+        rx: &Receiver<(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>)>,
+        batch_size: usize,
+    ) -> anyhow::Result<usize> {
+        let mut total = 0;
+        let mut batch: Vec<(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>)> =
+            Vec::with_capacity(batch_size);
+
+        for item in rx {
+            batch.push(item);
+            if batch.len() >= batch_size {
+                total += self.insert_batch_with_audio(&batch)?;
+                batch.clear();
+            }
+        }
+
+        if !batch.is_empty() {
+            total += self.insert_batch_with_audio(&batch)?;
+        }
+
+        Ok(total)
+    }
+
+    /// Insert records with per-record peaks_source in a single transaction.
+    fn insert_batch_individually(
+        &self,
+        records: &[(UnifiedMetadata, i64, Option<Vec<u8>>)],
+        sources: &[String],
+    ) -> anyhow::Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(INSERT_SQL)?;
+
+            for (i, (meta, mtime, peaks)) in records.iter().enumerate() {
+                let name = meta
+                    .path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let parent = meta
+                    .path
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let path_str = meta.path.to_string_lossy();
+                let source = &sources[i];
+
+                stmt.execute(params![
+                    path_str.as_ref(),
+                    name,
+                    parent,
+                    meta.vendor,
+                    meta.library,
+                    meta.category,
+                    meta.sound_id,
+                    meta.description,
+                    meta.comment,
+                    meta.key,
+                    meta.bpm.map(|v| v as i32),
+                    meta.rating,
+                    meta.subcategory,
+                    meta.genre_id,
+                    meta.usage_id,
+                    meta.umid,
+                    meta.recid as i64,
+                    mtime,
+                    peaks.as_deref(),
+                    source.as_str(),
+                    Option::<f64>::None,   // duration
+                    Option::<i32>::None,   // sample_rate
+                    Option::<i32>::None,   // bit_depth
+                    Option::<i32>::None,   // channels
+                    meta.date,
+                    meta.take,
+                    meta.track,
+                    meta.item,
+                ])?;
+            }
+        }
+        let count = records.len();
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Insert records with per-record peaks_source and audio info.
+    pub fn insert_batch_with_audio(
+        &self,
+        records: &[(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>)],
+    ) -> anyhow::Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(INSERT_SQL)?;
+
+            for (meta, mtime, peaks, source, audio_info) in records {
+                let name = meta
+                    .path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let parent = meta
+                    .path
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let path_str = meta.path.to_string_lossy();
+
+                stmt.execute(params![
+                    path_str.as_ref(),
+                    name,
+                    parent,
+                    meta.vendor,
+                    meta.library,
+                    meta.category,
+                    meta.sound_id,
+                    meta.description,
+                    meta.comment,
+                    meta.key,
+                    meta.bpm.map(|v| v as i32),
+                    meta.rating,
+                    meta.subcategory,
+                    meta.genre_id,
+                    meta.usage_id,
+                    meta.umid,
+                    meta.recid as i64,
+                    mtime,
+                    peaks.as_deref(),
+                    source.as_str(),
+                    audio_info.as_ref().map(|i| i.duration_secs),
+                    audio_info.as_ref().map(|i| i.sample_rate as i32),
+                    audio_info.as_ref().map(|i| i.bit_depth as i32),
+                    audio_info.as_ref().map(|i| i.channels as i32),
+                    meta.date,
+                    meta.take,
+                    meta.track,
+                    meta.item,
+                ])?;
+            }
+        }
+        let count = records.len();
+        tx.commit()?;
+        Ok(count)
     }
 
     /// Get all (path, mtime) pairs from the database for incremental indexing.
@@ -204,6 +403,48 @@ impl Database {
         }
     }
 
+    /// Execute a search query and send TableRow results through the channel.
+    /// Includes audio info and marked status from the database.
+    pub fn search_table_rows(
+        &self,
+        query: &SearchQuery,
+        tx: &Sender<super::TableRow>,
+    ) {
+        let (sql, values) = build_sql(query);
+
+        let mut stmt = match self.conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("riffgrep: SQL error: {e}");
+                return;
+            }
+        };
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+
+        let rows = match stmt.query_map(param_refs.as_slice(), row_to_table_row) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("riffgrep: query error: {e}");
+                return;
+            }
+        };
+
+        for row in rows {
+            match row {
+                Ok(table_row) => {
+                    if tx.send(table_row).is_err() {
+                        return; // receiver dropped
+                    }
+                }
+                Err(e) => {
+                    eprintln!("riffgrep: row error: {e}");
+                }
+            }
+        }
+    }
+
     /// Get aggregate statistics about the database.
     pub fn stats(&self) -> anyhow::Result<DbStats> {
         let file_count: i64 =
@@ -227,10 +468,25 @@ impl Database {
             top_vendors.push(row?);
         }
 
+        // Peaks breakdown by source.
+        let mut peaks_stmt = self.conn.prepare(
+            "SELECT peaks_source, COUNT(*) as cnt FROM samples GROUP BY peaks_source ORDER BY cnt DESC",
+        )?;
+        let peaks_rows = peaks_stmt.query_map([], |row| {
+            let source: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((source, count))
+        })?;
+        let mut peaks_breakdown = Vec::new();
+        for row in peaks_rows {
+            peaks_breakdown.push(row?);
+        }
+
         Ok(DbStats {
             file_count: file_count as u64,
             last_mtime,
             top_vendors,
+            peaks_breakdown,
         })
     }
 
@@ -257,6 +513,73 @@ impl Database {
         Ok((stale, total))
     }
 
+    /// Retrieve decompressed peaks for a file path. Returns None if the path
+    /// is not in the database or has no peaks stored.
+    pub fn get_peaks(&self, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        let blob: Option<Vec<u8>> = self.conn.query_row(
+            "SELECT peaks FROM samples WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        ).unwrap_or(None);
+
+        Ok(blob.map(|b| decompress_peaks(&b)))
+    }
+
+    /// Mark a file path.
+    pub fn mark_path(&self, path: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE samples SET marked = 1 WHERE path = ?1",
+            params![path],
+        )?;
+        Ok(())
+    }
+
+    /// Unmark a file path.
+    pub fn unmark_path(&self, path: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE samples SET marked = 0 WHERE path = ?1",
+            params![path],
+        )?;
+        Ok(())
+    }
+
+    /// Check if a path is marked.
+    pub fn is_marked(&self, path: &str) -> anyhow::Result<bool> {
+        let marked: i32 = self
+            .conn
+            .query_row(
+                "SELECT marked FROM samples WHERE path = ?1",
+                params![path],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(marked != 0)
+    }
+
+    /// Get all marked paths.
+    pub fn marked_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM samples WHERE marked = 1 ORDER BY path")?;
+        let rows = stmt.query_map([], |row| {
+            let path: String = row.get(0)?;
+            Ok(PathBuf::from(path))
+        })?;
+        let mut paths = Vec::new();
+        for row in rows {
+            paths.push(row?);
+        }
+        Ok(paths)
+    }
+
+    /// Clear all marks. Returns the number cleared.
+    pub fn clear_all_marks(&self) -> anyhow::Result<usize> {
+        let count = self
+            .conn
+            .execute("UPDATE samples SET marked = 0 WHERE marked = 1", [])?;
+        Ok(count)
+    }
+
     /// Borrow the underlying connection (for testing).
     #[cfg(test)]
     pub fn conn(&self) -> &Connection {
@@ -272,6 +595,8 @@ pub struct DbStats {
     pub last_mtime: Option<i64>,
     /// Top vendors by count.
     pub top_vendors: Vec<(String, i64)>,
+    /// Peaks count by source (e.g., "none", "generated", "riffgrep_u8", "bwf_reserved").
+    pub peaks_breakdown: Vec<(String, i64)>,
 }
 
 // --- Schema ---
@@ -309,7 +634,17 @@ fn create_schema(conn: &Connection) -> anyhow::Result<()> {
             umid TEXT NOT NULL DEFAULT '',
             recid INTEGER NOT NULL DEFAULT 0,
             mtime INTEGER NOT NULL,
-            peaks BLOB
+            peaks BLOB,
+            peaks_source TEXT NOT NULL DEFAULT 'none',
+            marked INTEGER NOT NULL DEFAULT 0,
+            duration REAL,
+            sample_rate INTEGER,
+            bit_depth INTEGER,
+            channels INTEGER,
+            date TEXT NOT NULL DEFAULT '',
+            take TEXT NOT NULL DEFAULT '',
+            track TEXT NOT NULL DEFAULT '',
+            item TEXT NOT NULL DEFAULT ''
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS samples_fts USING fts5(
@@ -345,6 +680,58 @@ fn create_schema(conn: &Connection) -> anyhow::Result<()> {
                 new.description, new.comment, new.key, new.name);
         END;",
     )?;
+
+    Ok(())
+}
+
+/// Check if a column exists in a table.
+fn has_column(conn: &Connection, column: &str) -> bool {
+    conn.prepare("PRAGMA table_info(samples)")
+        .ok()
+        .map(|mut stmt| {
+            stmt.query_map([], |row| row.get::<_, String>(1))
+                .ok()
+                .map(|mut rows| rows.any(|r| r.as_deref() == Ok(column)))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// Idempotently add a column if it doesn't exist.
+fn add_column_if_missing(conn: &Connection, column: &str, typedef: &str) -> anyhow::Result<()> {
+    if !has_column(conn, column) {
+        conn.execute_batch(&format!(
+            "ALTER TABLE samples ADD COLUMN {column} {typedef};"
+        ))?;
+    }
+    Ok(())
+}
+
+/// Migrate from older schema versions to the current version.
+fn migrate(conn: &Connection) -> anyhow::Result<()> {
+    let version: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+
+    if version < 2 {
+        // v1 → v2: add peaks_source column.
+        add_column_if_missing(conn, "peaks_source", "TEXT NOT NULL DEFAULT 'none'")?;
+    }
+
+    if version < 3 {
+        // v2 → v3: add marked + audio info columns.
+        add_column_if_missing(conn, "marked", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(conn, "duration", "REAL")?;
+        add_column_if_missing(conn, "sample_rate", "INTEGER")?;
+        add_column_if_missing(conn, "bit_depth", "INTEGER")?;
+        add_column_if_missing(conn, "channels", "INTEGER")?;
+    }
+
+    if version < 4 {
+        // v3 → v4: add date, take, track, item columns.
+        add_column_if_missing(conn, "date", "TEXT NOT NULL DEFAULT ''")?;
+        add_column_if_missing(conn, "take", "TEXT NOT NULL DEFAULT ''")?;
+        add_column_if_missing(conn, "track", "TEXT NOT NULL DEFAULT ''")?;
+        add_column_if_missing(conn, "item", "TEXT NOT NULL DEFAULT ''")?;
+    }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -392,6 +779,19 @@ pub fn build_sql(query: &SearchQuery) -> (String, Vec<SqlValue>) {
             "SELECT * FROM samples ORDER BY path".to_string(),
             vec![],
         );
+    }
+
+    // Free-text: FTS5 MATCH across all indexed columns.
+    if let Some(text) = &query.freetext {
+        if !text.is_empty() {
+            let fts_escaped = format!("\"{}\"", text.replace('"', "\"\""));
+            let values = vec![SqlValue::Text(fts_escaped)];
+            let sql = "SELECT * FROM samples WHERE samples.id IN \
+                        (SELECT rowid FROM samples_fts WHERE samples_fts MATCH ?1) \
+                        ORDER BY (SELECT rank FROM samples_fts WHERE samples_fts.rowid = samples.id), path"
+                .to_string();
+            return (sql, values);
+        }
     }
 
     let mut conditions: Vec<String> = Vec::new();
@@ -566,6 +966,37 @@ fn row_to_metadata(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnifiedMetadata>
         sound_id: row.get("sound_id")?,
         usage_id: row.get("usage_id")?,
         key: row.get("key")?,
+        date: row.get("date")?,
+        take: row.get("take")?,
+        track: row.get("track")?,
+        item: row.get("item")?,
+    })
+}
+
+/// Convert a rusqlite Row to TableRow (metadata + audio info + marked).
+fn row_to_table_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::TableRow> {
+    let meta = row_to_metadata(row)?;
+
+    let duration: Option<f64> = row.get("duration")?;
+    let sample_rate: Option<i32> = row.get("sample_rate")?;
+    let bit_depth: Option<i32> = row.get("bit_depth")?;
+    let channels: Option<i32> = row.get("channels")?;
+    let marked: i32 = row.get("marked").unwrap_or(0);
+
+    let audio_info = match (duration, sample_rate, bit_depth, channels) {
+        (Some(dur), Some(sr), Some(bd), Some(ch)) => Some(super::wav::AudioInfo {
+            duration_secs: dur,
+            sample_rate: sr as u32,
+            bit_depth: bd as u16,
+            channels: ch as u16,
+        }),
+        _ => None,
+    };
+
+    Ok(super::TableRow {
+        meta,
+        audio_info,
+        marked: marked != 0,
     })
 }
 
@@ -758,7 +1189,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(version, 4);
     }
 
     // --- Ticket 2 tests: DB path resolution ---
@@ -836,6 +1267,7 @@ mod tests {
             usage_id: "XPM".to_string(),
             umid: "abc123".to_string(),
             recid: 985188,
+            ..Default::default()
         };
 
         db.insert_batch(&[(meta, 1000, None)]).unwrap();
@@ -1493,5 +1925,478 @@ mod tests {
         let results2: Vec<_> = rx2.iter().map(|m| m.path.clone()).collect();
 
         assert_eq!(results1, results2);
+    }
+
+    // --- Ticket T2 tests: Free-text query + get_peaks ---
+
+    #[test]
+    fn test_freetext_sqlite_matches_vendor() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_batch(&[(
+            make_test_meta("/test/mars.wav", "Samples From Mars"),
+            100,
+            None,
+        )])
+        .unwrap();
+
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let query = SearchQuery {
+            freetext: Some("mars".to_string()),
+            ..Default::default()
+        };
+        db.search(&query, &tx);
+        drop(tx);
+        let results: Vec<_> = rx.iter().collect();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_freetext_sqlite_matches_description() {
+        let db = Database::open_in_memory().unwrap();
+        let mut meta = make_test_meta("/test/kick.wav", "Vendor");
+        meta.description = "punchy kick drum".to_string();
+        db.insert_batch(&[(meta, 100, None)]).unwrap();
+
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let query = SearchQuery {
+            freetext: Some("kick".to_string()),
+            ..Default::default()
+        };
+        db.search(&query, &tx);
+        drop(tx);
+        let results: Vec<_> = rx.iter().collect();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_freetext_sqlite_no_match() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_batch(&[(make_test_meta("/test/a.wav", "Vendor"), 100, None)])
+            .unwrap();
+
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let query = SearchQuery {
+            freetext: Some("zzzznonexistent".to_string()),
+            ..Default::default()
+        };
+        db.search(&query, &tx);
+        drop(tx);
+        let results: Vec<_> = rx.iter().collect();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_freetext_empty_returns_all() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_batch(&[
+            (make_test_meta("/test/a.wav", "V"), 100, None),
+            (make_test_meta("/test/b.wav", "V"), 100, None),
+        ])
+        .unwrap();
+
+        // Empty string freetext → treated as empty query → all results.
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let query = SearchQuery {
+            freetext: Some(String::new()),
+            ..Default::default()
+        };
+        db.search(&query, &tx);
+        drop(tx);
+        let results: Vec<_> = rx.iter().collect();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_freetext_special_chars_escaped() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_batch(&[(make_test_meta("/test/a.wav", "Vendor"), 100, None)])
+            .unwrap();
+
+        // These should not cause SQL errors.
+        for input in &["-", "\"", "%", "test-value", "foo\"bar"] {
+            let query = SearchQuery {
+                freetext: Some(input.to_string()),
+                ..Default::default()
+            };
+            let (sql, _) = build_sql(&query);
+            // Just verify it doesn't panic.
+            let (tx, rx) = crossbeam_channel::bounded(64);
+            db.search(&query, &tx);
+            drop(tx);
+            let _: Vec<_> = rx.iter().collect();
+        }
+    }
+
+    #[test]
+    fn test_get_peaks_returns_decompressed() {
+        let db = Database::open_in_memory().unwrap();
+        let raw: Vec<u8> = (0..180).map(|i| (i * 3 % 256) as u8).collect();
+        let compressed = compress_peaks(&raw);
+        let meta = make_test_meta("/test/peaks.wav", "V");
+        db.insert_batch(&[(meta, 100, Some(compressed))]).unwrap();
+
+        let peaks = db.get_peaks("/test/peaks.wav").unwrap();
+        assert!(peaks.is_some());
+        assert_eq!(peaks.unwrap().len(), 180);
+    }
+
+    #[test]
+    fn test_get_peaks_missing_path_returns_none() {
+        let db = Database::open_in_memory().unwrap();
+        let peaks = db.get_peaks("/nonexistent/path.wav").unwrap();
+        assert!(peaks.is_none());
+    }
+
+    #[test]
+    fn test_existing_field_search_unchanged() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_batch(&[(
+            make_test_meta("/test/mars.wav", "Samples From Mars"),
+            100,
+            None,
+        )])
+        .unwrap();
+
+        // Per-field --vendor search still works.
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let query = SearchQuery {
+            vendor: Some(Pattern::Substring("mars".to_string())),
+            ..Default::default()
+        };
+        db.search(&query, &tx);
+        drop(tx);
+        let results: Vec<_> = rx.iter().collect();
+        assert_eq!(results.len(), 1);
+    }
+
+    // --- Schema migration tests ---
+
+    #[test]
+    fn test_fresh_db_is_v4() {
+        let db = Database::open_in_memory().unwrap();
+        let version: u32 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+
+        let mut stmt = db.conn.prepare("PRAGMA table_info(samples)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(cols.contains(&"peaks_source".to_string()));
+        assert!(cols.contains(&"marked".to_string()));
+        assert!(cols.contains(&"duration".to_string()));
+        assert!(cols.contains(&"sample_rate".to_string()));
+        assert!(cols.contains(&"bit_depth".to_string()));
+        assert!(cols.contains(&"channels".to_string()));
+        assert!(cols.contains(&"date".to_string()));
+        assert!(cols.contains(&"take".to_string()));
+        assert!(cols.contains(&"track".to_string()));
+        assert!(cols.contains(&"item".to_string()));
+    }
+
+    #[test]
+    fn test_migrate_v1_to_v4() {
+        let dir = std::env::temp_dir().join("riffgrep_test_migrate_v1v4");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("test.db");
+
+        // Create a v1 database manually (without peaks_source or v3/v4 columns).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            apply_pragmas(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS samples (
+                    id INTEGER PRIMARY KEY,
+                    path TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    parent_folder TEXT NOT NULL,
+                    vendor TEXT NOT NULL DEFAULT '',
+                    library TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
+                    sound_id TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    comment TEXT NOT NULL DEFAULT '',
+                    key TEXT NOT NULL DEFAULT '',
+                    bpm INTEGER,
+                    rating TEXT NOT NULL DEFAULT '',
+                    subcategory TEXT NOT NULL DEFAULT '',
+                    genre_id TEXT NOT NULL DEFAULT '',
+                    usage_id TEXT NOT NULL DEFAULT '',
+                    umid TEXT NOT NULL DEFAULT '',
+                    recid INTEGER NOT NULL DEFAULT 0,
+                    mtime INTEGER NOT NULL,
+                    peaks BLOB
+                );",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 1u32).unwrap();
+            conn.execute(
+                "INSERT INTO samples (path, name, parent_folder, mtime) VALUES ('a.wav', 'a', '/test', 100)",
+                [],
+            ).unwrap();
+        }
+
+        let db = Database::open(&db_path).unwrap();
+        let version: u32 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+
+        // All new columns should exist.
+        let source: String = db
+            .conn
+            .query_row(
+                "SELECT peaks_source FROM samples WHERE path = 'a.wav'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "none");
+
+        let marked: i32 = db
+            .conn
+            .query_row(
+                "SELECT marked FROM samples WHERE path = 'a.wav'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(marked, 0);
+
+        // v4 columns should exist.
+        assert!(has_column(&db.conn, "date"));
+        assert!(has_column(&db.conn, "take"));
+        assert!(has_column(&db.conn, "track"));
+        assert!(has_column(&db.conn, "item"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_migrate_v2_to_v4() {
+        let dir = std::env::temp_dir().join("riffgrep_test_migrate_v2v4");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("test.db");
+
+        // Create a v2 database (has peaks_source, no v3/v4 columns).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            apply_pragmas(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS samples (
+                    id INTEGER PRIMARY KEY,
+                    path TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    parent_folder TEXT NOT NULL,
+                    vendor TEXT NOT NULL DEFAULT '',
+                    library TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
+                    sound_id TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    comment TEXT NOT NULL DEFAULT '',
+                    key TEXT NOT NULL DEFAULT '',
+                    bpm INTEGER,
+                    rating TEXT NOT NULL DEFAULT '',
+                    subcategory TEXT NOT NULL DEFAULT '',
+                    genre_id TEXT NOT NULL DEFAULT '',
+                    usage_id TEXT NOT NULL DEFAULT '',
+                    umid TEXT NOT NULL DEFAULT '',
+                    recid INTEGER NOT NULL DEFAULT 0,
+                    mtime INTEGER NOT NULL,
+                    peaks BLOB,
+                    peaks_source TEXT NOT NULL DEFAULT 'none'
+                );",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 2u32).unwrap();
+            conn.execute(
+                "INSERT INTO samples (path, name, parent_folder, mtime) VALUES ('b.wav', 'b', '/test', 200)",
+                [],
+            ).unwrap();
+        }
+
+        let db = Database::open(&db_path).unwrap();
+        let version: u32 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+
+        // v3 columns should exist.
+        assert!(has_column(&db.conn, "marked"));
+        assert!(has_column(&db.conn, "duration"));
+        // v4 columns should exist.
+        assert!(has_column(&db.conn, "date"));
+        assert!(has_column(&db.conn, "take"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- Mark/unmark tests ---
+
+    #[test]
+    fn test_mark_unmark_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_batch(&[(make_test_meta("/test/m.wav", "V"), 100, None)])
+            .unwrap();
+
+        assert!(!db.is_marked("/test/m.wav").unwrap());
+        db.mark_path("/test/m.wav").unwrap();
+        assert!(db.is_marked("/test/m.wav").unwrap());
+        db.unmark_path("/test/m.wav").unwrap();
+        assert!(!db.is_marked("/test/m.wav").unwrap());
+    }
+
+    #[test]
+    fn test_marked_paths_returns_only_marked() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_batch(&[
+            (make_test_meta("/a.wav", "V"), 100, None),
+            (make_test_meta("/b.wav", "V"), 100, None),
+            (make_test_meta("/c.wav", "V"), 100, None),
+        ])
+        .unwrap();
+
+        db.mark_path("/a.wav").unwrap();
+        db.mark_path("/c.wav").unwrap();
+
+        let paths = db.marked_paths().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&PathBuf::from("/a.wav")));
+        assert!(paths.contains(&PathBuf::from("/c.wav")));
+    }
+
+    #[test]
+    fn test_clear_all_marks() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_batch(&[
+            (make_test_meta("/a.wav", "V"), 100, None),
+            (make_test_meta("/b.wav", "V"), 100, None),
+        ])
+        .unwrap();
+
+        db.mark_path("/a.wav").unwrap();
+        db.mark_path("/b.wav").unwrap();
+        let cleared = db.clear_all_marks().unwrap();
+        assert_eq!(cleared, 2);
+        assert!(db.marked_paths().unwrap().is_empty());
+    }
+
+    // --- Audio info in DB tests ---
+
+    #[test]
+    fn test_audio_info_stored_during_index() {
+        let db = Database::open_in_memory().unwrap();
+        let meta = make_test_meta("/test/audio.wav", "V");
+        let audio_info = Some(super::super::wav::AudioInfo {
+            duration_secs: 3.5,
+            sample_rate: 48000,
+            bit_depth: 24,
+            channels: 2,
+        });
+
+        db.insert_batch_with_audio(&[(meta, 100, None, "none".to_string(), audio_info)])
+            .unwrap();
+
+        let (dur, sr, bd, ch): (Option<f64>, Option<i32>, Option<i32>, Option<i32>) = db
+            .conn
+            .query_row(
+                "SELECT duration, sample_rate, bit_depth, channels FROM samples WHERE path = '/test/audio.wav'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+
+        assert!((dur.unwrap() - 3.5).abs() < 0.001);
+        assert_eq!(sr, Some(48000));
+        assert_eq!(bd, Some(24));
+        assert_eq!(ch, Some(2));
+    }
+
+    #[test]
+    fn test_insert_with_peaks_source() {
+        let db = Database::open_in_memory().unwrap();
+        let raw: Vec<u8> = (0..180).map(|i| (i * 3 % 256) as u8).collect();
+        let compressed = compress_peaks(&raw);
+        let meta = make_test_meta("/test/gen.wav", "Vendor");
+        db.insert_batch_with_source(&[(meta, 100, Some(compressed))], "generated")
+            .unwrap();
+
+        let source: String = db
+            .conn
+            .query_row(
+                "SELECT peaks_source FROM samples WHERE path = '/test/gen.wav'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "generated");
+    }
+
+    #[test]
+    fn test_stats_peaks_breakdown() {
+        let db = Database::open_in_memory().unwrap();
+        let raw = compress_peaks(&vec![128u8; 180]);
+        db.insert_batch_with_source(
+            &[(make_test_meta("/a.wav", "V"), 100, Some(raw.clone()))],
+            "generated",
+        )
+        .unwrap();
+        db.insert_batch_with_source(
+            &[(make_test_meta("/b.wav", "V"), 100, Some(raw))],
+            "generated",
+        )
+        .unwrap();
+        db.insert_batch(&[(make_test_meta("/c.wav", "V"), 100, None)])
+            .unwrap();
+
+        let stats = db.stats().unwrap();
+        assert_eq!(stats.file_count, 3);
+
+        // Check peaks breakdown.
+        let gen_count = stats
+            .peaks_breakdown
+            .iter()
+            .find(|(s, _)| s == "generated")
+            .map(|(_, c)| *c)
+            .unwrap_or(0);
+        assert_eq!(gen_count, 2);
+
+        let none_count = stats
+            .peaks_breakdown
+            .iter()
+            .find(|(s, _)| s == "none")
+            .map(|(_, c)| *c)
+            .unwrap_or(0);
+        assert_eq!(none_count, 1);
+    }
+
+    #[test]
+    fn test_migration_idempotent() {
+        let dir = std::env::temp_dir().join("riffgrep_test_migrate_idempotent");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("test.db");
+
+        // Create v4 DB.
+        let _db1 = Database::open(&db_path).unwrap();
+        drop(_db1);
+
+        // Open again — should not error.
+        let db2 = Database::open(&db_path).unwrap();
+        let version: u32 = db2
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
