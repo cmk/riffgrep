@@ -106,8 +106,14 @@ pub fn stream_samples<R: Read + Seek>(
     let mut remaining_bytes = total_frames * frame_size;
     let mut mono_count: u64 = 0;
 
+    // Align reads to frame boundaries to prevent misalignment across buffers.
+    // Without this, formats where frame_size doesn't divide BUF_SIZE (e.g.
+    // 24-bit stereo, frame_size=6) would drop partial frames at each buffer
+    // boundary, causing periodic phase-shift artifacts in the peak data.
+    let aligned_buf_size = (BUF_SIZE / frame_size) * frame_size;
+
     while remaining_bytes > 0 {
-        let to_read = remaining_bytes.min(BUF_SIZE);
+        let to_read = remaining_bytes.min(aligned_buf_size);
         let slice = &mut buf[..to_read];
         match reader.read_exact(slice) {
             Ok(()) => {}
@@ -311,9 +317,10 @@ pub fn stream_samples_channel<R: Read + Seek>(
     let mut buf = [0u8; BUF_SIZE];
     let mut remaining_bytes = total_frames * frame_size;
     let mut mono_count: u64 = 0;
+    let aligned_buf_size = (BUF_SIZE / frame_size) * frame_size;
 
     while remaining_bytes > 0 {
-        let to_read = remaining_bytes.min(BUF_SIZE);
+        let to_read = remaining_bytes.min(aligned_buf_size);
         let slice = &mut buf[..to_read];
         match reader.read_exact(slice) {
             Ok(()) => {}
@@ -556,9 +563,10 @@ fn stream_samples_stereo<R: Read + Seek>(
     let mut buf = [0u8; BUF_SIZE];
     let mut remaining_bytes = total_frames * frame_size;
     let mut frame_idx: u64 = 0;
+    let aligned_buf_size = (BUF_SIZE / frame_size) * frame_size;
 
     while remaining_bytes > 0 {
-        let to_read = remaining_bytes.min(BUF_SIZE);
+        let to_read = remaining_bytes.min(aligned_buf_size);
         let slice = &mut buf[..to_read];
         match reader.read_exact(slice) {
             Ok(()) => {}
@@ -907,6 +915,94 @@ mod tests {
 
         let count = stream_samples(&mut cursor, &map, &fmt, &mut |_| {}).unwrap();
         assert_eq!(count, 0);
+    }
+
+    // --- Buffer alignment regression tests ---
+
+    /// Make a PCM 24-bit stereo fmt chunk (frame_size = 6, doesn't divide 4096).
+    fn make_fmt_pcm24_stereo() -> Vec<u8> {
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        fmt.extend_from_slice(&2u16.to_le_bytes()); // stereo
+        fmt.extend_from_slice(&48000u32.to_le_bytes()); // sample rate
+        fmt.extend_from_slice(&288000u32.to_le_bytes()); // byte rate = 48000*2*3
+        fmt.extend_from_slice(&6u16.to_le_bytes()); // block align
+        fmt.extend_from_slice(&24u16.to_le_bytes()); // bits per sample
+        fmt
+    }
+
+    #[test]
+    fn test_stream_24bit_stereo_frame_count() {
+        // 24-bit stereo: frame_size=6, BUF_SIZE=4096, 4096/6=682 rem 4.
+        // Before the alignment fix, 4 bytes were dropped per buffer read,
+        // causing misaligned samples. This test uses >4096 bytes of audio
+        // to cross a buffer boundary.
+        let num_frames = 2000; // 2000 * 6 = 12000 bytes (spans ~3 buffers)
+        let mut audio = Vec::new();
+        for i in 0..num_frames {
+            let val = ((i as f64 / num_frames as f64 * std::f64::consts::PI).sin()
+                * 4_000_000.0) as i32;
+            // L channel: 24-bit LE
+            audio.push((val & 0xFF) as u8);
+            audio.push(((val >> 8) & 0xFF) as u8);
+            audio.push(((val >> 16) & 0xFF) as u8);
+            // R channel: silence
+            audio.push(0);
+            audio.push(0);
+            audio.push(0);
+        }
+        let wav = make_wav(&make_fmt_pcm24_stereo(), &audio);
+        let mut cursor = Cursor::new(wav);
+        let map = scan_chunks(&mut cursor).unwrap();
+        let fmt = parse_fmt(&mut cursor, &map).unwrap();
+
+        let mut count = 0u64;
+        let total = stream_samples(&mut cursor, &map, &fmt, &mut |_| {
+            count += 1;
+        })
+        .unwrap();
+        assert_eq!(
+            total, num_frames as u64,
+            "should read all {num_frames} frames without dropping any at buffer boundaries"
+        );
+        assert_eq!(count, num_frames as u64);
+    }
+
+    #[test]
+    fn test_stream_24bit_stereo_no_phase_drift() {
+        // Verify that a known 24-bit stereo signal is decoded identically
+        // on both sides of a buffer boundary. The left channel is a ramp
+        // (each frame = frame_index), right is zero.
+        let num_frames = 2000u64;
+        let mut audio = Vec::new();
+        for i in 0..num_frames {
+            let val = i as i32;
+            audio.push((val & 0xFF) as u8);
+            audio.push(((val >> 8) & 0xFF) as u8);
+            audio.push(((val >> 16) & 0xFF) as u8);
+            audio.push(0);
+            audio.push(0);
+            audio.push(0);
+        }
+        let wav = make_wav(&make_fmt_pcm24_stereo(), &audio);
+        let mut cursor = Cursor::new(wav);
+        let map = scan_chunks(&mut cursor).unwrap();
+        let fmt = parse_fmt(&mut cursor, &map).unwrap();
+
+        let mut samples = Vec::new();
+        stream_samples_stereo(&mut cursor, &map, &fmt, &mut |_idx, left, _right| {
+            samples.push(left);
+        })
+        .unwrap();
+
+        // Each sample should be i / 8388608.0 (24-bit divisor).
+        for (i, &sample) in samples.iter().enumerate() {
+            let expected = i as f32 / 8_388_608.0;
+            assert!(
+                (sample - expected).abs() < 1e-6,
+                "frame {i}: expected {expected}, got {sample} (phase drift at buffer boundary?)"
+            );
+        }
     }
 
     // --- T3: peak computation ---
