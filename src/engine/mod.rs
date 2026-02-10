@@ -174,20 +174,75 @@ pub struct ColumnFilter {
     pub values: Vec<String>,
 }
 
-/// Parse `@field=value` and `@field=[v1,v2]` tokens from search input.
+/// Parse `@field=value`, `@field="quoted value"`, and `@field=[v1,v2]` tokens
+/// from search input.
+///
+/// Field names are case-insensitive (`@Vendor` matches `vendor`).
+/// Values containing spaces must be double-quoted: `@vendor="Beat MPC"`.
 ///
 /// Returns `(remaining_freetext, filters)`. Invalid field names are left in freetext.
 /// Empty values are ignored.
 pub fn parse_column_filters(input: &str) -> (String, Vec<ColumnFilter>) {
     let mut filters = Vec::new();
     let mut freetext_parts = Vec::new();
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
 
-    for token in input.split_whitespace() {
-        if let Some(rest) = token.strip_prefix('@') {
-            if let Some((field, value_str)) = rest.split_once('=') {
-                // Validate field name.
-                if !field.is_empty()
-                    && config::AVAILABLE_COLUMNS.contains(&field)
+    while i < len {
+        // Skip whitespace.
+        if chars[i].is_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        if chars[i] == '@' {
+            let start = i;
+            i += 1; // skip '@'
+
+            // Read field name until '=' or whitespace.
+            let field_start = i;
+            while i < len && chars[i] != '=' && !chars[i].is_whitespace() {
+                i += 1;
+            }
+
+            if i < len && chars[i] == '=' {
+                let field: String = chars[field_start..i].iter().collect();
+                let field_lower = field.to_ascii_lowercase();
+                i += 1; // skip '='
+
+                // Read value: quoted, bracketed, or bare word.
+                let value_str: String = if i < len && chars[i] == '"' {
+                    i += 1; // skip opening quote
+                    let val_start = i;
+                    while i < len && chars[i] != '"' {
+                        i += 1;
+                    }
+                    let val: String = chars[val_start..i].iter().collect();
+                    if i < len {
+                        i += 1; // skip closing quote
+                    }
+                    val
+                } else if i < len && chars[i] == '[' {
+                    let val_start = i;
+                    while i < len && chars[i] != ']' {
+                        i += 1;
+                    }
+                    if i < len {
+                        i += 1; // include closing ']'
+                    }
+                    chars[val_start..i].iter().collect()
+                } else {
+                    let val_start = i;
+                    while i < len && !chars[i].is_whitespace() {
+                        i += 1;
+                    }
+                    chars[val_start..i].iter().collect()
+                };
+
+                // Validate field name and value.
+                if !field_lower.is_empty()
+                    && config::AVAILABLE_COLUMNS.contains(&field_lower.as_str())
                     && !value_str.is_empty()
                 {
                     let values = if value_str.starts_with('[') && value_str.ends_with(']') {
@@ -199,20 +254,35 @@ pub fn parse_column_filters(input: &str) -> (String, Vec<ColumnFilter>) {
                             .filter(|s| !s.is_empty())
                             .collect::<Vec<_>>()
                     } else {
-                        vec![value_str.to_string()]
+                        vec![value_str]
                     };
 
                     if !values.is_empty() {
                         filters.push(ColumnFilter {
-                            field: field.to_string(),
+                            field: field_lower,
                             values,
                         });
                         continue;
                     }
                 }
+
+                // Invalid filter — put the whole token back as freetext.
+                let token: String = chars[start..i].iter().collect();
+                freetext_parts.push(token);
+            } else {
+                // No '=' found — put back as freetext.
+                let token: String = chars[start..i].iter().collect();
+                freetext_parts.push(token);
             }
+        } else {
+            // Regular word.
+            let word_start = i;
+            while i < len && !chars[i].is_whitespace() {
+                i += 1;
+            }
+            let word: String = chars[word_start..i].iter().collect();
+            freetext_parts.push(word);
         }
-        freetext_parts.push(token);
     }
 
     (freetext_parts.join(" "), filters)
@@ -1215,6 +1285,60 @@ mod tests {
     fn test_parse_empty_value_ignored() {
         let (freetext, filters) = parse_column_filters("@vendor=");
         assert_eq!(freetext, "@vendor=");
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn test_parse_case_insensitive_field() {
+        let (freetext, filters) = parse_column_filters("@Vendor=Mars");
+        assert_eq!(freetext, "");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].field, "vendor");
+        assert_eq!(filters[0].values, vec!["Mars"]);
+    }
+
+    #[test]
+    fn test_parse_quoted_value_with_spaces() {
+        let (freetext, filters) = parse_column_filters("@vendor=\"Beat MPC\"");
+        assert_eq!(freetext, "");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].field, "vendor");
+        assert_eq!(filters[0].values, vec!["Beat MPC"]);
+    }
+
+    #[test]
+    fn test_parse_quoted_value_mixed_with_freetext() {
+        let (freetext, filters) = parse_column_filters("kick @vendor=\"Samples From Mars\" drum");
+        assert_eq!(freetext, "kick drum");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].field, "vendor");
+        assert_eq!(filters[0].values, vec!["Samples From Mars"]);
+    }
+
+    #[test]
+    fn test_parse_case_insensitive_and_quoted() {
+        let (freetext, filters) =
+            parse_column_filters("@Library=\"DX100 From Mars\" @Vendor=\"Samples From Mars\"");
+        assert_eq!(freetext, "");
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].field, "library");
+        assert_eq!(filters[0].values, vec!["DX100 From Mars"]);
+        assert_eq!(filters[1].field, "vendor");
+        assert_eq!(filters[1].values, vec!["Samples From Mars"]);
+    }
+
+    #[test]
+    fn test_parse_unclosed_quote_reads_to_end() {
+        let (freetext, filters) = parse_column_filters("@vendor=\"unclosed");
+        assert_eq!(freetext, "");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].values, vec!["unclosed"]);
+    }
+
+    #[test]
+    fn test_parse_empty_quoted_value_ignored() {
+        let (freetext, filters) = parse_column_filters("@vendor=\"\"");
+        assert_eq!(freetext, "@vendor=\"\"");
         assert!(filters.is_empty());
     }
 
