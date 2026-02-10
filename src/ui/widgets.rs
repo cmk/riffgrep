@@ -535,10 +535,17 @@ pub fn render_metadata_table(
             let value = column_value(row, key);
             let display: String = value.chars().take(w).collect();
 
-            if is_selected {
-                // Fill entire cell width for selected row background.
+            let is_col_selected = j == app.selected_column;
+
+            if is_selected || is_col_selected {
+                // Fill entire cell width for background highlight.
+                let cell_style = if is_selected {
+                    style
+                } else {
+                    style.bg(theme.table_column_bg)
+                };
                 let padded = format!("{:<width$}", display, width = w);
-                buf.set_string(cx, y, &padded, style);
+                buf.set_string(cx, y, &padded, cell_style);
             } else {
                 buf.set_string(cx, y, &display, style);
             }
@@ -704,24 +711,14 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     if info_y < area.y + area.height {
         let info = match &preview.audio_info {
             Some(ai) => {
-                let name = preview
-                    .metadata
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+                let name = preview.metadata.path.display();
                 let dur = format_duration(ai.duration_secs);
                 let rate = format!("{}Hz", ai.sample_rate);
                 let fmt = ai.format_display();
                 format!(" {name}  {dur}  {rate}  {fmt}")
             }
             None => {
-                let name = preview
-                    .metadata
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+                let name = preview.metadata.path.display();
                 format!(" {name}")
             }
         };

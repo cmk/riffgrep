@@ -39,6 +39,8 @@ pub struct Theme {
     pub table_marked: Style,
     /// Selected column header highlight style.
     pub table_column_highlight: Style,
+    /// Selected column cell background color (subtle tint for data rows).
+    pub table_column_bg: Color,
 }
 
 impl Theme {
@@ -73,6 +75,7 @@ impl Theme {
             table_column_highlight: Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            table_column_bg: Color::Rgb(20, 40, 50),
         }
     }
 
@@ -107,6 +110,7 @@ impl Theme {
             table_column_highlight: Style::default()
                 .fg(Color::Rgb(255, 153, 0))
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            table_column_bg: Color::Rgb(50, 35, 10),
         }
     }
 
@@ -141,6 +145,7 @@ impl Theme {
             table_column_highlight: Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            table_column_bg: Color::Rgb(15, 40, 15),
         }
     }
 
