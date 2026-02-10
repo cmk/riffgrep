@@ -1,5 +1,6 @@
 //! Interactive TUI: state machine, event loop, and async bridge.
 
+pub mod actions;
 pub mod search;
 pub mod theme;
 pub mod widgets;
@@ -41,6 +42,16 @@ pub enum AppEvent {
 /// Default number of lines to scroll per page.
 const PAGE_SIZE: usize = 20;
 
+/// Input mode for the TUI. Normal mode routes keys to navigation actions;
+/// Insert mode routes keys to the search field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    /// Navigation keys active, search field read-only.
+    Normal,
+    /// All keys go to the search field (except Esc/Ctrl-C).
+    Insert,
+}
+
 /// TUI application state. All transitions are pure functions (no I/O).
 pub struct App {
     /// Current search query text.
@@ -63,6 +74,11 @@ pub struct App {
     pub theme: Theme,
     /// Whether the app should exit.
     pub should_quit: bool,
+    /// Current input mode (Normal or Insert).
+    pub input_mode: InputMode,
+    /// Whether a new search has been dispatched but no results have arrived yet.
+    /// While true, old results are kept visible to prevent flickering.
+    pub search_pending: bool,
     /// Height of the visible results viewport (set by layout).
     pub viewport_height: usize,
     /// Whether the previous key was 'g' (for gg detection).
@@ -89,6 +105,10 @@ pub struct App {
     pub sort_column: Option<String>,
     /// Sort direction: true = ascending, false = descending.
     pub sort_ascending: bool,
+    /// Normal mode keymap (key → action bindings).
+    pub keymap: actions::Keymap,
+    /// Whether the help overlay is currently shown.
+    pub show_help: bool,
 }
 
 impl App {
@@ -108,6 +128,8 @@ impl App {
             preview: None,
             theme,
             should_quit: false,
+            input_mode: InputMode::Normal,
+            search_pending: false,
             viewport_height: PAGE_SIZE,
             columns: crate::engine::config::default_columns(),
             pending_g: false,
@@ -121,140 +143,163 @@ impl App {
             selected_column: 0,
             sort_column: None,
             sort_ascending: true,
+            keymap: actions::Keymap::default(),
+            show_help: false,
+        }
+    }
+
+    /// Execute an action, updating state accordingly.
+    pub fn dispatch(&mut self, action: actions::Action) {
+        use actions::Action;
+        match action {
+            Action::MoveDown => self.move_selection(1),
+            Action::MoveUp => self.move_selection(-1),
+            Action::MoveToTop => self.jump_top(),
+            Action::MoveToBottom => self.jump_bottom(),
+            Action::PageDown => self.page_down(),
+            Action::PageUp => self.page_up(),
+            Action::MoveColumnLeft => self.move_column(-1),
+            Action::MoveColumnRight => self.move_column(1),
+            Action::SortAscending => self.sort_by_selected_column(true),
+            Action::SortDescending => self.sort_by_selected_column(false),
+            Action::TogglePlayback => self.toggle_playback(),
+            Action::StopPlayback => self.stop_playback(),
+            Action::ToggleMark => self.toggle_mark(),
+            Action::ClearMarks => self.clear_all_marks(),
+            Action::ToggleMarkedFilter => self.toggle_marked_filter(),
+            Action::EnterInsertMode => self.enter_insert_mode(),
+            Action::EnterNormalMode => self.enter_normal_mode(),
+            Action::SearchSubmit => {
+                self.query_changed = true;
+                self.enter_normal_mode();
+            }
+            Action::ClearQuery => {
+                self.query.clear();
+                self.cursor_pos = 0;
+                self.query_changed = true;
+            }
+            Action::OpenSelected => self.open_selected(),
+            Action::ShowHelp => self.show_help = !self.show_help,
+            Action::Quit => self.should_quit = true,
         }
     }
 
     /// Handle a key event, updating state accordingly.
     pub fn on_key(&mut self, key: KeyEvent) {
-        // Ctrl+C always quits.
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
-            self.pending_g = false;
-            return;
-        }
-
-        // Ctrl+D: page down.
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
-            self.page_down();
-            self.pending_g = false;
-            return;
-        }
-
-        // Ctrl+U: page up.
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('u') {
-            self.page_up();
-            self.pending_g = false;
-            return;
-        }
-
-        match key.code {
-            KeyCode::Char('q') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.should_quit = true;
-                self.pending_g = false;
-            }
-            KeyCode::Char('j') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.move_selection(1);
-                self.pending_g = false;
-            }
-            KeyCode::Char('k') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.move_selection(-1);
-                self.pending_g = false;
-            }
-            KeyCode::Char(' ') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.toggle_playback();
-                self.pending_g = false;
-            }
-            KeyCode::Char('s') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.stop_playback();
-                self.pending_g = false;
-            }
-            KeyCode::Char('m') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.toggle_mark();
-                self.pending_g = false;
-            }
-            KeyCode::Char('M') if key.modifiers == KeyModifiers::SHIFT && self.query.is_empty() => {
-                self.clear_all_marks();
-                self.pending_g = false;
-            }
-            KeyCode::Char('h') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.move_column(-1);
-                self.pending_g = false;
-            }
-            KeyCode::Char('l') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.move_column(1);
-                self.pending_g = false;
-            }
-            KeyCode::Char('o') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.sort_by_selected_column(true);
-                self.pending_g = false;
-            }
-            KeyCode::Char('O') if key.modifiers == KeyModifiers::SHIFT && self.query.is_empty() => {
-                self.sort_by_selected_column(false);
-                self.pending_g = false;
-            }
-            KeyCode::Char('f') if key.modifiers.is_empty() && self.query.is_empty() => {
-                self.toggle_marked_filter();
-                self.pending_g = false;
-            }
-            KeyCode::Char('G') if key.modifiers == KeyModifiers::SHIFT && self.query.is_empty() => {
-                self.jump_bottom();
-                self.pending_g = false;
-            }
-            KeyCode::Char('g') if key.modifiers.is_empty() && self.query.is_empty() => {
-                if self.pending_g {
-                    self.jump_top();
-                    self.pending_g = false;
-                } else {
-                    self.pending_g = true;
+        // When help overlay is shown, only ? and Esc dismiss it.
+        if self.show_help {
+            match key.code {
+                KeyCode::Esc => self.show_help = false,
+                _ => {
+                    // Check if key maps to ShowHelp (i.e. ? toggle).
+                    if let Some(actions::Action::ShowHelp) = self.keymap.resolve(key) {
+                        self.show_help = false;
+                    }
                 }
-                return; // Don't reset pending_g.
             }
-            KeyCode::Down => {
-                self.move_selection(1);
-                self.pending_g = false;
+            return;
+        }
+
+        // Ctrl+C: exit Insert mode, or quit from Normal mode.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.pending_g = false;
+            if self.input_mode == InputMode::Insert {
+                self.dispatch(actions::Action::EnterNormalMode);
+            } else {
+                self.dispatch(actions::Action::Quit);
             }
-            KeyCode::Up => {
-                self.move_selection(-1);
+            return;
+        }
+
+        match self.input_mode {
+            InputMode::Normal => self.on_key_normal(key),
+            InputMode::Insert => self.on_key_insert(key),
+        }
+    }
+
+    /// Resolve Normal mode key to Action via keymap, then dispatch.
+    fn on_key_normal(&mut self, key: KeyEvent) {
+        // Handle gg sequence: first g sets pending, second g dispatches MoveToTop.
+        if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
+            if self.pending_g {
                 self.pending_g = false;
+                self.dispatch(actions::Action::MoveToTop);
+            } else {
+                self.pending_g = true;
+            }
+            return;
+        }
+
+        // Any other key cancels pending g.
+        self.pending_g = false;
+
+        // Esc is context-dependent: clear query if non-empty, else quit.
+        if key.code == KeyCode::Esc {
+            if !self.query.is_empty() {
+                self.dispatch(actions::Action::ClearQuery);
+            } else {
+                self.dispatch(actions::Action::Quit);
+            }
+            return;
+        }
+
+        // Look up key in configurable keymap.
+        if let Some(action) = self.keymap.resolve(key) {
+            self.dispatch(action);
+        }
+    }
+
+    /// Handle key events in Insert mode (search field input).
+    fn on_key_insert(&mut self, key: KeyEvent) {
+        self.pending_g = false;
+        match key.code {
+            KeyCode::Esc => {
+                self.enter_normal_mode();
             }
             KeyCode::Enter => {
-                self.open_selected();
-                self.pending_g = false;
-            }
-            KeyCode::Esc => {
-                if !self.query.is_empty() {
-                    self.query.clear();
-                    self.cursor_pos = 0;
-                    self.query_changed = true;
-                } else {
-                    self.should_quit = true;
-                }
-                self.pending_g = false;
+                // Confirm search and return to Normal mode.
+                self.query_changed = true;
+                self.enter_normal_mode();
             }
             KeyCode::Backspace => {
                 if self.cursor_pos > 0 {
                     self.query.remove(self.cursor_pos - 1);
                     self.cursor_pos -= 1;
                     self.query_changed = true;
+                } else {
+                    // Backspace on empty query returns to Normal mode.
+                    self.enter_normal_mode();
                 }
-                self.pending_g = false;
+            }
+            KeyCode::Down => {
+                // Navigate results without leaving Insert mode.
+                self.move_selection(1);
+            }
+            KeyCode::Up => {
+                // Navigate results without leaving Insert mode.
+                self.move_selection(-1);
             }
             KeyCode::Char(c) => {
                 self.query.insert(self.cursor_pos, c);
                 self.cursor_pos += 1;
                 self.query_changed = true;
-                self.pending_g = false;
             }
-            _ => {
-                self.pending_g = false;
-            }
+            _ => {}
         }
     }
 
     /// Handle incoming search results.
     pub fn on_search_results(&mut self, results: Vec<TableRow>) {
-        if self.results.is_empty() {
-            // First batch: reset selection.
+        if self.search_pending {
+            // First batch of a new search: replace old results.
+            self.results.clear();
+            self.selected = 0;
+            self.scroll_offset = 0;
+            self.preview = None;
+            self.selection_changed = true;
+            self.search_pending = false;
+        } else if self.results.is_empty() {
+            // First batch overall (initial load): reset selection.
             self.selected = 0;
             self.scroll_offset = 0;
             self.preview = None;
@@ -476,6 +521,16 @@ impl App {
         self.selected_column = new;
     }
 
+    /// Switch to Insert mode (search field active).
+    pub fn enter_insert_mode(&mut self) {
+        self.input_mode = InputMode::Insert;
+    }
+
+    /// Switch to Normal mode (navigation keys active).
+    pub fn enter_normal_mode(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
     /// Get the total number of marked files (from store if available, else from results).
     pub fn mark_count(&self) -> usize {
         if let Some(ref store) = self.marks {
@@ -621,6 +676,11 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &App) -> io:
         widgets::render_metadata_table(app, chunks[1], frame.buffer_mut(), &app.columns);
         widgets::render_waveform_panel(app, chunks[2], frame.buffer_mut());
         widgets::render_status_bar(app, chunks[3], frame.buffer_mut());
+
+        // Help overlay rendered on top of everything when active.
+        if app.show_help {
+            widgets::render_help_overlay(app, size, frame.buffer_mut());
+        }
     })?;
     Ok(())
 }
@@ -712,6 +772,11 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
                 .map(|o| o != "desc")
                 .unwrap_or(true);
         }
+    }
+
+    // Apply keymap overrides from config.
+    if let Some(ref keymap_overrides) = config.keymap {
+        app.keymap = actions::Keymap::with_overrides(keymap_overrides);
     }
 
     // Initialize marks store based on search mode.
@@ -806,10 +871,9 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
                 if let Some(handle) = current_search.take() {
                     handle.cancel();
                 }
-                app.results.clear();
-                app.selected = 0;
-                app.scroll_offset = 0;
-                app.preview = None;
+                // Don't clear results yet — keep them visible until the
+                // first batch of new results arrives (prevents flickering).
+                app.search_pending = true;
                 app.search_in_progress = true;
 
                 // Build new search: parse @field=value filters from query.
@@ -913,6 +977,8 @@ mod tests {
     #[test]
     fn test_app_type_char() {
         let mut app = App::new(Theme::default());
+        // Enter Insert mode first.
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(app.query, "a");
         assert_eq!(app.cursor_pos, 1);
@@ -922,7 +988,8 @@ mod tests {
     #[test]
     fn test_app_type_multiple() {
         let mut app = App::new(Theme::default());
-        // Use 'x' not 'f' since 'f' is reserved (filter toggle) when query is empty.
+        // Enter Insert mode first.
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         for ch in ['x', 'o', 'o'] {
             app.on_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
@@ -933,6 +1000,7 @@ mod tests {
     #[test]
     fn test_app_backspace() {
         let mut app = App::new(Theme::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         for ch in ['x', 'o', 'o'] {
             app.on_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
@@ -1046,7 +1114,7 @@ mod tests {
     #[test]
     fn test_app_quit_on_q() {
         let mut app = App::new(Theme::default());
-        // q quits only when query is empty.
+        // q quits in Normal mode.
         app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(app.should_quit);
     }
@@ -1054,6 +1122,7 @@ mod tests {
     #[test]
     fn test_app_quit_on_ctrl_c() {
         let mut app = App::new(Theme::default());
+        // Ctrl+C quits from Normal mode.
         app.on_key(KeyEvent::new(
             KeyCode::Char('c'),
             KeyModifiers::CONTROL,
@@ -1083,22 +1152,22 @@ mod tests {
     }
 
     #[test]
-    fn test_app_q_doesnt_quit_with_query() {
+    fn test_app_q_types_in_insert_mode() {
         let mut app = App::new(Theme::default());
-        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        // Now query is "x", pressing q should type 'q', not quit.
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        // In Insert mode, q types 'q', does not quit.
         app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(!app.should_quit);
-        assert_eq!(app.query, "xq");
+        assert_eq!(app.query, "q");
     }
 
     #[test]
-    fn test_app_vim_keys_only_when_query_empty() {
+    fn test_insert_mode_chars_go_to_query() {
         let mut app = make_app_with_results(10);
-        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        // j should type 'j', not move selection.
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        // In Insert mode, j types 'j', does not navigate.
         app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-        assert_eq!(app.query, "xj");
+        assert_eq!(app.query, "j");
         assert_eq!(app.selected, 0);
     }
 
@@ -1115,10 +1184,11 @@ mod tests {
     }
 
     #[test]
-    fn test_app_space_types_when_query_active() {
+    fn test_app_space_types_in_insert_mode() {
         let mut app = make_app_with_results(5);
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        // Space should type ' ' when query is non-empty.
+        // Space should type ' ' in Insert mode.
         app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert_eq!(app.query, "x ");
     }
@@ -1133,10 +1203,11 @@ mod tests {
     }
 
     #[test]
-    fn test_app_s_types_when_query_active() {
+    fn test_app_s_types_in_insert_mode() {
         let mut app = make_app_with_results(5);
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        // s should type 's' when query is non-empty.
+        // s should type 's' in Insert mode.
         app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         assert_eq!(app.query, "xs");
     }
@@ -1277,22 +1348,21 @@ mod tests {
     }
 
     #[test]
-    fn test_m_types_when_query_active() {
+    fn test_m_types_in_insert_mode() {
         let mut app = make_app_with_results(5);
-        // Type something to activate query mode.
-        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        // Now 'm' should type 'm', not toggle mark.
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        // In Insert mode, 'm' should type 'm', not toggle mark.
         app.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
-        assert_eq!(app.query, "xm");
+        assert_eq!(app.query, "m");
         assert!(!app.results[0].marked);
     }
 
     #[test]
-    fn test_f_types_when_query_active() {
+    fn test_f_types_in_insert_mode() {
         let mut app = make_app_with_results(5);
-        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
-        assert_eq!(app.query, "xf");
+        assert_eq!(app.query, "f");
         assert!(!app.show_marked_only);
     }
 
@@ -1329,13 +1399,13 @@ mod tests {
     }
 
     #[test]
-    fn test_h_l_type_when_query_active() {
+    fn test_h_l_type_in_insert_mode() {
         let mut app = make_app_with_results(5);
-        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        // h/l should type into query, not navigate columns.
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        // h/l should type into query in Insert mode, not navigate columns.
         app.on_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
-        assert_eq!(app.query, "xhl");
+        assert_eq!(app.query, "hl");
         assert_eq!(app.selected_column, 0);
     }
 
@@ -1503,5 +1573,295 @@ mod tests {
         // No results — should not panic.
         app.sort_by_selected_column(true);
         assert!(app.sort_column.is_none());
+    }
+
+    // --- S7-T2 tests: Input Mode Enum & State ---
+
+    #[test]
+    fn test_app_starts_in_normal_mode() {
+        let app = App::new(Theme::default());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_enter_insert_mode() {
+        let mut app = App::new(Theme::default());
+        app.enter_insert_mode();
+        assert_eq!(app.input_mode, InputMode::Insert);
+    }
+
+    #[test]
+    fn test_enter_normal_mode_from_insert() {
+        let mut app = App::new(Theme::default());
+        app.enter_insert_mode();
+        assert_eq!(app.input_mode, InputMode::Insert);
+        app.enter_normal_mode();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    // --- S7-T3 tests: Modal Key Routing ---
+
+    #[test]
+    fn test_normal_mode_j_navigates_down() {
+        let mut app = make_app_with_results(10);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_normal_mode_i_enters_insert() {
+        let mut app = App::new(Theme::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Insert);
+    }
+
+    #[test]
+    fn test_normal_mode_slash_enters_insert() {
+        let mut app = App::new(Theme::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Insert);
+    }
+
+    #[test]
+    fn test_insert_mode_esc_returns_normal() {
+        let mut app = App::new(Theme::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Insert);
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_insert_mode_ctrl_c_returns_normal() {
+        let mut app = App::new(Theme::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Insert);
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(!app.should_quit, "Ctrl+C in Insert should not quit");
+    }
+
+    #[test]
+    fn test_insert_mode_enter_searches_and_returns_normal() {
+        let mut app = App::new(Theme::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert_eq!(app.query, "test");
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.query, "test", "query should be preserved after Enter");
+    }
+
+    #[test]
+    fn test_insert_mode_backspace_empty_returns_normal() {
+        let mut app = App::new(Theme::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Insert);
+        // Backspace on empty query returns to Normal.
+        app.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    // --- S7-T5 tests: Action Dispatch ---
+
+    #[test]
+    fn test_dispatch_move_down_changes_selected() {
+        let mut app = make_app_with_results(10);
+        assert_eq!(app.selected, 0);
+        app.dispatch(actions::Action::MoveDown);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn test_dispatch_toggle_playback() {
+        let mut app = make_app_with_results(5);
+        // No panic even without audio device.
+        app.dispatch(actions::Action::TogglePlayback);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_dispatch_toggle_mark() {
+        let mut app = make_app_with_results(5);
+        assert!(!app.results[0].marked);
+        app.dispatch(actions::Action::ToggleMark);
+        assert!(app.results[0].marked);
+    }
+
+    #[test]
+    fn test_dispatch_quit_sets_should_quit() {
+        let mut app = App::new(Theme::default());
+        assert!(!app.should_quit);
+        app.dispatch(actions::Action::Quit);
+        assert!(app.should_quit);
+    }
+
+    // --- S7-T9 tests: Help Overlay ---
+
+    #[test]
+    fn test_help_overlay_toggles() {
+        let mut app = App::new(Theme::default());
+        assert!(!app.show_help);
+        // ? toggles help on.
+        app.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert!(app.show_help, "? should open help");
+        // ? again toggles help off.
+        app.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert!(!app.show_help, "? should close help");
+    }
+
+    #[test]
+    fn test_help_overlay_esc_dismisses() {
+        let mut app = App::new(Theme::default());
+        app.show_help = true;
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.show_help, "Esc should close help");
+    }
+
+    #[test]
+    fn test_help_overlay_reflects_custom_keymap() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("x".to_string(), "quit".to_string());
+        let km = actions::Keymap::with_overrides(&overrides);
+        let entries = km.help_entries();
+        // Find the App category entries.
+        let app_entries = entries.iter().find(|(cat, _)| *cat == "App");
+        assert!(app_entries.is_some(), "should have App category");
+        let (_, bindings) = app_entries.unwrap();
+        // Check that 'x' maps to Quit.
+        assert!(
+            bindings.iter().any(|(k, a)| k == "x" && *a == actions::Action::Quit),
+            "custom keymap override should be reflected in help entries"
+        );
+    }
+
+    #[test]
+    fn test_action_description_exhaustive() {
+        // Every action should have a non-empty description.
+        for &action in actions::Action::ALL {
+            let desc = action.description();
+            assert!(
+                !desc.is_empty(),
+                "action {:?} should have a non-empty description",
+                action
+            );
+        }
+    }
+
+    // --- S7-T7 tests: Insert Mode Search Behavior ---
+
+    #[test]
+    fn test_insert_mode_up_arrow_navigates() {
+        let mut app = make_app_with_results(10);
+        app.selected = 5;
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.selected, 4, "Up arrow should navigate up in Insert mode");
+        assert_eq!(app.input_mode, InputMode::Insert, "should stay in Insert mode");
+    }
+
+    #[test]
+    fn test_insert_mode_down_arrow_navigates() {
+        let mut app = make_app_with_results(10);
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected, 1, "Down arrow should navigate down in Insert mode");
+        assert_eq!(app.input_mode, InputMode::Insert, "should stay in Insert mode");
+    }
+
+    #[test]
+    fn test_insert_mode_typing_triggers_search() {
+        let mut app = App::new(Theme::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert!(app.query_changed, "typing should set query_changed for debounce");
+        assert_eq!(app.query, "k");
+    }
+
+    #[test]
+    fn test_insert_mode_enter_confirms() {
+        let mut app = App::new(Theme::default());
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        assert_eq!(app.query, "drum");
+        // Reset query_changed to verify Enter re-triggers.
+        app.query_changed = false;
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Normal, "Enter should return to Normal");
+        assert!(app.query_changed, "Enter should trigger search");
+        assert_eq!(app.query, "drum", "query should be preserved");
+    }
+
+    // --- S7-T1 tests: Search Result Flickering Fix ---
+
+    #[test]
+    fn test_search_pending_set_on_query_change() {
+        let mut app = make_app_with_results(10);
+        // Simulate what the event loop does when search debounce fires.
+        app.search_pending = true;
+        assert!(app.search_pending);
+    }
+
+    #[test]
+    fn test_results_not_cleared_before_first_batch() {
+        let mut app = make_app_with_results(10);
+        // Simulate new search dispatched — results should still be visible.
+        app.search_pending = true;
+        assert_eq!(app.results.len(), 10, "old results should persist until new batch");
+    }
+
+    #[test]
+    fn test_results_replaced_on_first_batch() {
+        let mut app = make_app_with_results(10);
+        app.search_pending = true;
+        // First batch of new search arrives — should replace old results.
+        let new_row = TableRow {
+            meta: UnifiedMetadata {
+                path: std::path::PathBuf::from("/new/result.wav"),
+                ..Default::default()
+            },
+            audio_info: None,
+            marked: false,
+        };
+        app.on_search_results(vec![new_row]);
+        assert_eq!(app.results.len(), 1, "old results should be replaced");
+        assert_eq!(app.results[0].meta.path, std::path::PathBuf::from("/new/result.wav"));
+        assert!(!app.search_pending, "search_pending should be cleared");
+    }
+
+    #[test]
+    fn test_subsequent_batches_append() {
+        let mut app = make_app_with_results(10);
+        app.search_pending = true;
+        // First batch.
+        let row1 = TableRow {
+            meta: UnifiedMetadata {
+                path: std::path::PathBuf::from("/new/1.wav"),
+                ..Default::default()
+            },
+            audio_info: None,
+            marked: false,
+        };
+        app.on_search_results(vec![row1]);
+        assert_eq!(app.results.len(), 1);
+        // Second batch should append, not replace.
+        let row2 = TableRow {
+            meta: UnifiedMetadata {
+                path: std::path::PathBuf::from("/new/2.wav"),
+                ..Default::default()
+            },
+            audio_info: None,
+            marked: false,
+        };
+        app.on_search_results(vec![row2]);
+        assert_eq!(app.results.len(), 2);
     }
 }

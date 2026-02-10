@@ -3,6 +3,7 @@
 //! Config is loaded from the platform config directory. CLI flags override
 //! config values. Missing or malformed file returns sensible defaults.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,8 @@ pub struct Config {
     pub default_sort: Option<String>,
     /// Default sort order: "asc" or "desc".
     pub default_sort_order: Option<String>,
+    /// Normal mode key-to-action overrides (key name → action name).
+    pub keymap: Option<HashMap<String, String>>,
 }
 
 /// Default column list for the metadata table.
@@ -232,6 +235,7 @@ mod tests {
             marks_file: Some("/tmp/marks.csv".to_string()),
             default_sort: None,
             default_sort_order: None,
+            keymap: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
@@ -259,6 +263,26 @@ mod tests {
         let config = load_config_from(&path);
         assert_eq!(config.theme.as_deref(), Some("soundminer"));
         assert!(config.columns.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_config_keymap_toml() {
+        let dir = std::env::temp_dir().join("riffgrep_test_config_keymap");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("config.toml");
+        let toml_str = r#"
+[keymap]
+"j" = "move_up"
+"k" = "move_down"
+"Space" = "toggle_mark"
+"#;
+        std::fs::write(&path, toml_str).unwrap();
+        let config = load_config_from(&path);
+        let km = config.keymap.unwrap();
+        assert_eq!(km.get("j").unwrap(), "move_up");
+        assert_eq!(km.get("k").unwrap(), "move_down");
+        assert_eq!(km.get("Space").unwrap(), "toggle_mark");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

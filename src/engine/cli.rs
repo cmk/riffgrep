@@ -111,6 +111,36 @@ pub struct Opts {
     pub paths: Vec<PathBuf>,
 }
 
+const HELP_FOOTER: &str = "\
+EXAMPLES:
+  riffgrep                             Launch TUI browser
+  riffgrep --vendor \"Mars\"             Search by vendor (headless)
+  riffgrep --index ~/Samples           Build/update search index
+  riffgrep --no-db ~/Samples           Search without database
+  riffgrep --db-stats                  Show index health
+  riffgrep --theme ableton             Launch TUI with theme
+ .
+TUI KEYS (Normal mode):
+  i, /    Enter search mode       Esc, Ctrl-C  Exit search mode
+  j/k     Navigate rows           h/l          Navigate columns
+  o/O     Sort ascending/desc     Space        Play/pause
+  s       Stop playback           m            Toggle mark
+  M       Clear all marks         f            Filter to marked
+  g/G     Jump to top/bottom      q            Quit
+  ?       Show keybinding help
+ .
+CONFIG:
+  ~/Library/Application Support/riffgrep/config.toml";
+
+/// Build the CLI parser with rich help output.
+pub fn opts_with_help() -> bpaf::OptionParser<Opts> {
+    opts().header(
+        "riffgrep — high-performance WAV sample library search\n\
+         Search, browse, and play WAV files with BEXT/RIFF/ID3 metadata.",
+    )
+    .footer(HELP_FOOTER)
+}
+
 impl Opts {
     /// Determine the output mode from flags.
     pub fn output_mode(&self) -> OutputMode {
@@ -134,5 +164,52 @@ impl Opts {
             || self.description.is_some()
             || self.bpm.is_some()
             || self.key.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn help_text() -> String {
+        opts_with_help()
+            .run_inner(&["--help"])
+            .unwrap_err()
+            .unwrap_stdout()
+    }
+
+    #[test]
+    fn test_help_contains_examples_section() {
+        let help = help_text();
+        assert!(
+            help.contains("EXAMPLES:"),
+            "help should contain EXAMPLES section:\n{help}"
+        );
+        assert!(
+            help.contains("Launch TUI browser"),
+            "help should show TUI launch example:\n{help}"
+        );
+    }
+
+    #[test]
+    fn test_help_contains_tui_keys_section() {
+        let help = help_text();
+        assert!(
+            help.contains("TUI KEYS"),
+            "help should contain TUI KEYS section:\n{help}"
+        );
+        assert!(
+            help.contains("Navigate rows"),
+            "help should show key descriptions:\n{help}"
+        );
+    }
+
+    #[test]
+    fn test_help_contains_config_path() {
+        let help = help_text();
+        assert!(
+            help.contains("CONFIG:"),
+            "help should contain CONFIG section:\n{help}"
+        );
     }
 }

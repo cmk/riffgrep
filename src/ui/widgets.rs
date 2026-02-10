@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::engine::playback::PlaybackState;
 
-use super::App;
+use super::{App, InputMode};
 use super::theme::Theme;
 
 /// Render the search prompt bar.
@@ -43,16 +43,29 @@ pub fn render_search_prompt(app: &App, area: Rect, buf: &mut Buffer) {
     let status_width = status.len() as u16;
     let query_max_width = inner.width.saturating_sub(status_width + 1);
 
+    // Mode indicator prefix.
+    let (mode_label, mode_style) = match app.input_mode {
+        InputMode::Normal => ("[NORMAL] ", theme.mode_normal),
+        InputMode::Insert => ("[SEARCH] ", theme.mode_insert),
+    };
+    let mode_span = Span::styled(mode_label, mode_style);
+    let mode_width = mode_label.len() as u16;
+
     // Render query text (truncated if too long).
-    let display_query: String = if app.query.len() as u16 > query_max_width {
-        app.query.chars().take(query_max_width as usize).collect()
+    let effective_max = query_max_width.saturating_sub(mode_width);
+    let display_query: String = if app.query.len() as u16 > effective_max {
+        app.query.chars().take(effective_max as usize).collect()
     } else {
         app.query.clone()
     };
 
     let query_span = Span::styled(&display_query, theme.search_text);
-    let cursor_span = Span::styled("_", theme.search_text);
-    let line = Line::from(vec![query_span, cursor_span]);
+    // Show cursor only in Insert mode.
+    let mut spans = vec![mode_span, query_span];
+    if app.input_mode == InputMode::Insert {
+        spans.push(Span::styled("\u{2588}", theme.search_text)); // ▊ block cursor
+    }
+    let line = Line::from(spans);
     let para = Paragraph::new(line);
     para.render(inner, buf);
 
@@ -893,6 +906,84 @@ fn resample(data: &[u8], target_len: usize) -> Vec<u8> {
     }
 
     result
+}
+
+/// Render the keybinding help overlay centered on the screen.
+pub fn render_help_overlay(app: &App, area: Rect, buf: &mut Buffer) {
+    use ratatui::style::Modifier;
+
+    let theme = &app.theme;
+
+    // Calculate centered overlay area (80% width, 80% height, min 40x20).
+    let overlay_w = (area.width * 4 / 5).max(40).min(area.width);
+    let overlay_h = (area.height * 4 / 5).max(20).min(area.height);
+    let x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
+    let overlay_area = Rect::new(x, y, overlay_w, overlay_h);
+
+    // Clear the overlay area.
+    for row in overlay_area.y..overlay_area.y + overlay_area.height {
+        for col in overlay_area.x..overlay_area.x + overlay_area.width {
+            if let Some(cell) = buf.cell_mut((col, row)) {
+                cell.reset();
+            }
+        }
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border)
+        .title(" Keybindings (? to close) ");
+
+    let inner = block.inner(overlay_area);
+    block.render(overlay_area, buf);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    // Build help lines from keymap.
+    let entries = app.keymap.help_entries();
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    for (category, bindings) in &entries {
+        // Category header.
+        lines.push(Line::from(Span::styled(
+            format!("  {category}"),
+            Style::default()
+                .fg(theme.border.fg.unwrap_or(ratatui::style::Color::White))
+                .add_modifier(Modifier::BOLD),
+        )));
+
+        // Deduplicate: group keys by action.
+        let mut action_keys: Vec<(super::actions::Action, Vec<&str>)> = Vec::new();
+        for (key_str, action) in bindings {
+            if let Some(entry) = action_keys.iter_mut().find(|(a, _)| a == action) {
+                entry.1.push(key_str);
+            } else {
+                action_keys.push((*action, vec![key_str]));
+            }
+        }
+
+        for (action, keys) in &action_keys {
+            let keys_str = keys.join(", ");
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("    {keys_str:<16}"),
+                    theme.metadata_key,
+                ),
+                Span::styled(
+                    action.description().to_string(),
+                    theme.metadata_value,
+                ),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+    }
+
+    let paragraph = Paragraph::new(lines);
+    paragraph.render(inner, buf);
 }
 
 #[cfg(test)]
@@ -1904,5 +1995,89 @@ mod tests {
         assert_eq!(column_value(&row, "bit_depth"), "24");
         assert_eq!(column_value(&row, "channels"), "2");
         assert_eq!(column_value(&row, "rating"), "***");
+    }
+
+    // --- S7-T4 tests: Mode indicator in search prompt ---
+
+    #[test]
+    fn test_mode_indicator_normal() {
+        let app = App::new(Theme::default());
+        assert_eq!(app.input_mode, super::super::InputMode::Normal);
+        let backend = TestBackend::new(60, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_search_prompt(&app, f.area(), f.buffer_mut());
+            })
+            .unwrap();
+        let out = buffer_to_string(terminal.backend().buffer());
+        assert!(out.contains("[NORMAL]"), "should show [NORMAL] indicator: {out}");
+    }
+
+    #[test]
+    fn test_mode_indicator_insert() {
+        let mut app = App::new(Theme::default());
+        app.input_mode = super::super::InputMode::Insert;
+        let backend = TestBackend::new(60, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_search_prompt(&app, f.area(), f.buffer_mut());
+            })
+            .unwrap();
+        let out = buffer_to_string(terminal.backend().buffer());
+        assert!(out.contains("[SEARCH]"), "should show [SEARCH] indicator: {out}");
+    }
+
+    #[test]
+    fn test_cursor_visible_in_insert_only() {
+        // Normal mode: no block cursor.
+        let app = App::new(Theme::default());
+        let backend = TestBackend::new(60, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_search_prompt(&app, f.area(), f.buffer_mut());
+            })
+            .unwrap();
+        let normal_out = buffer_to_string(terminal.backend().buffer());
+        assert!(!normal_out.contains('\u{2588}'), "Normal mode should not show block cursor");
+
+        // Insert mode: block cursor visible.
+        let mut app2 = App::new(Theme::default());
+        app2.input_mode = super::super::InputMode::Insert;
+        let backend2 = TestBackend::new(60, 3);
+        let mut terminal2 = Terminal::new(backend2).unwrap();
+        terminal2
+            .draw(|f| {
+                render_search_prompt(&app2, f.area(), f.buffer_mut());
+            })
+            .unwrap();
+        let insert_out = buffer_to_string(terminal2.backend().buffer());
+        assert!(insert_out.contains('\u{2588}'), "Insert mode should show block cursor");
+    }
+
+    #[test]
+    fn test_all_themes_have_mode_styles() {
+        for theme in [Theme::telescope(), Theme::ableton(), Theme::soundminer()] {
+            assert_ne!(
+                theme.mode_normal,
+                Style::default(),
+                "{} mode_normal should be styled",
+                theme.name,
+            );
+            assert_ne!(
+                theme.mode_insert,
+                Style::default(),
+                "{} mode_insert should be styled",
+                theme.name,
+            );
+            // Normal and insert should be visually distinct.
+            assert_ne!(
+                theme.mode_normal, theme.mode_insert,
+                "{} mode_normal and mode_insert should differ",
+                theme.name,
+            );
+        }
     }
 }

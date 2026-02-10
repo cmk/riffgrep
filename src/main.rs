@@ -10,7 +10,7 @@ mod ui;
 mod util;
 
 fn main() {
-    let opts = engine::cli::opts().run();
+    let opts = engine::cli::opts_with_help().run();
 
     if should_launch_tui(&opts) {
         let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");

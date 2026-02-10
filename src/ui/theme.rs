@@ -41,6 +41,10 @@ pub struct Theme {
     pub table_column_highlight: Style,
     /// Selected column cell background color (subtle tint for data rows).
     pub table_column_bg: Color,
+    /// Normal mode indicator style.
+    pub mode_normal: Style,
+    /// Insert (search) mode indicator style.
+    pub mode_insert: Style,
 }
 
 impl Theme {
@@ -76,6 +80,12 @@ impl Theme {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             table_column_bg: Color::Rgb(20, 40, 50),
+            mode_normal: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            mode_insert: Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         }
     }
 
@@ -111,6 +121,12 @@ impl Theme {
                 .fg(Color::Rgb(255, 153, 0))
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             table_column_bg: Color::Rgb(50, 35, 10),
+            mode_normal: Style::default()
+                .fg(Color::Rgb(255, 153, 0))
+                .add_modifier(Modifier::BOLD),
+            mode_insert: Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         }
     }
 
@@ -146,6 +162,12 @@ impl Theme {
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             table_column_bg: Color::Rgb(15, 40, 15),
+            mode_normal: Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+            mode_insert: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         }
     }
 
