@@ -1716,6 +1716,16 @@ mod tests {
     }
 
     #[test]
+    fn test_help_overlay_toggles_without_shift() {
+        let mut app = App::new(Theme::default());
+        // Some terminals send ? without SHIFT modifier — should still work.
+        app.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(app.show_help, "? without SHIFT should open help");
+        app.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(!app.show_help, "? without SHIFT should close help");
+    }
+
+    #[test]
     fn test_help_overlay_esc_dismisses() {
         let mut app = App::new(Theme::default());
         app.show_help = true;
