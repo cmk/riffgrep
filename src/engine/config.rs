@@ -20,6 +20,10 @@ pub struct Config {
     pub theme: Option<String>,
     /// Path to the marks CSV file (filesystem mode).
     pub marks_file: Option<String>,
+    /// Default sort column name.
+    pub default_sort: Option<String>,
+    /// Default sort order: "asc" or "desc".
+    pub default_sort_order: Option<String>,
 }
 
 /// Default column list for the metadata table.
@@ -226,6 +230,8 @@ mod tests {
             peak_channel: Some("mix".to_string()),
             theme: Some("ableton".to_string()),
             marks_file: Some("/tmp/marks.csv".to_string()),
+            default_sort: None,
+            default_sort_order: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();

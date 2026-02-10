@@ -781,22 +781,23 @@ pub fn build_sql(query: &SearchQuery) -> (String, Vec<SqlValue>) {
         );
     }
 
+    let mut conditions: Vec<String> = Vec::new();
+    let mut values: Vec<SqlValue> = Vec::new();
+    let mut uses_fts = false;
+
     // Free-text: FTS5 MATCH across all indexed columns.
     if let Some(text) = &query.freetext {
         if !text.is_empty() {
             let fts_escaped = format!("\"{}\"", text.replace('"', "\"\""));
-            let values = vec![SqlValue::Text(fts_escaped)];
-            let sql = "SELECT * FROM samples WHERE samples.id IN \
-                        (SELECT rowid FROM samples_fts WHERE samples_fts MATCH ?1) \
-                        ORDER BY (SELECT rank FROM samples_fts WHERE samples_fts.rowid = samples.id), path"
-                .to_string();
-            return (sql, values);
+            let idx = values.len();
+            values.push(SqlValue::Text(fts_escaped));
+            uses_fts = true;
+            conditions.push(format!(
+                "samples.id IN (SELECT rowid FROM samples_fts WHERE samples_fts MATCH ?{})",
+                idx + 1,
+            ));
         }
     }
-
-    let mut conditions: Vec<String> = Vec::new();
-    let mut values: Vec<SqlValue> = Vec::new();
-    let mut uses_fts = false;
 
     // Collect field conditions.
     let fields: &[(&str, &Option<Pattern>)] = &[
@@ -854,9 +855,12 @@ pub fn build_sql(query: &SearchQuery) -> (String, Vec<SqlValue>) {
 
     // Check if we can use FTS5 for acceleration.
     // Use FTS5 when there's exactly one substring condition on an FTS-indexed column
-    // and AND mode. For simplicity, we use LIKE for multi-field queries since FTS5
-    // trigram MATCH doesn't do per-column filtering directly.
-    if conditions.len() == 1 && matches!(query.match_mode, MatchMode::And) && query.bpm.is_none() {
+    // and AND mode, with no freetext or column_filters present. For simplicity, we use
+    // LIKE for multi-field queries since FTS5 trigram MATCH doesn't do per-column
+    // filtering directly.
+    if conditions.len() == 1 && matches!(query.match_mode, MatchMode::And)
+        && query.bpm.is_none() && !uses_fts && query.column_filters.is_empty()
+    {
         // Check if this is a single-field substring query on an FTS column
         if let Some(single_field) = get_single_fts_field(query) {
             if let Some(Pattern::Substring(s)) = single_field.1 {
@@ -873,6 +877,50 @@ pub fn build_sql(query: &SearchQuery) -> (String, Vec<SqlValue>) {
                     "samples.id IN (SELECT rowid FROM samples_fts WHERE samples_fts MATCH ?1) AND {} LIKE ?2 ESCAPE '\\'",
                     single_field.0,
                 ));
+            }
+        }
+    }
+
+    // Column filters: each filter ANDs with existing conditions.
+    for filter in &query.column_filters {
+        let is_numeric = super::NUMERIC_COLUMNS.contains(&filter.field.as_str());
+        let col = &filter.field;
+
+        // Validate column exists in schema (only known columns).
+        if super::config::column_def(col).is_none() {
+            continue;
+        }
+
+        if filter.values.len() == 1 {
+            let idx = values.len();
+            if is_numeric {
+                if let Ok(n) = filter.values[0].parse::<i64>() {
+                    values.push(SqlValue::Int(n));
+                    conditions.push(format!("{col} = ?{}", idx + 1));
+                }
+            } else {
+                let escaped = escape_like(&filter.values[0]);
+                values.push(SqlValue::Text(format!("%{escaped}%")));
+                conditions.push(format!("{col} LIKE ?{} ESCAPE '\\'", idx + 1));
+            }
+        } else {
+            // Multi-value: OR within the filter.
+            let mut or_parts = Vec::new();
+            for v in &filter.values {
+                let idx = values.len();
+                if is_numeric {
+                    if let Ok(n) = v.parse::<i64>() {
+                        values.push(SqlValue::Int(n));
+                        or_parts.push(format!("{col} = ?{}", idx + 1));
+                    }
+                } else {
+                    let escaped = escape_like(v);
+                    values.push(SqlValue::Text(format!("%{escaped}%")));
+                    or_parts.push(format!("{col} LIKE ?{} ESCAPE '\\'", idx + 1));
+                }
+            }
+            if !or_parts.is_empty() {
+                conditions.push(format!("({})", or_parts.join(" OR ")));
             }
         }
     }
@@ -2398,5 +2446,127 @@ mod tests {
         assert_eq!(version, 4);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- S6-T5 tests: SQLite columnar filter ---
+
+    #[test]
+    fn test_column_filter_text_generates_like() {
+        let query = SearchQuery {
+            column_filters: vec![super::super::ColumnFilter {
+                field: "vendor".to_string(),
+                values: vec!["Mars".to_string()],
+            }],
+            ..Default::default()
+        };
+        let (sql, values) = build_sql(&query);
+        assert!(sql.contains("vendor LIKE"), "should use LIKE for text: {sql}");
+        assert!(!values.is_empty());
+    }
+
+    #[test]
+    fn test_column_filter_bpm_generates_equals() {
+        let query = SearchQuery {
+            column_filters: vec![super::super::ColumnFilter {
+                field: "bpm".to_string(),
+                values: vec!["120".to_string()],
+            }],
+            ..Default::default()
+        };
+        let (sql, _) = build_sql(&query);
+        assert!(sql.contains("bpm = ?"), "should use = for numeric: {sql}");
+    }
+
+    #[test]
+    fn test_column_filter_multi_value_generates_or() {
+        let query = SearchQuery {
+            column_filters: vec![super::super::ColumnFilter {
+                field: "category".to_string(),
+                values: vec!["LOOP".to_string(), "SFX".to_string()],
+            }],
+            ..Default::default()
+        };
+        let (sql, _) = build_sql(&query);
+        assert!(sql.contains(" OR "), "multi-value should use OR: {sql}");
+    }
+
+    #[test]
+    fn test_column_filter_combined_with_freetext() {
+        let query = SearchQuery {
+            freetext: Some("kick".to_string()),
+            column_filters: vec![super::super::ColumnFilter {
+                field: "vendor".to_string(),
+                values: vec!["Mars".to_string()],
+            }],
+            ..Default::default()
+        };
+        let (sql, _) = build_sql(&query);
+        assert!(sql.contains("samples_fts MATCH"), "should use FTS for freetext: {sql}");
+        assert!(sql.contains("vendor LIKE"), "should also filter vendor: {sql}");
+        assert!(sql.contains(" AND "), "should AND freetext with filter: {sql}");
+    }
+
+    #[test]
+    fn test_column_filter_unknown_field_ignored() {
+        let query = SearchQuery {
+            column_filters: vec![super::super::ColumnFilter {
+                field: "nonexistent".to_string(),
+                values: vec!["foo".to_string()],
+            }],
+            ..Default::default()
+        };
+        let (sql, values) = build_sql(&query);
+        // Unknown field should be ignored → empty query
+        assert!(!sql.contains("nonexistent"), "unknown field should be skipped: {sql}");
+    }
+
+    #[test]
+    fn test_column_filter_sqlite_e2e() {
+        let db = Database::open_in_memory().unwrap();
+        let mut meta1 = make_test_meta("/test/mars_loop.wav", "Samples From Mars");
+        meta1.category = "LOOP".to_string();
+        let mut meta2 = make_test_meta("/test/mars_sfx.wav", "Samples From Mars");
+        meta2.category = "SFX".to_string();
+        let meta3 = make_test_meta("/test/splice.wav", "Splice");
+
+        db.insert_batch(&[
+            (meta1, 100, None),
+            (meta2, 100, None),
+            (meta3, 100, None),
+        ]).unwrap();
+
+        // Filter by vendor=Mars only.
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let query = SearchQuery {
+            column_filters: vec![super::super::ColumnFilter {
+                field: "vendor".to_string(),
+                values: vec!["Mars".to_string()],
+            }],
+            ..Default::default()
+        };
+        db.search(&query, &tx);
+        drop(tx);
+        let results: Vec<_> = rx.iter().collect();
+        assert_eq!(results.len(), 2, "should find 2 Mars results");
+
+        // Filter by vendor=Mars AND category=LOOP.
+        let (tx2, rx2) = crossbeam_channel::bounded(64);
+        let query2 = SearchQuery {
+            column_filters: vec![
+                super::super::ColumnFilter {
+                    field: "vendor".to_string(),
+                    values: vec!["Mars".to_string()],
+                },
+                super::super::ColumnFilter {
+                    field: "category".to_string(),
+                    values: vec!["LOOP".to_string()],
+                },
+            ],
+            ..Default::default()
+        };
+        db.search(&query2, &tx2);
+        drop(tx2);
+        let results2: Vec<_> = rx2.iter().collect();
+        assert_eq!(results2.len(), 1, "should find 1 Mars LOOP result");
     }
 }

@@ -471,8 +471,20 @@ pub fn render_metadata_table(
     let mut x = area.x;
     for (i, def) in defs.iter().enumerate() {
         let w = col_widths[i];
-        let label: String = def.label.chars().take(w).collect();
-        buf.set_string(x, area.y, &label, theme.table_header);
+        // Append sort indicator if this column is sorted.
+        let sort_indicator = if app.sort_column.as_deref() == Some(def.key) {
+            if app.sort_ascending { " \u{25B2}" } else { " \u{25BC}" }
+        } else {
+            ""
+        };
+        let full_label = format!("{}{}", def.label, sort_indicator);
+        let label: String = full_label.chars().take(w).collect();
+        let style = if i == app.selected_column {
+            theme.table_column_highlight
+        } else {
+            theme.table_header
+        };
+        buf.set_string(x, area.y, &label, style);
         x += w as u16;
         if x >= area.x + area.width {
             break;
@@ -500,14 +512,14 @@ pub fn render_metadata_table(
         let row = &app.results[idx];
         let is_selected = idx == app.selected;
 
-        // Style precedence: selected > marked > visited > normal.
-        let is_visited = app.visited.contains(&row.meta.path);
+        // Style precedence: selected > marked > played > normal.
+        let is_played = app.played.contains(&row.meta.path);
         let style = if is_selected {
             theme.results_selected
         } else if row.marked {
             theme.table_marked
-        } else if is_visited {
-            theme.table_visited
+        } else if is_played {
+            theme.table_played
         } else {
             theme.results_normal
         };
@@ -546,7 +558,7 @@ pub fn render_metadata_table(
 }
 
 /// Extract a display value from a TableRow for a given column key.
-fn column_value(row: &crate::engine::TableRow, key: &str) -> String {
+pub fn column_value(row: &crate::engine::TableRow, key: &str) -> String {
     match key {
         "name" => row
             .meta

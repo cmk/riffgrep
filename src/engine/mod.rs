@@ -179,6 +179,59 @@ fn merge_metadata(path: &Path, bext: BextFields, info: InfoFields) -> UnifiedMet
 
 // --- Search Query Matching ---
 
+/// A columnar filter parsed from `@field=value` syntax.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnFilter {
+    /// The field name (e.g. "vendor", "bpm").
+    pub field: String,
+    /// One or more values to match (OR within a single filter).
+    pub values: Vec<String>,
+}
+
+/// Parse `@field=value` and `@field=[v1,v2]` tokens from search input.
+///
+/// Returns `(remaining_freetext, filters)`. Invalid field names are left in freetext.
+/// Empty values are ignored.
+pub fn parse_column_filters(input: &str) -> (String, Vec<ColumnFilter>) {
+    let mut filters = Vec::new();
+    let mut freetext_parts = Vec::new();
+
+    for token in input.split_whitespace() {
+        if let Some(rest) = token.strip_prefix('@') {
+            if let Some((field, value_str)) = rest.split_once('=') {
+                // Validate field name.
+                if !field.is_empty()
+                    && config::AVAILABLE_COLUMNS.contains(&field)
+                    && !value_str.is_empty()
+                {
+                    let values = if value_str.starts_with('[') && value_str.ends_with(']') {
+                        // Multi-value: @field=[v1,v2]
+                        let inner = &value_str[1..value_str.len() - 1];
+                        inner
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                    } else {
+                        vec![value_str.to_string()]
+                    };
+
+                    if !values.is_empty() {
+                        filters.push(ColumnFilter {
+                            field: field.to_string(),
+                            values,
+                        });
+                        continue;
+                    }
+                }
+            }
+        }
+        freetext_parts.push(token);
+    }
+
+    (freetext_parts.join(" "), filters)
+}
+
 /// A text pattern for field matching.
 #[derive(Debug, Clone)]
 pub enum Pattern {
@@ -260,6 +313,8 @@ pub struct SearchQuery {
     pub match_mode: MatchMode,
     /// Free-text search across all text fields (for TUI search box).
     pub freetext: Option<String>,
+    /// Columnar filters from `@field=value` syntax.
+    pub column_filters: Vec<ColumnFilter>,
 }
 
 impl SearchQuery {
@@ -273,6 +328,7 @@ impl SearchQuery {
             && self.bpm.is_none()
             && self.key.is_none()
             && self.freetext_is_empty()
+            && self.column_filters.is_empty()
     }
 
     /// Returns true if freetext is None or empty string.
@@ -301,7 +357,9 @@ impl SearchQuery {
                     || meta.comment.to_ascii_lowercase().contains(&lower)
                     || meta.key.to_ascii_lowercase().contains(&lower)
                     || meta.path.to_string_lossy().to_ascii_lowercase().contains(&lower);
-                return any_match;
+                if !any_match {
+                    return false;
+                }
             }
         }
 
@@ -318,16 +376,78 @@ impl SearchQuery {
         ];
 
         let active: Vec<bool> = checks.into_iter().flatten().collect();
-        if active.is_empty() {
-            return true;
+        if !active.is_empty() {
+            let field_match = match self.match_mode {
+                MatchMode::And => active.iter().all(|&b| b),
+                MatchMode::Or => active.iter().any(|&b| b),
+            };
+            if !field_match {
+                return false;
+            }
         }
 
-        match self.match_mode {
-            MatchMode::And => active.iter().all(|&b| b),
-            MatchMode::Or => active.iter().any(|&b| b),
+        // Column filters: each filter must match (AND semantics).
+        for filter in &self.column_filters {
+            let value = meta_field_value(meta, &filter.field);
+            let is_numeric = NUMERIC_COLUMNS.contains(&filter.field.as_str());
+
+            let filter_match = filter.values.iter().any(|fv| {
+                if is_numeric {
+                    // Exact numeric comparison.
+                    value == *fv
+                } else {
+                    // Case-insensitive substring.
+                    value.to_ascii_lowercase().contains(&fv.to_ascii_lowercase())
+                }
+            });
+            if !filter_match {
+                return false;
+            }
         }
+
+        true
     }
 }
+
+/// Extract a metadata field value by column name (for filesystem columnar filtering).
+pub fn meta_field_value(meta: &UnifiedMetadata, field: &str) -> String {
+    match field {
+        "name" => meta
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        "vendor" => meta.vendor.clone(),
+        "library" => meta.library.clone(),
+        "category" => meta.category.clone(),
+        "sound_id" => meta.sound_id.clone(),
+        "description" => meta.description.clone(),
+        "comment" => meta.comment.clone(),
+        "key" => meta.key.clone(),
+        "bpm" => meta
+            .bpm
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        "rating" => meta.rating.clone(),
+        "subcategory" => meta.subcategory.clone(),
+        "genre_id" => meta.genre_id.clone(),
+        "usage_id" => meta.usage_id.clone(),
+        "date" => meta.date.clone(),
+        "take" => meta.take.clone(),
+        "track" => meta.track.clone(),
+        "item" => meta.item.clone(),
+        "parent_folder" => meta
+            .path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// Numeric columns for exact-match comparison in columnar filters.
+const NUMERIC_COLUMNS: &[&str] = &["bpm", "sample_rate", "bit_depth", "channels"];
 
 /// Build a [`Pattern`] from a string and a regex flag.
 pub fn make_pattern(s: &str, is_regex: bool) -> Result<Pattern, regex::Error> {
@@ -361,6 +481,7 @@ pub fn build_query(opts: &cli::Opts) -> anyhow::Result<SearchQuery> {
             MatchMode::And
         },
         freetext: None,
+        column_filters: Vec::new(),
     })
 }
 
@@ -1045,6 +1166,167 @@ mod tests {
             ..Default::default()
         };
         assert!(!query.matches(&meta));
+    }
+
+    // --- S6-T4 tests: Columnar filter parser ---
+
+    #[test]
+    fn test_parse_single_filter() {
+        let (freetext, filters) = parse_column_filters("@vendor=Mars");
+        assert_eq!(freetext, "");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].field, "vendor");
+        assert_eq!(filters[0].values, vec!["Mars"]);
+    }
+
+    #[test]
+    fn test_parse_multi_value_filter() {
+        let (freetext, filters) = parse_column_filters("@bpm=[120,125]");
+        assert_eq!(freetext, "");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].field, "bpm");
+        assert_eq!(filters[0].values, vec!["120", "125"]);
+    }
+
+    #[test]
+    fn test_parse_mixed_freetext_and_filter() {
+        let (freetext, filters) = parse_column_filters("kick @vendor=Mars");
+        assert_eq!(freetext, "kick");
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].field, "vendor");
+        assert_eq!(filters[0].values, vec!["Mars"]);
+    }
+
+    #[test]
+    fn test_parse_multiple_filters() {
+        let (freetext, filters) = parse_column_filters("@vendor=Mars @category=LOOP");
+        assert_eq!(freetext, "");
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].field, "vendor");
+        assert_eq!(filters[1].field, "category");
+    }
+
+    #[test]
+    fn test_parse_invalid_field_stays_freetext() {
+        let (freetext, filters) = parse_column_filters("@foo=bar");
+        assert_eq!(freetext, "@foo=bar");
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn test_parse_no_filters() {
+        let (freetext, filters) = parse_column_filters("just some text");
+        assert_eq!(freetext, "just some text");
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn test_parse_empty_value_ignored() {
+        let (freetext, filters) = parse_column_filters("@vendor=");
+        assert_eq!(freetext, "@vendor=");
+        assert!(filters.is_empty());
+    }
+
+    // --- S6-T6 tests: Filesystem columnar filter ---
+
+    #[test]
+    fn test_column_filter_matches_vendor() {
+        let mut meta = UnifiedMetadata::default();
+        meta.vendor = "Samples From Mars".to_string();
+        meta.path = PathBuf::from("/test/file.wav");
+
+        let query = SearchQuery {
+            column_filters: vec![ColumnFilter {
+                field: "vendor".to_string(),
+                values: vec!["Mars".to_string()],
+            }],
+            ..Default::default()
+        };
+        assert!(query.matches(&meta));
+    }
+
+    #[test]
+    fn test_column_filter_case_insensitive() {
+        let mut meta = UnifiedMetadata::default();
+        meta.vendor = "Samples From Mars".to_string();
+        meta.path = PathBuf::from("/test/file.wav");
+
+        let query = SearchQuery {
+            column_filters: vec![ColumnFilter {
+                field: "vendor".to_string(),
+                values: vec!["mars".to_string()],
+            }],
+            ..Default::default()
+        };
+        assert!(query.matches(&meta), "text filter should be case-insensitive");
+    }
+
+    #[test]
+    fn test_column_filter_bpm_exact() {
+        let mut meta = UnifiedMetadata::default();
+        meta.bpm = Some(120);
+        meta.path = PathBuf::from("/test/file.wav");
+
+        let query_match = SearchQuery {
+            column_filters: vec![ColumnFilter {
+                field: "bpm".to_string(),
+                values: vec!["120".to_string()],
+            }],
+            ..Default::default()
+        };
+        assert!(query_match.matches(&meta));
+
+        let query_no = SearchQuery {
+            column_filters: vec![ColumnFilter {
+                field: "bpm".to_string(),
+                values: vec!["121".to_string()],
+            }],
+            ..Default::default()
+        };
+        assert!(!query_no.matches(&meta));
+    }
+
+    #[test]
+    fn test_column_filter_multi_value_or() {
+        let mut meta = UnifiedMetadata::default();
+        meta.category = "LOOP".to_string();
+        meta.path = PathBuf::from("/test/file.wav");
+
+        let query = SearchQuery {
+            column_filters: vec![ColumnFilter {
+                field: "category".to_string(),
+                values: vec!["SFX".to_string(), "LOOP".to_string()],
+            }],
+            ..Default::default()
+        };
+        assert!(query.matches(&meta), "multi-value filter should OR");
+    }
+
+    #[test]
+    fn test_column_filter_multiple_filters_and() {
+        let mut meta = UnifiedMetadata::default();
+        meta.vendor = "Samples From Mars".to_string();
+        meta.category = "LOOP".to_string();
+        meta.path = PathBuf::from("/test/file.wav");
+
+        let query = SearchQuery {
+            column_filters: vec![
+                ColumnFilter {
+                    field: "vendor".to_string(),
+                    values: vec!["Mars".to_string()],
+                },
+                ColumnFilter {
+                    field: "category".to_string(),
+                    values: vec!["LOOP".to_string()],
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(query.matches(&meta), "multiple filters should AND");
+
+        let mut meta2 = meta.clone();
+        meta2.category = "ONESHOT".to_string();
+        assert!(!query.matches(&meta2), "second filter should fail");
     }
 
     /// Helper to construct default opts for testing.

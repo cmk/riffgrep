@@ -73,8 +73,8 @@ pub struct App {
     pub query_changed: bool,
     /// Whether the selection changed since last preview dispatch.
     pub selection_changed: bool,
-    /// Paths that have been previewed (session-only, for visited-link styling).
-    pub visited: HashSet<std::path::PathBuf>,
+    /// Paths that have been played back (session-only, for played styling).
+    pub played: HashSet<std::path::PathBuf>,
     /// Audio playback engine (None if no audio device).
     pub playback: Option<PlaybackEngine>,
     /// Playback position as fraction 0.0–1.0 for waveform cursor.
@@ -83,6 +83,12 @@ pub struct App {
     pub marks: Option<Box<dyn MarkStore>>,
     /// Whether to show only marked files.
     pub show_marked_only: bool,
+    /// Index of the selected column (for h/l navigation and sorting).
+    pub selected_column: usize,
+    /// Column currently used for sorting (None = unsorted).
+    pub sort_column: Option<String>,
+    /// Sort direction: true = ascending, false = descending.
+    pub sort_ascending: bool,
 }
 
 impl App {
@@ -107,11 +113,14 @@ impl App {
             pending_g: false,
             query_changed: false,
             selection_changed: false,
-            visited: HashSet::new(),
+            played: HashSet::new(),
             playback,
             playback_position: 0.0,
             marks: None,
             show_marked_only: false,
+            selected_column: 0,
+            sort_column: None,
+            sort_ascending: true,
         }
     }
 
@@ -165,6 +174,22 @@ impl App {
             }
             KeyCode::Char('M') if key.modifiers == KeyModifiers::SHIFT && self.query.is_empty() => {
                 self.clear_all_marks();
+                self.pending_g = false;
+            }
+            KeyCode::Char('h') if key.modifiers.is_empty() && self.query.is_empty() => {
+                self.move_column(-1);
+                self.pending_g = false;
+            }
+            KeyCode::Char('l') if key.modifiers.is_empty() && self.query.is_empty() => {
+                self.move_column(1);
+                self.pending_g = false;
+            }
+            KeyCode::Char('o') if key.modifiers.is_empty() && self.query.is_empty() => {
+                self.sort_by_selected_column(true);
+                self.pending_g = false;
+            }
+            KeyCode::Char('O') if key.modifiers == KeyModifiers::SHIFT && self.query.is_empty() => {
+                self.sort_by_selected_column(false);
                 self.pending_g = false;
             }
             KeyCode::Char('f') if key.modifiers.is_empty() && self.query.is_empty() => {
@@ -246,7 +271,6 @@ impl App {
 
     /// Handle preview data arrival.
     pub fn on_preview_ready(&mut self, data: PreviewData) {
-        self.visited.insert(data.metadata.path.clone());
         self.preview = Some(data);
     }
 
@@ -331,7 +355,9 @@ impl App {
             PlaybackState::Stopped => {
                 // Play the selected file.
                 if let Some(row) = self.results.get(self.selected) {
-                    let _ = engine.play(&row.meta.path);
+                    if engine.play(&row.meta.path).is_ok() {
+                        self.played.insert(row.meta.path.clone());
+                    }
                 }
             }
             PlaybackState::Playing | PlaybackState::Paused => {
@@ -419,6 +445,37 @@ impl App {
         self.show_marked_only = !self.show_marked_only;
     }
 
+    /// Sort results by the currently selected column.
+    pub fn sort_by_selected_column(&mut self, ascending: bool) {
+        if self.results.is_empty() || self.selected_column >= self.columns.len() {
+            return;
+        }
+        let key = self.columns[self.selected_column].clone();
+        self.sort_ascending = ascending;
+        self.sort_column = Some(key.clone());
+
+        self.results.sort_by(|a, b| {
+            let ka = column_sort_key(a, &key);
+            let kb = column_sort_key(b, &key);
+            if ascending { ka.cmp(&kb) } else { kb.cmp(&ka) }
+        });
+
+        // Reset selection to top after sort.
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.selection_changed = true;
+    }
+
+    /// Move column selection by delta with wrapping.
+    pub fn move_column(&mut self, delta: isize) {
+        let len = self.columns.len();
+        if len == 0 {
+            return;
+        }
+        let new = (self.selected_column as isize + delta).rem_euclid(len as isize) as usize;
+        self.selected_column = new;
+    }
+
     /// Get the total number of marked files (from store if available, else from results).
     pub fn mark_count(&self) -> usize {
         if let Some(ref store) = self.marks {
@@ -435,6 +492,94 @@ impl App {
         } else {
             self.results.iter().collect()
         }
+    }
+}
+
+/// Sort key for column-based sorting.
+///
+/// Numeric values sort numerically; text sorts case-insensitive.
+/// Empty/"-" values sort after all non-empty values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SortKey {
+    /// Numeric sort value.
+    Numeric(i64),
+    /// Text sort value (lowercase).
+    Text(String),
+    /// Empty/missing value (sorts last).
+    None,
+}
+
+impl Ord for SortKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (SortKey::None, SortKey::None) => std::cmp::Ordering::Equal,
+            (SortKey::None, _) => std::cmp::Ordering::Greater,
+            (_, SortKey::None) => std::cmp::Ordering::Less,
+            (SortKey::Numeric(a), SortKey::Numeric(b)) => a.cmp(b),
+            (SortKey::Text(a), SortKey::Text(b)) => a.cmp(b),
+            // Mixed: numeric before text.
+            (SortKey::Numeric(_), SortKey::Text(_)) => std::cmp::Ordering::Less,
+            (SortKey::Text(_), SortKey::Numeric(_)) => std::cmp::Ordering::Greater,
+        }
+    }
+}
+
+impl PartialOrd for SortKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Numeric column keys for sort key extraction.
+const SORT_NUMERIC_COLUMNS: &[&str] = &[
+    "bpm", "sample_rate", "bit_depth", "channels",
+];
+
+/// Extract a sort key from a TableRow for a given column.
+fn column_sort_key(row: &TableRow, key: &str) -> SortKey {
+    let value = widgets::column_value(row, key);
+    if value.is_empty() || value == "-" {
+        return SortKey::None;
+    }
+    if SORT_NUMERIC_COLUMNS.contains(&key) {
+        // Try parsing numeric value.
+        if let Ok(n) = value.parse::<i64>() {
+            return SortKey::Numeric(n);
+        }
+    }
+    // Duration: parse "M:SS" → total seconds.
+    if key == "duration" {
+        if let Some(secs) = parse_duration_sort(&value) {
+            return SortKey::Numeric(secs);
+        }
+    }
+    // Sample rate "48k" → numeric.
+    if key == "sample_rate" {
+        if let Some(stripped) = value.strip_suffix('k') {
+            if let Ok(n) = stripped.parse::<i64>() {
+                return SortKey::Numeric(n * 1000);
+            }
+        }
+    }
+    SortKey::Text(value.to_ascii_lowercase())
+}
+
+/// Parse "M:SS" or "H:MM:SS" to total seconds for sorting.
+fn parse_duration_sort(s: &str) -> Option<i64> {
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        2 => {
+            let m = parts[0].parse::<i64>().ok()?;
+            let s = parts[1].parse::<i64>().ok()?;
+            Some(m * 60 + s)
+        }
+        3 => {
+            let h = parts[0].parse::<i64>().ok()?;
+            let m = parts[1].parse::<i64>().ok()?;
+            let s = parts[2].parse::<i64>().ok()?;
+            Some(h * 3600 + m * 60 + s)
+        }
+        _ => None,
     }
 }
 
@@ -557,6 +702,18 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
         }
     }
 
+    // Apply default sort from config.
+    if let Some(ref sort_col) = config.default_sort {
+        if crate::engine::config::column_def(sort_col).is_some() {
+            app.sort_column = Some(sort_col.clone());
+            app.sort_ascending = config
+                .default_sort_order
+                .as_deref()
+                .map(|o| o != "desc")
+                .unwrap_or(true);
+        }
+    }
+
     // Initialize marks store based on search mode.
     let marks_store: Box<dyn MarkStore> = if let Some(ref db_path) = db_path_for_peaks {
         Box::new(crate::engine::marks::SqliteMarkStore::new(db_path.clone()))
@@ -655,13 +812,16 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
                 app.preview = None;
                 app.search_in_progress = true;
 
-                // Build new search.
+                // Build new search: parse @field=value filters from query.
+                let (freetext, column_filters) =
+                    crate::engine::parse_column_filters(&app.query);
                 let query = crate::engine::SearchQuery {
-                    freetext: if app.query.is_empty() {
+                    freetext: if freetext.is_empty() {
                         None
                     } else {
-                        Some(app.query.clone())
+                        Some(freetext)
                     },
+                    column_filters,
                     ..Default::default()
                 };
 
@@ -1009,16 +1169,16 @@ mod tests {
         assert_eq!(app.playback_position, 0.0, "selection change should reset position");
     }
 
-    // --- S5-T5 tests: Visited file coloring ---
+    // --- S6-T1 tests: Played file coloring ---
 
     #[test]
-    fn test_visited_set_empty_initially() {
+    fn test_played_set_empty_initially() {
         let app = App::new(Theme::default());
-        assert!(app.visited.is_empty());
+        assert!(app.played.is_empty());
     }
 
     #[test]
-    fn test_visited_set_populated_on_preview() {
+    fn test_played_not_populated_on_preview() {
         let mut app = App::new(Theme::default());
         let path = std::path::PathBuf::from("/test/kick.wav");
         app.on_preview_ready(PreviewData {
@@ -1029,19 +1189,40 @@ mod tests {
             peaks: vec![],
             audio_info: None,
         });
-        assert!(app.visited.contains(&path));
+        assert!(!app.played.contains(&path), "preview should not add to played set");
     }
 
     #[test]
-    fn test_selected_overrides_visited() {
+    fn test_selected_overrides_played() {
         let mut app = make_app_with_results(3);
-        // Mark first item as visited.
-        app.visited.insert(std::path::PathBuf::from("/test/0.wav"));
+        // Mark first item as played.
+        app.played.insert(std::path::PathBuf::from("/test/0.wav"));
         app.selected = 0;
-        // The style for selected should override visited — verified via render test.
-        // Just verify the data model is correct.
-        assert!(app.visited.contains(&std::path::PathBuf::from("/test/0.wav")));
+        // The style for selected should override played — verified via render test.
+        assert!(app.played.contains(&std::path::PathBuf::from("/test/0.wav")));
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_marked_overrides_played() {
+        let mut app = make_app_with_results(3);
+        app.played.insert(std::path::PathBuf::from("/test/0.wav"));
+        app.results[0].marked = true;
+        // When both played and marked, marked style takes precedence.
+        assert!(app.played.contains(&std::path::PathBuf::from("/test/0.wav")));
+        assert!(app.results[0].marked);
+    }
+
+    #[test]
+    fn test_theme_has_table_played_field() {
+        let theme = Theme::default();
+        // Verify the field exists and has a style set (not default).
+        let played_style = theme.table_played;
+        assert_ne!(
+            played_style,
+            ratatui::style::Style::default(),
+            "table_played should have a distinct style"
+        );
     }
 
     // --- S5-T7 tests: File Marking/Selection System ---
@@ -1113,5 +1294,214 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
         assert_eq!(app.query, "xf");
         assert!(!app.show_marked_only);
+    }
+
+    // --- S6-T2 tests: Column navigation ---
+
+    #[test]
+    fn test_column_selection_initial_zero() {
+        let app = App::new(Theme::default());
+        assert_eq!(app.selected_column, 0);
+    }
+
+    #[test]
+    fn test_column_move_right() {
+        let mut app = App::new(Theme::default());
+        app.move_column(1);
+        assert_eq!(app.selected_column, 1);
+    }
+
+    #[test]
+    fn test_column_move_left_wraps() {
+        let mut app = App::new(Theme::default());
+        app.selected_column = 0;
+        app.move_column(-1);
+        assert_eq!(app.selected_column, app.columns.len() - 1);
+    }
+
+    #[test]
+    fn test_column_move_right_wraps() {
+        let mut app = App::new(Theme::default());
+        let last = app.columns.len() - 1;
+        app.selected_column = last;
+        app.move_column(1);
+        assert_eq!(app.selected_column, 0);
+    }
+
+    #[test]
+    fn test_h_l_type_when_query_active() {
+        let mut app = make_app_with_results(5);
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        // h/l should type into query, not navigate columns.
+        app.on_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(app.query, "xhl");
+        assert_eq!(app.selected_column, 0);
+    }
+
+    // --- S6-T3 tests: Column sorting ---
+
+    #[test]
+    fn test_sort_ascending_text() {
+        let mut app = App::new(Theme::default());
+        app.columns = vec!["vendor".to_string()];
+        app.selected_column = 0;
+        app.results = vec![
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/b.wav"),
+                    vendor: "Zebra".to_string(),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+            },
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/a.wav"),
+                    vendor: "Alpha".to_string(),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+            },
+        ];
+        app.sort_by_selected_column(true);
+        assert_eq!(app.results[0].meta.vendor, "Alpha");
+        assert_eq!(app.results[1].meta.vendor, "Zebra");
+    }
+
+    #[test]
+    fn test_sort_descending_text() {
+        let mut app = App::new(Theme::default());
+        app.columns = vec!["vendor".to_string()];
+        app.selected_column = 0;
+        app.results = vec![
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/a.wav"),
+                    vendor: "Alpha".to_string(),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+            },
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/b.wav"),
+                    vendor: "Zebra".to_string(),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+            },
+        ];
+        app.sort_by_selected_column(false);
+        assert_eq!(app.results[0].meta.vendor, "Zebra");
+        assert_eq!(app.results[1].meta.vendor, "Alpha");
+    }
+
+    #[test]
+    fn test_sort_numeric_bpm() {
+        let mut app = App::new(Theme::default());
+        app.columns = vec!["bpm".to_string()];
+        app.selected_column = 0;
+        app.results = vec![
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/a.wav"),
+                    bpm: Some(140),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+            },
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/b.wav"),
+                    bpm: Some(90),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+            },
+        ];
+        app.sort_by_selected_column(true);
+        assert_eq!(app.results[0].meta.bpm, Some(90));
+        assert_eq!(app.results[1].meta.bpm, Some(140));
+    }
+
+    #[test]
+    fn test_sort_empty_values_last() {
+        let mut app = App::new(Theme::default());
+        app.columns = vec!["vendor".to_string()];
+        app.selected_column = 0;
+        app.results = vec![
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/a.wav"),
+                    vendor: String::new(), // empty
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+            },
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/b.wav"),
+                    vendor: "Alpha".to_string(),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+            },
+        ];
+        app.sort_by_selected_column(true);
+        assert_eq!(app.results[0].meta.vendor, "Alpha");
+        assert!(app.results[1].meta.vendor.is_empty());
+    }
+
+    #[test]
+    fn test_sort_resets_selection() {
+        let mut app = make_app_with_results(10);
+        app.columns = vec!["vendor".to_string()];
+        app.selected_column = 0;
+        app.selected = 5;
+        app.sort_by_selected_column(true);
+        assert_eq!(app.selected, 0, "sort should reset selection to 0");
+    }
+
+    #[test]
+    fn test_sort_indicator_state() {
+        let mut app = App::new(Theme::default());
+        app.columns = vec!["vendor".to_string()];
+        app.selected_column = 0;
+        app.results = vec![TableRow {
+            meta: UnifiedMetadata {
+                path: std::path::PathBuf::from("/test/a.wav"),
+                vendor: "V".to_string(),
+                ..Default::default()
+            },
+            audio_info: None,
+            marked: false,
+        }];
+
+        app.sort_by_selected_column(true);
+        assert_eq!(app.sort_column, Some("vendor".to_string()));
+        assert!(app.sort_ascending);
+
+        app.sort_by_selected_column(false);
+        assert_eq!(app.sort_column, Some("vendor".to_string()));
+        assert!(!app.sort_ascending);
+    }
+
+    #[test]
+    fn test_sort_empty_results_noop() {
+        let mut app = App::new(Theme::default());
+        app.columns = vec!["vendor".to_string()];
+        app.selected_column = 0;
+        // No results — should not panic.
+        app.sort_by_selected_column(true);
+        assert!(app.sort_column.is_none());
     }
 }

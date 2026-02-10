@@ -33,10 +33,12 @@ pub struct Theme {
     pub playback_accent: Style,
     /// Table header row style.
     pub table_header: Style,
-    /// Visited (previously previewed) row style.
-    pub table_visited: Style,
+    /// Played (previously played back) row style.
+    pub table_played: Style,
     /// Marked row style.
     pub table_marked: Style,
+    /// Selected column header highlight style.
+    pub table_column_highlight: Style,
 }
 
 impl Theme {
@@ -66,8 +68,11 @@ impl Theme {
             table_header: Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
-            table_visited: Style::default().fg(Color::Rgb(60, 60, 60)),
+            table_played: Style::default().fg(Color::Rgb(60, 60, 60)),
             table_marked: Style::default().fg(Color::Rgb(160, 160, 160)),
+            table_column_highlight: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         }
     }
 
@@ -97,8 +102,11 @@ impl Theme {
             table_header: Style::default()
                 .fg(Color::Rgb(255, 153, 0))
                 .add_modifier(Modifier::BOLD),
-            table_visited: Style::default().fg(Color::Rgb(60, 60, 60)),
+            table_played: Style::default().fg(Color::Rgb(60, 60, 60)),
             table_marked: Style::default().fg(Color::Rgb(160, 160, 160)),
+            table_column_highlight: Style::default()
+                .fg(Color::Rgb(255, 153, 0))
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         }
     }
 
@@ -128,8 +136,11 @@ impl Theme {
             table_header: Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
-            table_visited: Style::default().fg(Color::Rgb(60, 60, 60)),
+            table_played: Style::default().fg(Color::Rgb(60, 60, 60)),
             table_marked: Style::default().fg(Color::Rgb(160, 160, 160)),
+            table_column_highlight: Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         }
     }
 
