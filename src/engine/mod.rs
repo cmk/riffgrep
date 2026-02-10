@@ -102,20 +102,6 @@ pub fn read_metadata(path: &Path) -> Result<UnifiedMetadata, RiffError> {
     Ok(merge_metadata(path, bext, info))
 }
 
-/// Read metadata and extract raw BEXT peaks from a single WAV file.
-/// Returns `(metadata, peaks_bytes)` where peaks may be empty.
-pub fn read_metadata_with_peaks(path: &Path) -> Result<(UnifiedMetadata, Vec<u8>), RiffError> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = BufReader::with_capacity(8192, file);
-
-    let map = bext::scan_chunks(&mut reader)?;
-    let bext = bext::parse_bext_data(&mut reader, &map)?;
-    let peaks = bext.peaks.clone();
-    let info = riff_info::parse_riff_info(&mut reader, &map)?;
-
-    Ok((merge_metadata(path, bext, info), peaks))
-}
-
 /// Read metadata, extract BEXT peaks, and return the detected peaks format.
 /// Returns `(metadata, peaks_bytes, peaks_format)`.
 pub fn read_metadata_with_peaks_format(
@@ -697,16 +683,21 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
             match read_metadata_with_peaks_format(&path) {
                 Ok((meta, bext_peaks, peaks_format)) => {
                     // Determine whether to generate peaks from audio.
+                    // Only trust peaks from RiffgrepU8 format (our packed schema
+                    // with bext_version >= 1). All other cases (Empty, BwfReserved)
+                    // must compute peaks from the actual audio data.
                     let (peaks, source) =
-                        if regenerate_peaks || peaks_format == bext::PeaksFormat::Empty {
+                        if !regenerate_peaks
+                            && peaks_format == bext::PeaksFormat::RiffgrepU8
+                        {
+                            (bext_peaks, peaks_format.source_str().to_string())
+                        } else {
                             match wav::compute_peaks_stereo_from_path(&path) {
                                 Ok(p) if !p.is_empty() && p.iter().any(|&v| v > 0) => {
                                     (p, "generated".to_string())
                                 }
-                                _ => (bext_peaks, peaks_format.source_str().to_string()),
+                                _ => (Vec::new(), "none".to_string()),
                             }
-                        } else {
-                            (bext_peaks, peaks_format.source_str().to_string())
                         };
 
                     let compressed_peaks = if peaks.is_empty() {

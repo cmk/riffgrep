@@ -255,10 +255,19 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
     let vendor = decode_fixed_ascii(&buf[256..288]);
     let library = decode_fixed_ascii(&buf[288..320]);
     let date = decode_fixed_ascii(&buf[320..330]);
-    let umid = decode_umid(&buf[348..412]);
 
-    // BEXT Version at offset 346-347 (u16 LE).
+    // BEXT Version at offset 346-347 (u16 LE). Must be read before fields
+    // that depend on it (UMID exists only in BWF version >= 1).
     let bext_version = u16::from_le_bytes([buf[346], buf[347]]);
+
+    // UMID (bytes 348-411) only exists in BWF version >= 1. In version 0
+    // files, these bytes were part of the original 190-byte Reserved block
+    // and may contain arbitrary data from non-compliant tools.
+    let umid = if bext_version >= 1 {
+        decode_umid(&buf[348..412])
+    } else {
+        String::new()
+    };
 
     // Extract 180-byte Reserved field (bytes 422-601) as peak data.
     let peaks_raw = &buf[422..602];
@@ -269,19 +278,26 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
         peaks_raw.to_vec()
     };
 
-    // Detect packed schema: check version bytes [008:012].
-    // Packed if major=0, minor=1 (version 0.1).
+    // Detect packed schema: requires BOTH the schema version marker at bytes
+    // [008:012] (major=0, minor=1) AND bext_version >= 1 per PICKER_SCHEMA.md.
+    // The schema marker alone ([0x00, 0x00, 0x01, 0x00]) is too weak — bytes
+    // 8-11 of the Description could match by coincidence in third-party files
+    // (the adjacent marker block at [012:044] is sample offsets, not a hash).
     let version_major = u16::from_le_bytes([buf[8], buf[9]]);
     let version_minor = u16::from_le_bytes([buf[10], buf[11]]);
-    let is_packed = version_major == 0 && version_minor == 1;
+    let is_packed = version_major == 0 && version_minor == 1 && bext_version >= 1;
 
     // Determine peaks format.
+    // RiffgrepU8 requires BOTH the packed schema marker AND bext_version >= 1.
+    // This prevents misinterpreting arbitrary BEXT Reserved bytes from third-party
+    // DAWs (Reaper, SoundMiner, etc.) as waveform peak data.
     let peaks_format = if all_zeros {
         PeaksFormat::Empty
-    } else if is_packed {
+    } else if is_packed && bext_version >= 1 {
         PeaksFormat::RiffgrepU8
     } else {
-        // Non-zero data but not our packed schema — treat as BWF Reserved.
+        // Non-zero data but not our packed schema, or packed without the required
+        // BWF version — treat as opaque BWF Reserved data (not valid peaks).
         PeaksFormat::BwfReserved
     };
 
@@ -544,6 +560,8 @@ mod tests {
         buf[288..303].copy_from_slice(b"DX100 From Mars");
         // OriginationDate [320:330] = "2024-01-15"
         buf[320..330].copy_from_slice(b"2024-01-15");
+        // BWF Version [346:348] = 1 (required for RiffgrepU8 peak detection).
+        buf[346..348].copy_from_slice(&1u16.to_le_bytes());
         // UMID [348:412] = "976132720e774b668c36826386ae6505" as ASCII
         buf[348..380].copy_from_slice(b"976132720e774b668c36826386ae6505");
         buf
@@ -779,7 +797,44 @@ mod tests {
         }
         let fields = parse_bext_buffer(&buf);
         assert_eq!(fields.peaks_format, PeaksFormat::RiffgrepU8);
+        assert_eq!(fields.bext_version, 1, "packed helper should set bext_version=1");
         assert!(!fields.peaks.is_empty());
+    }
+
+    #[test]
+    fn test_peaks_format_packed_without_bwf_version_is_bwf_reserved() {
+        // Schema marker at bytes 8-11 present but bext_version = 0 → NOT recognized
+        // as packed schema at all. Peaks are BwfReserved, metadata parsed as plain text.
+        let mut buf = make_bext_buffer_packed();
+        // Override BWF version to 0.
+        buf[346] = 0;
+        buf[347] = 0;
+        // Set non-zero Reserved data.
+        for i in 422..602 {
+            buf[i] = (i % 256) as u8;
+        }
+        let fields = parse_bext_buffer(&buf);
+        assert_eq!(
+            fields.peaks_format,
+            PeaksFormat::BwfReserved,
+            "bext_version=0 should not produce RiffgrepU8"
+        );
+        assert!(
+            !fields.packed,
+            "bext_version=0 should not activate packed schema"
+        );
+    }
+
+    #[test]
+    fn test_peaks_format_packed_v0_empty_reserved() {
+        // Schema marker present with bext_version=0 and all-zero Reserved.
+        // Neither packed schema nor peaks should be detected.
+        let mut buf = make_bext_buffer_packed();
+        buf[346] = 0;
+        buf[347] = 0;
+        let fields = parse_bext_buffer(&buf);
+        assert_eq!(fields.peaks_format, PeaksFormat::Empty);
+        assert!(!fields.packed, "bext_version=0 should not activate packed schema");
     }
 
     #[test]
@@ -843,6 +898,209 @@ mod tests {
         );
     }
 
+    // --- Version guard boundary tests ---
+
+    #[test]
+    fn bext_v1_without_packed_schema_reads_umid() {
+        // BWF v1 file from a compliant tool (no packed schema marker).
+        // UMID should be read, but packed should be false.
+        let mut buf = [0u8; BEXT_STANDARD_SIZE];
+        buf[0..11].copy_from_slice(b"hello world"); // plain text description
+        buf[346..348].copy_from_slice(&1u16.to_le_bytes()); // bext_version = 1
+        buf[348..380].copy_from_slice(b"abc123def456abc123def456abc123de"); // UMID ASCII
+        let fields = parse_bext_buffer(&buf);
+        assert!(!fields.packed, "no schema marker → not packed");
+        assert_eq!(fields.bext_version, 1);
+        assert_eq!(fields.umid, "abc123def456abc123def456abc123de");
+        assert_eq!(fields.description, "hello world");
+    }
+
+    #[test]
+    fn bext_v1_without_packed_schema_nonzero_reserved_is_bwf() {
+        // BWF v1 file with non-zero Reserved but no packed schema.
+        // Peaks should be BwfReserved (not RiffgrepU8).
+        let mut buf = [0u8; BEXT_STANDARD_SIZE];
+        buf[346..348].copy_from_slice(&1u16.to_le_bytes()); // bext_version = 1
+        // No schema marker at [8:12].
+        buf[422] = 0xFF;
+        buf[500] = 0x42;
+        let fields = parse_bext_buffer(&buf);
+        assert!(!fields.packed);
+        assert_eq!(fields.peaks_format, PeaksFormat::BwfReserved);
+    }
+
+    #[test]
+    fn bext_v2_without_packed_schema() {
+        // BWF v2 (loudness extension). Same rules apply — no packed schema
+        // means plain Description, UMID readable, Reserved is BwfReserved.
+        let mut buf = [0u8; BEXT_STANDARD_SIZE];
+        buf[0..14].copy_from_slice(b"loudness test\0");
+        buf[346..348].copy_from_slice(&2u16.to_le_bytes()); // bext_version = 2
+        buf[348..380].copy_from_slice(b"00112233445566778899aabbccddeeff");
+        buf[422] = 0x01; // non-zero Reserved
+        let fields = parse_bext_buffer(&buf);
+        assert_eq!(fields.bext_version, 2);
+        assert!(!fields.packed, "no schema marker → not packed");
+        assert_eq!(fields.umid, "00112233445566778899aabbccddeeff");
+        assert_eq!(fields.peaks_format, PeaksFormat::BwfReserved);
+        assert_eq!(fields.description, "loudness test");
+    }
+
+    #[test]
+    fn bext_v0_plain_description_no_umid() {
+        // Typical third-party v0 file: Description is plain text, UMID area
+        // may have garbage. Verify UMID is NOT read.
+        let mut buf = [0u8; BEXT_STANDARD_SIZE];
+        buf[0..18].copy_from_slice(b"SoundMiner export\0");
+        // bext_version = 0 (default zeros).
+        // Put garbage in the UMID area.
+        for i in 348..412 {
+            buf[i] = 0xAB;
+        }
+        let fields = parse_bext_buffer(&buf);
+        assert_eq!(fields.bext_version, 0);
+        assert!(!fields.packed);
+        assert!(
+            fields.umid.is_empty(),
+            "v0 files must not have UMID read (got {:?})",
+            fields.umid
+        );
+        assert_eq!(fields.description, "SoundMiner export");
+    }
+
+    #[test]
+    fn version_round_trip_packed_schema() {
+        // Simulate a riffgrep-written file: packed schema + bext_version=1.
+        // All version-dependent fields should be present.
+        let mut buf = make_bext_buffer_packed();
+        // Set non-zero peaks.
+        for i in 422..602 {
+            buf[i] = ((i * 7) % 256) as u8;
+        }
+        let fields = parse_bext_buffer(&buf);
+        // Version-dependent features all active:
+        assert!(fields.packed, "packed schema should be detected");
+        assert_eq!(fields.bext_version, 1);
+        assert_eq!(fields.peaks_format, PeaksFormat::RiffgrepU8);
+        assert!(!fields.umid.is_empty(), "UMID should be read for v1");
+        assert_eq!(fields.recid, 985188);
+        assert_eq!(fields.category, "LOOP");
+        assert_eq!(fields.sound_id, "DHC");
+        assert!(!fields.peaks.is_empty());
+        assert_eq!(fields.peaks.len(), 180);
+    }
+
+    // --- Real-world file regression tests ---
+    // These test that third-party files are NEVER misidentified as having
+    // riffgrep-encoded data. Each test verifies:
+    //   - packed == false
+    //   - peaks_format != RiffgrepU8
+    //   - UMID is empty (since test files are bext_version=0)
+
+    #[test]
+    fn regression_clean_base_not_riffgrep() {
+        let path = "test_files/clean_base.wav";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        let map = scan_chunks(&mut file).unwrap();
+        let fields = parse_bext_data(&mut file, &map).unwrap();
+        assert!(!fields.packed, "clean_base.wav should not be packed");
+        assert_ne!(
+            fields.peaks_format,
+            PeaksFormat::RiffgrepU8,
+            "clean_base.wav should not have RiffgrepU8 peaks"
+        );
+        if fields.bext_version == 0 {
+            assert!(
+                fields.umid.is_empty(),
+                "v0 file should not have UMID (got {:?})",
+                fields.umid
+            );
+        }
+    }
+
+    #[test]
+    fn regression_all_riff_info_not_riffgrep() {
+        let path = "test_files/all_riff_info_tags_with_numbers.wav";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        let map = scan_chunks(&mut file).unwrap();
+        let fields = parse_bext_data(&mut file, &map).unwrap();
+        assert!(!fields.packed);
+        assert_ne!(fields.peaks_format, PeaksFormat::RiffgrepU8);
+        if fields.bext_version == 0 {
+            assert!(fields.umid.is_empty());
+        }
+    }
+
+    #[test]
+    fn regression_all_riff_info_sm_not_riffgrep() {
+        let path = "test_files/all_riff_info_tags_with_numbers-sm.wav";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        let map = scan_chunks(&mut file).unwrap();
+        let fields = parse_bext_data(&mut file, &map).unwrap();
+        assert!(!fields.packed);
+        assert_ne!(fields.peaks_format, PeaksFormat::RiffgrepU8);
+        if fields.bext_version == 0 {
+            assert!(fields.umid.is_empty());
+        }
+    }
+
+    #[test]
+    fn regression_id3_all_r7_not_riffgrep() {
+        let path = "test_files/id3-all_r7.wav";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        let map = scan_chunks(&mut file).unwrap();
+        let fields = parse_bext_data(&mut file, &map).unwrap();
+        assert!(!fields.packed);
+        assert_ne!(fields.peaks_format, PeaksFormat::RiffgrepU8);
+        if fields.bext_version == 0 {
+            assert!(fields.umid.is_empty());
+        }
+    }
+
+    #[test]
+    fn regression_id3_all_sm_not_riffgrep() {
+        let path = "test_files/id3-all_sm.wav";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        let map = scan_chunks(&mut file).unwrap();
+        let fields = parse_bext_data(&mut file, &map).unwrap();
+        assert!(!fields.packed);
+        assert_ne!(fields.peaks_format, PeaksFormat::RiffgrepU8);
+        if fields.bext_version == 0 {
+            assert!(fields.umid.is_empty());
+        }
+    }
+
+    #[test]
+    fn regression_id3_only_not_riffgrep() {
+        let path = "test_files/id3-only.wav";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        let map = scan_chunks(&mut file).unwrap();
+        // id3-only may not have a BEXT chunk at all.
+        if map.bext_offset.is_some() {
+            let fields = parse_bext_data(&mut file, &map).unwrap();
+            assert!(!fields.packed);
+            assert_ne!(fields.peaks_format, PeaksFormat::RiffgrepU8);
+        }
+    }
+
     // --- Proptest ---
 
     mod proptests {
@@ -903,6 +1161,62 @@ mod tests {
                 match fields.peaks_format {
                     PeaksFormat::RiffgrepU8 | PeaksFormat::BwfReserved | PeaksFormat::Empty => {}
                 }
+            }
+
+            /// bext_version=0 with arbitrary Reserved bytes NEVER produces RiffgrepU8.
+            /// This is the core safety property: third-party files (which are always
+            /// v0 unless they specifically set a BWF version) cannot be misinterpreted
+            /// as having riffgrep peak data.
+            #[test]
+            fn v0_arbitrary_reserved_never_riffgrep_u8(
+                reserved in proptest::collection::vec(any::<u8>(), 180)
+            ) {
+                let mut buf = [0u8; BEXT_STANDARD_SIZE];
+                // bext_version = 0 (default zeros at [346:348]).
+                // Write arbitrary data into Reserved [422:602].
+                buf[422..602].copy_from_slice(&reserved);
+                // Even if bytes [8:12] happen to match the schema marker:
+                buf[8..10].copy_from_slice(&0u16.to_le_bytes());
+                buf[10..12].copy_from_slice(&1u16.to_le_bytes());
+                let fields = parse_bext_buffer(&buf);
+                prop_assert_ne!(
+                    fields.peaks_format,
+                    PeaksFormat::RiffgrepU8,
+                    "bext_version=0 must never produce RiffgrepU8"
+                );
+            }
+
+            /// bext_version=0 with arbitrary Description bytes NEVER sets packed=true.
+            /// The 4-byte schema marker alone is too weak without the version guard.
+            #[test]
+            fn v0_arbitrary_description_never_packed(
+                desc in proptest::collection::vec(any::<u8>(), 256)
+            ) {
+                let mut buf = [0u8; BEXT_STANDARD_SIZE];
+                // bext_version = 0 (default zeros at [346:348]).
+                buf[0..256].copy_from_slice(&desc);
+                let fields = parse_bext_buffer(&buf);
+                prop_assert!(
+                    !fields.packed,
+                    "bext_version=0 must never activate packed schema, \
+                     even if Description bytes coincidentally match the marker"
+                );
+            }
+
+            /// bext_version=0 always produces empty UMID, regardless of bytes at [348:412].
+            #[test]
+            fn v0_arbitrary_umid_bytes_always_empty(
+                umid_bytes in proptest::collection::vec(any::<u8>(), 64)
+            ) {
+                let mut buf = [0u8; BEXT_STANDARD_SIZE];
+                // bext_version = 0.
+                buf[348..412].copy_from_slice(&umid_bytes);
+                let fields = parse_bext_buffer(&buf);
+                prop_assert!(
+                    fields.umid.is_empty(),
+                    "bext_version=0 must never read UMID (got {:?})",
+                    fields.umid
+                );
             }
         }
 
