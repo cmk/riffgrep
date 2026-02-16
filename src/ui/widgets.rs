@@ -330,15 +330,6 @@ fn format_duration(secs: f64) -> String {
     }
 }
 
-/// Render a visual progress bar using block characters.
-///
-/// Maps position (0.0–1.0) to filled (█) and empty (░) chars across `width` columns.
-pub fn render_progress_bar(position: f32, width: usize) -> String {
-    let fill = (position.clamp(0.0, 1.0) * width as f32).round() as usize;
-    let empty = width.saturating_sub(fill);
-    format!("{}{}", "\u{2588}".repeat(fill), "\u{2591}".repeat(empty))
-}
-
 /// Render the status bar at the bottom of the TUI.
 pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
     let theme = &app.theme;
@@ -370,9 +361,6 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
                 .as_ref()
                 .and_then(|e| e.duration())
                 .map(|d| d.as_secs_f64());
-            let pos = app.playback_position();
-            let progress = render_progress_bar(pos, 16);
-
             let time = match duration_secs {
                 Some(dur) if dur > 0.0 => {
                     if app.show_remaining {
@@ -386,7 +374,7 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
             };
 
             let auto = if app.auto_advance { " [AUTO]" } else { "" };
-            format!(" {icon} {name} {progress} {time}{auto}")
+            format!(" {icon} {name} {time}{auto}")
         }
         PlaybackState::Stopped => {
             if app.auto_advance {
@@ -2105,29 +2093,4 @@ mod tests {
         }
     }
 
-    // --- S8-T6 tests: Progress bar ---
-
-    #[test]
-    fn test_render_progress_bar_empty() {
-        assert_eq!(
-            render_progress_bar(0.0, 16),
-            "\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}"
-        );
-    }
-
-    #[test]
-    fn test_render_progress_bar_half() {
-        assert_eq!(
-            render_progress_bar(0.5, 16),
-            "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}"
-        );
-    }
-
-    #[test]
-    fn test_render_progress_bar_full() {
-        assert_eq!(
-            render_progress_bar(1.0, 16),
-            "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
-        );
-    }
 }
