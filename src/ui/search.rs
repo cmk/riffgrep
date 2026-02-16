@@ -110,7 +110,7 @@ impl Drop for SearchHandle {
 /// Handle to a running background search that produces `TableRow` for the TUI.
 ///
 /// SQLite mode: queries include audio info + marked status.
-/// Filesystem mode: wraps `UnifiedMetadata` in `TableRow { meta, audio_info: None, marked: false }`.
+/// Filesystem mode: wraps `UnifiedMetadata` in `TableRow` with audio info read from WAV headers.
 pub struct SearchHandleTable {
     /// Receive search results as `TableRow`.
     pub results_rx: mpsc::Receiver<TableRow>,
@@ -170,9 +170,16 @@ impl SearchHandleTable {
                             break;
                         }
                         count += 1;
+                        let audio_info = (|| {
+                            let file = std::fs::File::open(&meta.path).ok()?;
+                            let mut rdr = std::io::BufReader::with_capacity(8192, file);
+                            let map = crate::engine::bext::scan_chunks(&mut rdr).ok()?;
+                            let fmt = crate::engine::wav::parse_fmt(&mut rdr, &map).ok()?;
+                            Some(crate::engine::wav::AudioInfo::from_fmt(&fmt, map.data_size))
+                        })();
                         let row = TableRow {
                             meta,
-                            audio_info: None,
+                            audio_info,
                             marked: false,
                         };
                         if tx.blocking_send(row).is_err() {
@@ -522,7 +529,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_table_row_from_filesystem_no_audio() {
+    async fn test_table_row_from_filesystem_has_audio() {
         if !test_files_exist() {
             return;
         }
@@ -538,10 +545,13 @@ mod tests {
         }
         assert!(!rows.is_empty(), "should get results from filesystem");
         for row in &rows {
-            assert!(
-                row.audio_info.is_none(),
-                "filesystem TableRow should have no audio info"
+            let info = row.audio_info.as_ref().expect(
+                "filesystem TableRow should have audio info from WAV headers",
             );
+            assert!(info.sample_rate > 0, "sample_rate should be set");
+            assert!(info.bit_depth > 0, "bit_depth should be set");
+            assert!(info.channels > 0, "channels should be set");
+            assert!(info.duration_secs > 0.0, "duration should be set");
             assert!(!row.marked, "filesystem TableRow should not be marked");
         }
     }
