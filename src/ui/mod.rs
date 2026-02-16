@@ -638,6 +638,25 @@ fn parse_duration_sort(s: &str) -> Option<i64> {
     }
 }
 
+// --- Theme resolution ---
+
+/// Resolve the TUI theme from CLI and config settings.
+///
+/// Priority: CLI flag > config file > default (telescope).
+fn resolve_theme(cli_theme: Option<&str>, config_theme: Option<&str>) -> Theme {
+    let name = cli_theme.or(config_theme);
+    match name {
+        Some(n) => match Theme::by_name(n) {
+            Ok(t) => t,
+            Err(_) => {
+                eprintln!("riffgrep: warning: unknown theme '{n}', using default");
+                Theme::default()
+            }
+        },
+        None => Theme::default(),
+    }
+}
+
 // --- Event loop and terminal lifecycle ---
 
 use std::io;
@@ -728,10 +747,9 @@ fn resolve_db_path_for_peaks(opts: &crate::engine::cli::Opts) -> Option<PathBuf>
 pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
     use futures::StreamExt;
 
-    let theme = match &opts.theme {
-        Some(name) => Theme::by_name(name)?,
-        None => Theme::default(),
-    };
+    // Load config early so theme resolution can use it.
+    let config = crate::engine::config::load_config();
+    let theme = resolve_theme(opts.theme.as_deref(), config.theme.as_deref());
 
     let search_mode = resolve_search_mode(&opts)?;
     let db_path_for_peaks = resolve_db_path_for_peaks(&opts);
@@ -753,9 +771,6 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(theme);
-
-    // Apply config columns if set.
-    let config = crate::engine::config::load_config();
     if let Some(ref cols) = config.columns {
         if !cols.is_empty() {
             app.columns = cols.clone();
@@ -1873,5 +1888,31 @@ mod tests {
         };
         app.on_search_results(vec![row2]);
         assert_eq!(app.results.len(), 2);
+    }
+
+    // --- S8-T1 tests: Theme resolution ---
+
+    #[test]
+    fn test_theme_resolution_cli_overrides_config() {
+        let theme = super::resolve_theme(Some("ableton"), Some("soundminer"));
+        assert_eq!(theme.name, "ableton");
+    }
+
+    #[test]
+    fn test_theme_resolution_config_when_no_cli() {
+        let theme = super::resolve_theme(None, Some("soundminer"));
+        assert_eq!(theme.name, "soundminer");
+    }
+
+    #[test]
+    fn test_theme_resolution_default_when_neither() {
+        let theme = super::resolve_theme(None, None);
+        assert_eq!(theme.name, "telescope");
+    }
+
+    #[test]
+    fn test_theme_resolution_invalid_config_falls_to_default() {
+        let theme = super::resolve_theme(None, Some("nonexistent"));
+        assert_eq!(theme.name, "telescope");
     }
 }
