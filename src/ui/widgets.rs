@@ -282,9 +282,9 @@ pub fn render_preview_pane(app: &App, area: Rect, buf: &mut Buffer) {
 
         // Playback cursor overlay.
         let waveform_rows_drawn = lines.len().min(waveform_height);
-        if app.playback_position > 0.0 && wave_width > 0 {
+        if app.playback_position() > 0.0 && wave_width > 0 {
             render_playback_cursor(
-                app.playback_position,
+                app.playback_position(),
                 inner.x,
                 waveform_y_start,
                 wave_width as u16,
@@ -330,6 +330,15 @@ fn format_duration(secs: f64) -> String {
     }
 }
 
+/// Render a visual progress bar using block characters.
+///
+/// Maps position (0.0–1.0) to filled (█) and empty (░) chars across `width` columns.
+pub fn render_progress_bar(position: f32, width: usize) -> String {
+    let fill = (position.clamp(0.0, 1.0) * width as f32).round() as usize;
+    let empty = width.saturating_sub(fill);
+    format!("{}{}", "\u{2588}".repeat(fill), "\u{2591}".repeat(empty))
+}
+
 /// Render the status bar at the bottom of the TUI.
 pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
     let theme = &app.theme;
@@ -345,32 +354,47 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
 
     let width = area.width as usize;
 
-    // Left side: playback state.
+    // Left side: playback state with progress bar.
     let left = match app.playback_state() {
-        PlaybackState::Playing => {
+        PlaybackState::Playing | PlaybackState::Paused => {
+            let is_playing = app.playback_state() == PlaybackState::Playing;
+            let icon = if is_playing { "\u{25B6}" } else { "\u{23F8}" };
             let name = app.playback_filename().unwrap_or_default();
-            let elapsed = app
+            let elapsed_secs = app
                 .playback
                 .as_ref()
-                .map(|e| format_duration(e.elapsed().as_secs_f64()))
-                .unwrap_or_default();
-            let duration = app
+                .map(|e| e.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
+            let duration_secs = app
                 .playback
                 .as_ref()
                 .and_then(|e| e.duration())
-                .map(|d| format_duration(d.as_secs_f64()))
-                .unwrap_or_default();
-            if duration.is_empty() {
-                format!(" \u{25B6} {name} {elapsed}")
+                .map(|d| d.as_secs_f64());
+            let pos = app.playback_position();
+            let progress = render_progress_bar(pos, 16);
+
+            let time = match duration_secs {
+                Some(dur) if dur > 0.0 => {
+                    if app.show_remaining {
+                        let remaining = (dur - elapsed_secs).max(0.0);
+                        format!("-{}/{}", format_duration(remaining), format_duration(dur))
+                    } else {
+                        format!("{}/{}", format_duration(elapsed_secs), format_duration(dur))
+                    }
+                }
+                _ => format_duration(elapsed_secs),
+            };
+
+            let auto = if app.auto_advance { " [AUTO]" } else { "" };
+            format!(" {icon} {name} {progress} {time}{auto}")
+        }
+        PlaybackState::Stopped => {
+            if app.auto_advance {
+                " [AUTO]".to_string()
             } else {
-                format!(" \u{25B6} {name} {elapsed}/{duration}")
+                String::new()
             }
         }
-        PlaybackState::Paused => {
-            let name = app.playback_filename().unwrap_or_default();
-            format!(" \u{23F8} Paused: {name}")
-        }
-        PlaybackState::Stopped => String::new(),
     };
 
     // Middle: mark count (if any).
@@ -707,9 +731,9 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     }
 
     // Playback cursor overlay.
-    if app.playback_position > 0.0 && wave_width > 0 {
+    if app.playback_position() > 0.0 && wave_width > 0 {
         render_playback_cursor(
-            app.playback_position,
+            app.playback_position(),
             area.x,
             area.y,
             wave_width as u16,
@@ -1504,7 +1528,7 @@ mod tests {
     #[test]
     fn test_playback_cursor_hidden_when_zero() {
         let mut app = App::new(Theme::default());
-        app.playback_position = 0.0;
+        // playback_position() returns 0.0 by default (no engine playing).
         app.preview = Some(PreviewData {
             metadata: UnifiedMetadata {
                 path: std::path::PathBuf::from("/test/file.wav"),
@@ -2079,5 +2103,31 @@ mod tests {
                 theme.name,
             );
         }
+    }
+
+    // --- S8-T6 tests: Progress bar ---
+
+    #[test]
+    fn test_render_progress_bar_empty() {
+        assert_eq!(
+            render_progress_bar(0.0, 16),
+            "\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}"
+        );
+    }
+
+    #[test]
+    fn test_render_progress_bar_half() {
+        assert_eq!(
+            render_progress_bar(0.5, 16),
+            "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}"
+        );
+    }
+
+    #[test]
+    fn test_render_progress_bar_full() {
+        assert_eq!(
+            render_progress_bar(1.0, 16),
+            "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+        );
     }
 }

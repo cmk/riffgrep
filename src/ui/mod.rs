@@ -93,10 +93,18 @@ pub struct App {
     pub played: HashSet<std::path::PathBuf>,
     /// Audio playback engine (None if no audio device).
     pub playback: Option<PlaybackEngine>,
-    /// Playback position as fraction 0.0–1.0 for waveform cursor.
-    pub playback_position: f32,
     /// Mark store for file marking (None if no store available).
     pub marks: Option<Box<dyn MarkStore>>,
+    /// Small seek increment in seconds (resolved from config).
+    pub scrub_small: f64,
+    /// Large seek increment in seconds (resolved from config).
+    pub scrub_large: f64,
+    /// Auto-advance to next sample when playback finishes naturally.
+    pub auto_advance: bool,
+    /// Whether the last tick saw Playing state (for natural completion detection).
+    pub was_playing: bool,
+    /// Show remaining time instead of elapsed in status bar.
+    pub show_remaining: bool,
     /// Whether to show only marked files.
     pub show_marked_only: bool,
     /// Index of the selected column (for h/l navigation and sorting).
@@ -137,8 +145,12 @@ impl App {
             selection_changed: false,
             played: HashSet::new(),
             playback,
-            playback_position: 0.0,
             marks: None,
+            scrub_small: 0.1,
+            scrub_large: 1.0,
+            auto_advance: false,
+            was_playing: false,
+            show_remaining: false,
             show_marked_only: false,
             selected_column: 0,
             sort_column: None,
@@ -164,6 +176,12 @@ impl App {
             Action::SortDescending => self.sort_by_selected_column(false),
             Action::TogglePlayback => self.toggle_playback(),
             Action::StopPlayback => self.stop_playback(),
+            Action::SeekForwardSmall => self.seek_relative(self.scrub_small),
+            Action::SeekForwardLarge => self.seek_relative(self.scrub_large),
+            Action::SeekBackwardSmall => self.seek_relative(-self.scrub_small),
+            Action::SeekBackwardLarge => self.seek_relative(-self.scrub_large),
+            Action::ToggleAutoAdvance => self.auto_advance = !self.auto_advance,
+            Action::ToggleTimeDisplay => self.show_remaining = !self.show_remaining,
             Action::ToggleMark => self.toggle_mark(),
             Action::ClearMarks => self.clear_all_marks(),
             Action::ToggleMarkedFilter => self.toggle_marked_filter(),
@@ -411,36 +429,61 @@ impl App {
         }
     }
 
-    /// Stop playback.
+    /// Stop playback (manual stop — clears was_playing to prevent auto-advance).
     fn stop_playback(&mut self) {
         if let Some(ref engine) = self.playback {
             engine.stop();
         }
-        self.playback_position = 0.0;
+        self.was_playing = false;
     }
 
-    /// Update playback position from elapsed/duration. Called on each tick.
+    /// Playback position as fraction 0.0–1.0 (derived from engine sample offset).
+    pub fn playback_position(&self) -> f32 {
+        self.playback
+            .as_ref()
+            .map(|e| e.position_fraction())
+            .unwrap_or(0.0)
+    }
+
+    /// Update playback position from elapsed time. Called on each tick.
+    ///
+    /// Also detects natural playback completion for auto-advance mode.
     pub fn update_playback_position(&mut self) {
         let engine = match &self.playback {
             Some(e) => e,
             None => return,
         };
-        match engine.state() {
+        let state = engine.state();
+        match state {
             PlaybackState::Playing => {
-                if let Some(duration) = engine.duration() {
-                    let secs = duration.as_secs_f32();
-                    if secs > 0.0 {
-                        self.playback_position =
-                            (engine.elapsed().as_secs_f32() / secs).clamp(0.0, 1.0);
+                engine.update_sample_offset();
+                self.was_playing = true;
+            }
+            PlaybackState::Stopped => {
+                if self.auto_advance && self.was_playing {
+                    // Natural completion: advance to next sample.
+                    self.was_playing = false;
+                    if self.selected + 1 < self.results.len() {
+                        self.selected += 1;
+                        self.selection_changed = true;
+                        self.adjust_scroll();
+                        // Play the next sample.
+                        self.toggle_playback();
                     }
+                } else {
+                    self.was_playing = false;
                 }
             }
             PlaybackState::Paused => {
-                // Keep position frozen.
+                // Keep position frozen, don't change was_playing.
             }
-            PlaybackState::Stopped => {
-                self.playback_position = 0.0;
-            }
+        }
+    }
+
+    /// Seek relative to current position (seconds). No-op when stopped or no engine.
+    fn seek_relative(&self, delta: f64) {
+        if let Some(ref engine) = self.playback {
+            let _ = engine.seek_relative(delta);
         }
     }
 
@@ -793,6 +836,17 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
     if let Some(ref keymap_overrides) = config.keymap {
         app.keymap = actions::Keymap::with_overrides(keymap_overrides);
     }
+
+    // Apply scrub config.
+    let (scrub_small, scrub_large) =
+        crate::engine::config::resolve_scrub_increments(config.scrub.as_ref());
+    app.scrub_small = scrub_small;
+    app.scrub_large = scrub_large;
+    app.auto_advance = config
+        .scrub
+        .as_ref()
+        .and_then(|s| s.auto_advance)
+        .unwrap_or(false);
 
     // Initialize marks store based on search mode.
     let marks_store: Box<dyn MarkStore> = if let Some(ref db_path) = db_path_for_peaks {
@@ -1213,7 +1267,7 @@ mod tests {
         let mut app = make_app_with_results(5);
         // s on empty query should stop playback (no panic).
         app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
-        assert_eq!(app.playback_position, 0.0);
+        assert_eq!(app.playback_position(), 0.0);
         assert!(!app.should_quit);
     }
 
@@ -1250,9 +1304,10 @@ mod tests {
     #[test]
     fn test_app_selection_change_stops_playback() {
         let mut app = make_app_with_results(5);
-        app.playback_position = 0.5; // Simulate mid-playback.
+        // Selection change triggers stop_playback, which calls engine.stop().
+        // With no real engine playing, position_fraction() returns 0.0.
         app.move_selection(1);
-        assert_eq!(app.playback_position, 0.0, "selection change should reset position");
+        assert_eq!(app.playback_position(), 0.0, "selection change should reset position");
     }
 
     // --- S6-T1 tests: Played file coloring ---
@@ -1914,5 +1969,100 @@ mod tests {
     fn test_theme_resolution_invalid_config_falls_to_default() {
         let theme = super::resolve_theme(None, Some("nonexistent"));
         assert_eq!(theme.name, "telescope");
+    }
+
+    // --- S8-T4 tests: Scrub dispatch ---
+
+    #[test]
+    fn test_dispatch_seek_forward_small() {
+        let mut app = make_app_with_results(5);
+        // Dispatch seek when stopped — should be no-op, no panic.
+        app.dispatch(actions::Action::SeekForwardSmall);
+        assert_eq!(app.playback_position(), 0.0);
+    }
+
+    #[test]
+    fn test_dispatch_seek_when_stopped_is_noop() {
+        let mut app = make_app_with_results(5);
+        app.dispatch(actions::Action::SeekForwardSmall);
+        app.dispatch(actions::Action::SeekBackwardSmall);
+        app.dispatch(actions::Action::SeekForwardLarge);
+        app.dispatch(actions::Action::SeekBackwardLarge);
+        // All should be no-ops with no panic.
+        assert!(!app.should_quit);
+    }
+
+    // --- S8-T5 tests: Auto-advance ---
+
+    #[test]
+    fn test_auto_advance_default_off() {
+        let app = App::new(Theme::default());
+        assert!(!app.auto_advance);
+    }
+
+    #[test]
+    fn test_toggle_auto_advance() {
+        let mut app = App::new(Theme::default());
+        app.dispatch(actions::Action::ToggleAutoAdvance);
+        assert!(app.auto_advance);
+        app.dispatch(actions::Action::ToggleAutoAdvance);
+        assert!(!app.auto_advance);
+    }
+
+    #[test]
+    fn test_auto_advance_on_natural_completion() {
+        let mut app = make_app_with_results(5);
+        app.auto_advance = true;
+        app.was_playing = true;
+        app.selected = 0;
+        // Simulate Stopped transition (engine is None, so state() returns Stopped).
+        app.update_playback_position();
+        // With no engine, toggle_playback is a no-op, but selection should advance.
+        assert_eq!(app.selected, 1, "should advance to next row");
+    }
+
+    #[test]
+    fn test_auto_advance_off_no_advance() {
+        let mut app = make_app_with_results(5);
+        app.auto_advance = false;
+        app.was_playing = true;
+        app.selected = 0;
+        app.update_playback_position();
+        assert_eq!(app.selected, 0, "should not advance when auto_advance is off");
+    }
+
+    #[test]
+    fn test_auto_advance_manual_stop_no_advance() {
+        let mut app = make_app_with_results(5);
+        app.auto_advance = true;
+        app.was_playing = true;
+        // Manual stop clears was_playing.
+        app.stop_playback();
+        assert!(!app.was_playing);
+        // Now a Stopped tick should not advance.
+        app.update_playback_position();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_auto_advance_at_last_row_stops() {
+        let mut app = make_app_with_results(5);
+        app.auto_advance = true;
+        app.was_playing = true;
+        app.selected = 4; // last row
+        app.update_playback_position();
+        assert_eq!(app.selected, 4, "should not advance past last row");
+    }
+
+    // --- S8-T6 tests: Time display toggle ---
+
+    #[test]
+    fn test_toggle_time_display() {
+        let mut app = App::new(Theme::default());
+        assert!(!app.show_remaining);
+        app.dispatch(actions::Action::ToggleTimeDisplay);
+        assert!(app.show_remaining);
+        app.dispatch(actions::Action::ToggleTimeDisplay);
+        assert!(!app.show_remaining);
     }
 }

@@ -24,6 +24,12 @@ pub enum Action {
     // Playback
     TogglePlayback,
     StopPlayback,
+    SeekForwardSmall,
+    SeekForwardLarge,
+    SeekBackwardSmall,
+    SeekBackwardLarge,
+    ToggleAutoAdvance,
+    ToggleTimeDisplay,
 
     // Marks
     ToggleMark,
@@ -61,6 +67,12 @@ impl Action {
         Action::SortDescending,
         Action::TogglePlayback,
         Action::StopPlayback,
+        Action::SeekForwardSmall,
+        Action::SeekForwardLarge,
+        Action::SeekBackwardSmall,
+        Action::SeekBackwardLarge,
+        Action::ToggleAutoAdvance,
+        Action::ToggleTimeDisplay,
         Action::ToggleMark,
         Action::ClearMarks,
         Action::ToggleMarkedFilter,
@@ -88,6 +100,12 @@ impl Action {
             "sort_descending" => Some(Action::SortDescending),
             "toggle_playback" => Some(Action::TogglePlayback),
             "stop_playback" => Some(Action::StopPlayback),
+            "seek_forward_small" => Some(Action::SeekForwardSmall),
+            "seek_forward_large" => Some(Action::SeekForwardLarge),
+            "seek_backward_small" => Some(Action::SeekBackwardSmall),
+            "seek_backward_large" => Some(Action::SeekBackwardLarge),
+            "toggle_auto_advance" => Some(Action::ToggleAutoAdvance),
+            "toggle_time_display" => Some(Action::ToggleTimeDisplay),
             "toggle_mark" => Some(Action::ToggleMark),
             "clear_marks" => Some(Action::ClearMarks),
             "toggle_marked_filter" => Some(Action::ToggleMarkedFilter),
@@ -117,6 +135,12 @@ impl Action {
             Action::SortDescending => "sort_descending",
             Action::TogglePlayback => "toggle_playback",
             Action::StopPlayback => "stop_playback",
+            Action::SeekForwardSmall => "seek_forward_small",
+            Action::SeekForwardLarge => "seek_forward_large",
+            Action::SeekBackwardSmall => "seek_backward_small",
+            Action::SeekBackwardLarge => "seek_backward_large",
+            Action::ToggleAutoAdvance => "toggle_auto_advance",
+            Action::ToggleTimeDisplay => "toggle_time_display",
             Action::ToggleMark => "toggle_mark",
             Action::ClearMarks => "clear_marks",
             Action::ToggleMarkedFilter => "toggle_marked_filter",
@@ -153,6 +177,12 @@ impl Action {
             Action::SortDescending => "Sort column descending",
             Action::TogglePlayback => "Play / pause",
             Action::StopPlayback => "Stop playback",
+            Action::SeekForwardSmall => "Seek forward (small)",
+            Action::SeekForwardLarge => "Seek forward (large)",
+            Action::SeekBackwardSmall => "Seek backward (small)",
+            Action::SeekBackwardLarge => "Seek backward (large)",
+            Action::ToggleAutoAdvance => "Toggle auto-advance",
+            Action::ToggleTimeDisplay => "Toggle elapsed/remaining",
             Action::ToggleMark => "Toggle mark on row",
             Action::ClearMarks => "Clear all marks",
             Action::ToggleMarkedFilter => "Filter to marked only",
@@ -178,7 +208,14 @@ impl Action {
             | Action::MoveColumnLeft
             | Action::MoveColumnRight => "Navigation",
             Action::SortAscending | Action::SortDescending => "Sort",
-            Action::TogglePlayback | Action::StopPlayback => "Playback",
+            Action::TogglePlayback
+            | Action::StopPlayback
+            | Action::SeekForwardSmall
+            | Action::SeekForwardLarge
+            | Action::SeekBackwardSmall
+            | Action::SeekBackwardLarge
+            | Action::ToggleAutoAdvance
+            | Action::ToggleTimeDisplay => "Playback",
             Action::ToggleMark | Action::ClearMarks | Action::ToggleMarkedFilter => "Marks",
             Action::EnterInsertMode
             | Action::EnterNormalMode
@@ -196,7 +233,7 @@ impl Action {
 /// "Up", "Down", "Backspace", "Tab", "/", "?"), and modifier combos ("Ctrl-C",
 /// "Ctrl-D", "Ctrl-U").
 pub fn parse_key(s: &str) -> Option<KeyEvent> {
-    // Modifier prefix.
+    // Modifier prefix: Ctrl-
     if let Some(rest) = s.strip_prefix("Ctrl-") {
         let ch = rest.chars().next()?;
         if rest.len() != ch.len_utf8() {
@@ -206,6 +243,18 @@ pub fn parse_key(s: &str) -> Option<KeyEvent> {
             KeyCode::Char(ch.to_ascii_lowercase()),
             KeyModifiers::CONTROL,
         ));
+    }
+
+    // Modifier prefix: S- (Shift + special key)
+    if let Some(rest) = s.strip_prefix("S-") {
+        let inner = match rest {
+            "Left" => KeyCode::Left,
+            "Right" => KeyCode::Right,
+            "Up" => KeyCode::Up,
+            "Down" => KeyCode::Down,
+            _ => return None,
+        };
+        return Some(KeyEvent::new(inner, KeyModifiers::SHIFT));
     }
 
     // Special key names.
@@ -283,6 +332,12 @@ impl Keymap {
         // Playback
         bindings.insert((KeyCode::Char(' '), none), Action::TogglePlayback);
         bindings.insert((KeyCode::Char('s'), none), Action::StopPlayback);
+        bindings.insert((KeyCode::Right, none), Action::SeekForwardSmall);
+        bindings.insert((KeyCode::Left, none), Action::SeekBackwardSmall);
+        bindings.insert((KeyCode::Right, shift), Action::SeekForwardLarge);
+        bindings.insert((KeyCode::Left, shift), Action::SeekBackwardLarge);
+        bindings.insert((KeyCode::Char('a'), none), Action::ToggleAutoAdvance);
+        bindings.insert((KeyCode::Char('t'), none), Action::ToggleTimeDisplay);
 
         // Marks
         bindings.insert((KeyCode::Char('m'), none), Action::ToggleMark);
@@ -338,6 +393,14 @@ pub fn key_display(code: &KeyCode, modifiers: &KeyModifiers) -> String {
     let mut s = String::new();
     if modifiers.contains(KeyModifiers::CONTROL) {
         s.push_str("Ctrl-");
+    } else if modifiers.contains(KeyModifiers::SHIFT) {
+        // Shift prefix for non-char keys (arrows, etc).
+        match code {
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                s.push_str("S-");
+            }
+            _ => {}
+        }
     }
     match code {
         KeyCode::Char(' ') => s.push_str("Space"),
@@ -412,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_all_count_matches_variants() {
-        assert_eq!(Action::ALL.len(), 22);
+        assert_eq!(Action::ALL.len(), 28);
     }
 
     #[test]
@@ -551,5 +614,58 @@ mod tests {
         assert_eq!(key.code, KeyCode::Char('?'));
         // '?' is not uppercase alpha, so no SHIFT added by parse_key for symbol chars.
         // But in terminal events, ? comes with SHIFT. Let's verify our keymap handles it.
+    }
+
+    // --- S8-T4 tests: Scrub actions ---
+
+    #[test]
+    fn test_action_seek_variants_roundtrip() {
+        for action in [
+            Action::SeekForwardSmall,
+            Action::SeekForwardLarge,
+            Action::SeekBackwardSmall,
+            Action::SeekBackwardLarge,
+        ] {
+            let name = action.name();
+            assert_eq!(
+                Action::from_name(name),
+                Some(action),
+                "round-trip failed for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_default_keymap_has_seek_bindings() {
+        let km = Keymap::default_keymap();
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(km.resolve(right), Some(Action::SeekForwardSmall));
+
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(km.resolve(left), Some(Action::SeekBackwardSmall));
+
+        let s_right = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
+        assert_eq!(km.resolve(s_right), Some(Action::SeekForwardLarge));
+
+        let s_left = KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT);
+        assert_eq!(km.resolve(s_left), Some(Action::SeekBackwardLarge));
+    }
+
+    #[test]
+    fn test_parse_key_shifted_arrows() {
+        let s_left = parse_key("S-Left").unwrap();
+        assert_eq!(s_left.code, KeyCode::Left);
+        assert_eq!(s_left.modifiers, KeyModifiers::SHIFT);
+
+        let s_right = parse_key("S-Right").unwrap();
+        assert_eq!(s_right.code, KeyCode::Right);
+        assert_eq!(s_right.modifiers, KeyModifiers::SHIFT);
+    }
+
+    // --- S8-T6 tests: Action count ---
+
+    #[test]
+    fn test_action_all_count_final() {
+        assert_eq!(Action::ALL.len(), 28, "Sprint 8 final count should be 28");
     }
 }

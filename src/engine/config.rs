@@ -8,6 +8,17 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Scrubbing / seek configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScrubConfig {
+    /// Small seek increment in seconds (default 0.1).
+    pub small_increment: Option<f64>,
+    /// Large seek increment in seconds (default 1.0).
+    pub large_increment: Option<f64>,
+    /// Auto-advance to next sample on playback completion (default false).
+    pub auto_advance: Option<bool>,
+}
+
 /// Application configuration loaded from TOML.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -27,6 +38,23 @@ pub struct Config {
     pub default_sort_order: Option<String>,
     /// Normal mode key-to-action overrides (key name → action name).
     pub keymap: Option<HashMap<String, String>>,
+    /// Scrubbing / seek settings.
+    pub scrub: Option<ScrubConfig>,
+}
+
+/// Resolve scrub increments from config, with clamping and defaults.
+///
+/// Returns `(small_increment, large_increment)` in seconds.
+pub fn resolve_scrub_increments(scrub: Option<&ScrubConfig>) -> (f64, f64) {
+    let small = scrub
+        .and_then(|s| s.small_increment)
+        .unwrap_or(0.1)
+        .clamp(0.01, 100.0);
+    let large = scrub
+        .and_then(|s| s.large_increment)
+        .unwrap_or(1.0)
+        .clamp(0.01, 100.0);
+    (small, large)
 }
 
 /// Default column list for the metadata table.
@@ -236,6 +264,7 @@ mod tests {
             default_sort: None,
             default_sort_order: None,
             keymap: None,
+            scrub: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
@@ -321,5 +350,38 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    // --- S8-T4 tests: Scrub config ---
+
+    #[test]
+    fn test_scrub_config_defaults() {
+        let (small, large) = resolve_scrub_increments(None);
+        assert!((small - 0.1).abs() < f64::EPSILON);
+        assert!((large - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_scrub_config_override() {
+        let scrub = ScrubConfig {
+            small_increment: Some(0.5),
+            large_increment: Some(2.0),
+            auto_advance: None,
+        };
+        let (small, large) = resolve_scrub_increments(Some(&scrub));
+        assert!((small - 0.5).abs() < f64::EPSILON);
+        assert!((large - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_scrub_config_clamps_range() {
+        let scrub = ScrubConfig {
+            small_increment: Some(0.001),
+            large_increment: Some(500.0),
+            auto_advance: None,
+        };
+        let (small, large) = resolve_scrub_increments(Some(&scrub));
+        assert!((small - 0.01).abs() < f64::EPSILON, "should clamp low to 0.01, got {small}");
+        assert!((large - 100.0).abs() < f64::EPSILON, "should clamp high to 100.0, got {large}");
     }
 }
