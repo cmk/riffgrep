@@ -23,6 +23,8 @@ pub struct PreviewData {
     pub peaks: Vec<u8>,
     /// Audio format info (duration, sample rate, etc.) if available.
     pub audio_info: Option<crate::engine::wav::AudioInfo>,
+    /// Marker configuration from BEXT v2, if available.
+    pub markers: Option<crate::engine::bext::MarkerConfig>,
 }
 
 /// Events that drive the TUI state machine.
@@ -120,6 +122,10 @@ pub struct App {
     pub keymap: actions::Keymap,
     /// Whether the help overlay is currently shown.
     pub show_help: bool,
+    /// Transient status message shown in the status bar.
+    pub status_message: Option<String>,
+    /// Timestamp when the status message was set (for auto-clear).
+    pub status_message_time: Option<std::time::Instant>,
 }
 
 impl App {
@@ -160,6 +166,8 @@ impl App {
             sort_ascending: true,
             keymap: actions::Keymap::default(),
             show_help: false,
+            status_message: None,
+            status_message_time: None,
         }
     }
 
@@ -188,6 +196,7 @@ impl App {
             Action::ToggleMark => self.toggle_mark(),
             Action::ClearMarks => self.clear_all_marks(),
             Action::ToggleMarkedFilter => self.toggle_marked_filter(),
+            Action::SaveMarkers => self.save_markers(),
             Action::EnterInsertMode => self.enter_insert_mode(),
             Action::EnterNormalMode => self.enter_normal_mode(),
             Action::SearchSubmit => {
@@ -534,6 +543,61 @@ impl App {
     /// Toggle between showing all results and marked-only.
     fn toggle_marked_filter(&mut self) {
         self.show_marked_only = !self.show_marked_only;
+    }
+
+    /// Set a transient status message (auto-clears after ~2s).
+    fn set_status(&mut self, msg: String) {
+        self.status_message = Some(msg);
+        self.status_message_time = Some(std::time::Instant::now());
+    }
+
+    /// Get current markers from preview/row, or generate defaults.
+    pub fn current_markers_or_default(&self) -> crate::engine::bext::MarkerConfig {
+        // 1. Check preview.
+        if let Some(ref preview) = self.preview {
+            if let Some(m) = preview.markers {
+                return m;
+            }
+        }
+        // 2. Check selected row.
+        if let Some(row) = self.results.get(self.selected) {
+            if let Some(m) = row.markers {
+                return m;
+            }
+        }
+        // 3. Default: preset_shot.
+        crate::engine::bext::MarkerConfig::preset_shot()
+    }
+
+    /// Save markers to the BEXT chunk of the currently selected file.
+    fn save_markers(&mut self) {
+        let row = match self.results.get(self.selected) {
+            Some(r) => r,
+            None => {
+                self.set_status("No file selected".to_string());
+                return;
+            }
+        };
+
+        let path = row.meta.path.clone();
+        let markers = self.current_markers_or_default();
+
+        match crate::engine::bext::write_markers(&path, &markers) {
+            Ok(()) => {
+                self.set_status(format!("Markers saved to {}", path.display()));
+                // Update preview markers to reflect what was written.
+                if let Some(ref mut preview) = self.preview {
+                    preview.markers = Some(markers);
+                }
+                // Update the table row as well.
+                if let Some(row) = self.results.get_mut(self.selected) {
+                    row.markers = Some(markers);
+                }
+            }
+            Err(e) => {
+                self.set_status(format!("Save failed: {e}"));
+            }
+        }
     }
 
     /// Sort results by the currently selected column.
@@ -985,6 +1049,7 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
                         metadata: row.meta,
                         peaks: peaks.unwrap_or_default(),
                         audio_info,
+                        markers: row.markers,
                     });
                 }
             }
@@ -1022,6 +1087,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             })
             .collect();
         app
@@ -1171,6 +1237,7 @@ mod tests {
             meta: UnifiedMetadata::default(),
             audio_info: None,
             marked: false,
+            markers: None,
         }]);
         assert_eq!(app.selected, 0);
     }
@@ -1287,6 +1354,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
+            markers: None,
         }];
         // All playback operations should be no-ops with no panic.
         app.toggle_playback();
@@ -1324,6 +1392,7 @@ mod tests {
             },
             peaks: vec![],
             audio_info: None,
+            markers: None,
         });
         assert!(!app.played.contains(&path), "preview should not add to played set");
     }
@@ -1490,6 +1559,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1499,6 +1569,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
         ];
         app.sort_by_selected_column(true);
@@ -1520,6 +1591,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1529,6 +1601,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
         ];
         app.sort_by_selected_column(false);
@@ -1550,6 +1623,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1559,6 +1633,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
         ];
         app.sort_by_selected_column(true);
@@ -1580,6 +1655,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1589,6 +1665,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
         ];
         app.sort_by_selected_column(true);
@@ -1619,6 +1696,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
+            markers: None,
         }];
 
         app.sort_by_selected_column(true);
@@ -1905,6 +1983,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
+            markers: None,
         };
         app.on_search_results(vec![new_row]);
         assert_eq!(app.results.len(), 1, "old results should be replaced");
@@ -1924,6 +2003,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
+            markers: None,
         };
         app.on_search_results(vec![row1]);
         assert_eq!(app.results.len(), 1);
@@ -1935,6 +2015,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
+            markers: None,
         };
         app.on_search_results(vec![row2]);
         assert_eq!(app.results.len(), 2);
@@ -2059,5 +2140,150 @@ mod tests {
         assert!(app.show_remaining);
         app.dispatch(actions::Action::ToggleTimeDisplay);
         assert!(!app.show_remaining);
+    }
+
+    // --- S9-T6 tests: Store markers in App state ---
+
+    #[test]
+    fn test_preview_data_with_markers() {
+        let markers = crate::engine::bext::MarkerConfig::preset_shot();
+        let preview = PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+        };
+        assert!(preview.markers.is_some());
+        assert_eq!(preview.markers.unwrap(), markers);
+    }
+
+    #[test]
+    fn test_preview_data_no_markers() {
+        let preview = PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: None,
+        };
+        assert!(preview.markers.is_none());
+    }
+
+    #[test]
+    fn test_table_row_carries_markers() {
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        let row = TableRow {
+            meta: UnifiedMetadata::default(),
+            audio_info: None,
+            marked: false,
+            markers: Some(markers),
+        };
+        assert!(row.markers.is_some());
+        assert_eq!(row.markers.unwrap(), markers);
+    }
+
+    #[test]
+    fn test_on_preview_ready_carries_markers() {
+        let mut app = App::new(Theme::default());
+        let markers = crate::engine::bext::MarkerConfig::preset_shot();
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata {
+                path: std::path::PathBuf::from("/test/marker.wav"),
+                ..Default::default()
+            },
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+        });
+        assert!(app.preview.is_some());
+        assert_eq!(app.preview.unwrap().markers, Some(markers));
+    }
+
+    #[test]
+    fn test_preview_markers_cleared_on_new_preview() {
+        let mut app = App::new(Theme::default());
+        // Set up a preview with markers.
+        let markers = crate::engine::bext::MarkerConfig::preset_shot();
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata {
+                path: std::path::PathBuf::from("/test/marker.wav"),
+                ..Default::default()
+            },
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+        });
+        assert!(app.preview.as_ref().unwrap().markers.is_some());
+
+        // Overwrite with a preview that has no markers.
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata {
+                path: std::path::PathBuf::from("/test/no_marker.wav"),
+                ..Default::default()
+            },
+            peaks: vec![],
+            audio_info: None,
+            markers: None,
+        });
+        assert!(app.preview.as_ref().unwrap().markers.is_none());
+    }
+
+    // --- S9-T9 tests: SaveMarkers action ---
+
+    #[test]
+    fn test_current_markers_or_default_shot() {
+        let app = App::new(Theme::default());
+        // No preview, no results → should return preset_shot.
+        let markers = app.current_markers_or_default();
+        assert_eq!(markers, crate::engine::bext::MarkerConfig::preset_shot());
+    }
+
+    #[test]
+    fn test_current_markers_or_default_uses_existing() {
+        let mut app = App::new(Theme::default());
+        let custom = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata {
+                path: std::path::PathBuf::from("/test/marker.wav"),
+                ..Default::default()
+            },
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(custom),
+        });
+        assert_eq!(app.current_markers_or_default(), custom);
+    }
+
+    #[test]
+    fn test_current_markers_or_default_falls_through_to_row() {
+        let mut app = App::new(Theme::default());
+        let custom = crate::engine::bext::MarkerConfig::preset_loop(96000);
+        app.results = vec![TableRow {
+            meta: UnifiedMetadata::default(),
+            audio_info: None,
+            marked: false,
+            markers: Some(custom),
+        }];
+        app.selected = 0;
+        // No preview set → should use row markers.
+        assert_eq!(app.current_markers_or_default(), custom);
+    }
+
+    #[test]
+    fn test_save_markers_no_selection() {
+        let mut app = App::new(Theme::default());
+        app.save_markers();
+        assert!(
+            app.status_message.as_deref() == Some("No file selected"),
+            "expected 'No file selected' but got {:?}",
+            app.status_message
+        );
+    }
+
+    #[test]
+    fn test_status_message_set() {
+        let mut app = App::new(Theme::default());
+        app.set_status("hello".to_string());
+        assert_eq!(app.status_message.as_deref(), Some("hello"));
+        assert!(app.status_message_time.is_some());
     }
 }

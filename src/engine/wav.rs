@@ -1307,9 +1307,6 @@ mod tests {
                 let fmt = parse_fmt(&mut cursor, &map).unwrap();
                 let peaks = compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
                 prop_assert_eq!(peaks.len(), PEAK_COUNT);
-                for &v in &peaks {
-                    prop_assert!(v <= 255);
-                }
             }
         }
     }

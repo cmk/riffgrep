@@ -26,6 +26,10 @@ fn make_test_meta(i: usize) -> UnifiedMetadata {
         usage_id: "".to_string(),
         umid: "".to_string(),
         recid: 0,
+        take: "".to_string(),
+        track: "".to_string(),
+        item: "".to_string(),
+        date: "".to_string(),
     }
 }
 

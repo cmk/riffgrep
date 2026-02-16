@@ -35,6 +35,7 @@ pub enum Action {
     ToggleMark,
     ClearMarks,
     ToggleMarkedFilter,
+    SaveMarkers,
 
     // Mode
     EnterInsertMode,
@@ -77,6 +78,7 @@ impl Action {
         Action::ToggleMark,
         Action::ClearMarks,
         Action::ToggleMarkedFilter,
+        Action::SaveMarkers,
         Action::EnterInsertMode,
         Action::EnterNormalMode,
         Action::SearchSubmit,
@@ -110,6 +112,7 @@ impl Action {
             "toggle_mark" => Some(Action::ToggleMark),
             "clear_marks" => Some(Action::ClearMarks),
             "toggle_marked_filter" => Some(Action::ToggleMarkedFilter),
+            "save_markers" => Some(Action::SaveMarkers),
             "enter_insert_mode" => Some(Action::EnterInsertMode),
             "enter_normal_mode" => Some(Action::EnterNormalMode),
             "search_submit" => Some(Action::SearchSubmit),
@@ -145,6 +148,7 @@ impl Action {
             Action::ToggleMark => "toggle_mark",
             Action::ClearMarks => "clear_marks",
             Action::ToggleMarkedFilter => "toggle_marked_filter",
+            Action::SaveMarkers => "save_markers",
             Action::EnterInsertMode => "enter_insert_mode",
             Action::EnterNormalMode => "enter_normal_mode",
             Action::SearchSubmit => "search_submit",
@@ -187,6 +191,7 @@ impl Action {
             Action::ToggleMark => "Toggle mark on row",
             Action::ClearMarks => "Clear all marks",
             Action::ToggleMarkedFilter => "Filter to marked only",
+            Action::SaveMarkers => "Save markers to file",
             Action::EnterInsertMode => "Enter search mode",
             Action::EnterNormalMode => "Exit search mode",
             Action::SearchSubmit => "Submit search",
@@ -217,7 +222,10 @@ impl Action {
             | Action::SeekBackwardLarge
             | Action::ToggleAutoAdvance
             | Action::ToggleTimeDisplay => "Playback",
-            Action::ToggleMark | Action::ClearMarks | Action::ToggleMarkedFilter => "Marks",
+            Action::ToggleMark
+            | Action::ClearMarks
+            | Action::ToggleMarkedFilter
+            | Action::SaveMarkers => "Marks",
             Action::EnterInsertMode
             | Action::EnterNormalMode
             | Action::SearchSubmit
@@ -344,6 +352,7 @@ impl Keymap {
         bindings.insert((KeyCode::Char('m'), none), Action::ToggleMark);
         bindings.insert((KeyCode::Char('M'), shift), Action::ClearMarks);
         bindings.insert((KeyCode::Char('f'), none), Action::ToggleMarkedFilter);
+        bindings.insert((KeyCode::Char('w'), none), Action::SaveMarkers);
 
         // Mode
         bindings.insert((KeyCode::Char('i'), none), Action::EnterInsertMode);
@@ -476,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_all_count_matches_variants() {
-        assert_eq!(Action::ALL.len(), 28);
+        assert_eq!(Action::ALL.len(), 29);
     }
 
     #[test]
@@ -667,6 +676,27 @@ mod tests {
 
     #[test]
     fn test_action_all_count_final() {
-        assert_eq!(Action::ALL.len(), 28, "Sprint 8 final count should be 28");
+        assert_eq!(Action::ALL.len(), 29, "Sprint 9 final count should be 29");
+    }
+
+    // --- S9-T9 tests: SaveMarkers action ---
+
+    #[test]
+    fn test_save_markers_action_roundtrip() {
+        let name = Action::SaveMarkers.name();
+        assert_eq!(name, "save_markers");
+        assert_eq!(Action::from_name(name), Some(Action::SaveMarkers));
+    }
+
+    #[test]
+    fn test_save_markers_category() {
+        assert_eq!(Action::SaveMarkers.category(), "Marks");
+    }
+
+    #[test]
+    fn test_keymap_has_save_markers() {
+        let km = Keymap::default_keymap();
+        let w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+        assert_eq!(km.resolve(w), Some(Action::SaveMarkers));
     }
 }

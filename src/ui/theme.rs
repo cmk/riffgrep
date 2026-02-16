@@ -46,6 +46,10 @@ pub struct Theme {
     pub mode_normal: Style,
     /// Insert (search) mode indicator style.
     pub mode_insert: Style,
+    /// Bank A marker line color (vertical overlay on waveform top half).
+    pub marker_a: Color,
+    /// Bank B marker line color (vertical overlay on waveform bottom half).
+    pub marker_b: Color,
 }
 
 impl Theme {
@@ -87,6 +91,8 @@ impl Theme {
             mode_insert: Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
+            marker_a: Color::Yellow,
+            marker_b: Color::Magenta,
         }
     }
 
@@ -128,6 +134,8 @@ impl Theme {
             mode_insert: Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
+            marker_a: Color::Rgb(255, 200, 0),
+            marker_b: Color::Rgb(200, 100, 255),
         }
     }
 
@@ -169,6 +177,8 @@ impl Theme {
             mode_insert: Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
+            marker_a: Color::Yellow,
+            marker_b: Color::Rgb(200, 100, 255),
         }
     }
 
@@ -230,5 +240,41 @@ mod tests {
     #[test]
     fn test_theme_by_name_invalid_errors() {
         assert!(Theme::by_name("nonexistent").is_err());
+    }
+
+    // --- S9-T7 tests: marker colors ---
+
+    #[test]
+    fn test_all_themes_have_marker_colors() {
+        for theme in [Theme::telescope(), Theme::ableton(), Theme::soundminer()] {
+            assert_ne!(
+                theme.marker_a, theme.marker_b,
+                "{}: marker_a and marker_b should differ",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_marker_colors_differ_from_waveform() {
+        for theme in [Theme::telescope(), Theme::ableton(), Theme::soundminer()] {
+            assert_ne!(
+                theme.marker_a, theme.waveform_positive,
+                "{}: marker_a should differ from waveform_positive",
+                theme.name
+            );
+            assert_ne!(
+                theme.marker_b, theme.waveform_negative,
+                "{}: marker_b should differ from waveform_negative",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_default_theme_has_marker_colors() {
+        let theme = Theme::default();
+        assert_ne!(theme.marker_a, Color::Reset);
+        assert_ne!(theme.marker_b, Color::Reset);
     }
 }

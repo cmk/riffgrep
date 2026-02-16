@@ -102,6 +102,53 @@ fn render_playback_cursor(
     }
 }
 
+/// Render vertical marker lines on the waveform for both banks.
+///
+/// Bank A markers appear in the top half, Bank B in the bottom half (matching
+/// the stereo left/right split of the asymmetric waveform).
+fn render_marker_lines(
+    markers: &crate::engine::bext::MarkerConfig,
+    total_samples: u32,
+    x_start: u16,
+    y_start: u16,
+    wave_width: u16,
+    wave_rows: u16,
+    buf: &mut Buffer,
+    theme: &Theme,
+) {
+    if total_samples == 0 || wave_width == 0 {
+        return;
+    }
+
+    let half = wave_rows / 2;
+
+    // Bank A: top half rows.
+    for sample in markers.bank_a.defined_markers() {
+        let col = ((sample as u64 * wave_width as u64) / total_samples as u64) as u16;
+        let col = col.min(wave_width.saturating_sub(1));
+        let cx = x_start + col;
+        for row in 0..half {
+            let cy = y_start + row;
+            if let Some(cell) = buf.cell_mut((cx, cy)) {
+                cell.set_bg(theme.marker_a);
+            }
+        }
+    }
+
+    // Bank B: bottom half rows.
+    for sample in markers.bank_b.defined_markers() {
+        let col = ((sample as u64 * wave_width as u64) / total_samples as u64) as u16;
+        let col = col.min(wave_width.saturating_sub(1));
+        let cx = x_start + col;
+        for row in half..wave_rows {
+            let cy = y_start + row;
+            if let Some(cell) = buf.cell_mut((cx, cy)) {
+                cell.set_bg(theme.marker_b);
+            }
+        }
+    }
+}
+
 /// Format seconds as "M:SS" or "H:MM:SS".
 fn format_duration(secs: f64) -> String {
     let total = secs.round() as u64;
@@ -129,6 +176,15 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
     }
 
     let width = area.width as usize;
+
+    // Transient status message (auto-clears after 2s).
+    if let (Some(msg), Some(time)) = (&app.status_message, &app.status_message_time) {
+        if time.elapsed().as_secs() < 2 {
+            let truncated: String = msg.chars().take(width).collect();
+            buf.set_string(area.x, area.y, &truncated, theme.playback_accent);
+            return;
+        }
+    }
 
     // Left side: playback state with progress bar.
     let left = match app.playback_state() {
@@ -503,6 +559,28 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
         buf.set_string(area.x, area.y + i as u16, line, style);
     }
 
+    // Marker lines overlay (before playback cursor so cursor draws on top).
+    if let Some(markers) = &preview.markers {
+        if !markers.is_empty() {
+            // Compute total samples from audio_info if available.
+            let total_samples = preview.audio_info.as_ref().map_or(0u32, |ai| {
+                (ai.duration_secs * ai.sample_rate as f64) as u32
+            });
+            if total_samples > 0 {
+                render_marker_lines(
+                    markers,
+                    total_samples,
+                    area.x,
+                    area.y,
+                    wave_width as u16,
+                    wave_rows as u16,
+                    buf,
+                    theme,
+                );
+            }
+        }
+    }
+
     // Playback cursor overlay.
     if app.playback_position() > 0.0 && wave_width > 0 {
         render_playback_cursor(
@@ -782,6 +860,7 @@ mod tests {
             meta: UnifiedMetadata::default(),
             audio_info: None,
             marked: false,
+            markers: None,
         }
     }
 
@@ -1114,6 +1193,7 @@ mod tests {
             },
             peaks: vec![128u8; 180],
             audio_info: None,
+            markers: None,
         });
         app.results = vec![default_table_row()];
 
@@ -1155,6 +1235,7 @@ mod tests {
                 bit_depth: 16,
                 channels: 2,
             }),
+            markers: None,
         });
         app.results = vec![default_table_row()];
 
@@ -1180,6 +1261,7 @@ mod tests {
             },
             peaks: vec![128u8; 180],
             audio_info: None,
+            markers: None,
         });
         app.results = vec![default_table_row()];
 
@@ -1310,6 +1392,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
+            markers: None,
         }];
         let columns = vec!["name".to_string(), "vendor".to_string(), "category".to_string()];
 
@@ -1338,6 +1421,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1346,6 +1430,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
         ];
         app.selected = 1;
@@ -1372,6 +1457,7 @@ mod tests {
             },
             peaks: vec![128u8; 180],
             audio_info: None,
+            markers: None,
         });
         app.results = vec![default_table_row()];
 
@@ -1436,6 +1522,7 @@ mod tests {
                 channels: 2,
             }),
             marked: false,
+            markers: None,
         };
         assert_eq!(column_value(&row, "name"), "kick");
         assert_eq!(column_value(&row, "vendor"), "Mars");
@@ -1453,6 +1540,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
+            markers: None,
         };
         assert_eq!(column_value(&row, "duration"), "-");
         assert_eq!(column_value(&row, "sample_rate"), "-");
@@ -1507,6 +1595,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: true,
+                markers: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1515,6 +1604,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
+                markers: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1523,6 +1613,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: true,
+                markers: None,
             },
         ];
         app.show_marked_only = true;
@@ -1589,6 +1680,7 @@ mod tests {
                 channels: 2,
             }),
             marked: false,
+            markers: None,
         };
         assert_eq!(column_value(&row, "date"), "2024-01-15");
         assert_eq!(column_value(&row, "take"), "67");
@@ -1683,4 +1775,142 @@ mod tests {
         }
     }
 
+    // --- S9-T8 tests: Waveform marker overlay ---
+
+    #[test]
+    fn test_marker_lines_at_boundaries() {
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 40, 8);
+                let buf = f.buffer_mut();
+                let theme = Theme::default();
+                let markers = crate::engine::bext::MarkerConfig {
+                    bank_a: crate::engine::bext::MarkerBank {
+                        m1: 0, m2: crate::engine::bext::MARKER_EMPTY,
+                        m3: 47999, reps: [1, 0, 1, 1],
+                    },
+                    bank_b: crate::engine::bext::MarkerBank::empty(),
+                };
+                render_marker_lines(&markers, 48000, area.x, area.y, area.width, 8, buf, &theme);
+
+                // m1=0 should be at column 0.
+                let cell_0 = buf.cell((0, 0)).unwrap();
+                assert_eq!(cell_0.bg, theme.marker_a, "marker at sample 0 should be at col 0");
+
+                // m3=47999 should be at last column (39).
+                let cell_last = buf.cell((39, 0)).unwrap();
+                assert_eq!(cell_last.bg, theme.marker_a, "marker at sample 47999 should be at last col");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_marker_lines_bank_a_top_half_only() {
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 20, 8);
+                let buf = f.buffer_mut();
+                let theme = Theme::default();
+                let markers = crate::engine::bext::MarkerConfig {
+                    bank_a: crate::engine::bext::MarkerBank {
+                        m1: 24000, m2: crate::engine::bext::MARKER_EMPTY,
+                        m3: crate::engine::bext::MARKER_EMPTY, reps: [1, 0, 0, 1],
+                    },
+                    bank_b: crate::engine::bext::MarkerBank::empty(),
+                };
+                render_marker_lines(&markers, 48000, area.x, area.y, area.width, 8, buf, &theme);
+
+                // m1=24000 → col 10 (midpoint of 20-wide).
+                // Top half (rows 0-3) should have marker_a bg.
+                for row in 0..4u16 {
+                    let cell = buf.cell((10, row)).unwrap();
+                    assert_eq!(cell.bg, theme.marker_a, "bank A should appear in top half row {row}");
+                }
+                // Bottom half (rows 4-7) should NOT have marker_a bg.
+                for row in 4..8u16 {
+                    let cell = buf.cell((10, row)).unwrap();
+                    assert_ne!(cell.bg, theme.marker_a, "bank A should NOT appear in bottom half row {row}");
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_marker_lines_bank_b_bottom_half_only() {
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 20, 8);
+                let buf = f.buffer_mut();
+                let theme = Theme::default();
+                let markers = crate::engine::bext::MarkerConfig {
+                    bank_a: crate::engine::bext::MarkerBank::empty(),
+                    bank_b: crate::engine::bext::MarkerBank {
+                        m1: 24000, m2: crate::engine::bext::MARKER_EMPTY,
+                        m3: crate::engine::bext::MARKER_EMPTY, reps: [1, 0, 0, 1],
+                    },
+                };
+                render_marker_lines(&markers, 48000, area.x, area.y, area.width, 8, buf, &theme);
+
+                // m1=24000 → col 10.
+                // Top half (rows 0-3) should NOT have marker_b bg.
+                for row in 0..4u16 {
+                    let cell = buf.cell((10, row)).unwrap();
+                    assert_ne!(cell.bg, theme.marker_b, "bank B should NOT appear in top half row {row}");
+                }
+                // Bottom half (rows 4-7) should have marker_b bg.
+                for row in 4..8u16 {
+                    let cell = buf.cell((10, row)).unwrap();
+                    assert_eq!(cell.bg, theme.marker_b, "bank B should appear in bottom half row {row}");
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_marker_lines_empty_sentinels_skipped() {
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 20, 8);
+                let buf = f.buffer_mut();
+                let theme = Theme::default();
+                let markers = crate::engine::bext::MarkerConfig::empty();
+                // Snapshot buffer state before.
+                let before: Vec<_> = (0..20u16)
+                    .flat_map(|x| (0..8u16).map(move |y| (x, y)))
+                    .map(|(x, y)| buf.cell((x, y)).unwrap().bg)
+                    .collect();
+                render_marker_lines(&markers, 48000, area.x, area.y, area.width, 8, buf, &theme);
+                // Snapshot buffer state after — should be unchanged.
+                let after: Vec<_> = (0..20u16)
+                    .flat_map(|x| (0..8u16).map(move |y| (x, y)))
+                    .map(|(x, y)| buf.cell((x, y)).unwrap().bg)
+                    .collect();
+                assert_eq!(before, after, "empty markers should not modify buffer");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_marker_lines_zero_total_samples() {
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 20, 8);
+                let buf = f.buffer_mut();
+                let theme = Theme::default();
+                let markers = crate::engine::bext::MarkerConfig::preset_shot();
+                // Should not panic with total_samples=0.
+                render_marker_lines(&markers, 0, area.x, area.y, area.width, 8, buf, &theme);
+            })
+            .unwrap();
+    }
 }

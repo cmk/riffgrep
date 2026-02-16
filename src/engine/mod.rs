@@ -32,6 +32,8 @@ pub struct TableRow {
     pub audio_info: Option<wav::AudioInfo>,
     /// Whether this file is marked/selected.
     pub marked: bool,
+    /// Marker configuration from BEXT (if packed schema present).
+    pub markers: Option<bext::MarkerConfig>,
 }
 
 /// Merged metadata from BEXT and RIFF INFO chunks.

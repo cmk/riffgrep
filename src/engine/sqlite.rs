@@ -14,9 +14,9 @@ use rusqlite::{Connection, params};
 use super::{MatchMode, Pattern, SearchQuery, UnifiedMetadata};
 
 /// Current schema version, tracked via `PRAGMA user_version`.
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 
-/// SQL for inserting/replacing a sample row (28 parameters).
+/// SQL for inserting/replacing a sample row (29 parameters).
 const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
     path, name, parent_folder,
     vendor, library, category, sound_id,
@@ -24,7 +24,7 @@ const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
     rating, subcategory, genre_id, usage_id,
     umid, recid, mtime, peaks, peaks_source,
     duration, sample_rate, bit_depth, channels,
-    date, take, track, item
+    date, take, track, item, markers_blob
 ) VALUES (
     ?1, ?2, ?3,
     ?4, ?5, ?6, ?7,
@@ -32,7 +32,7 @@ const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
     ?12, ?13, ?14, ?15,
     ?16, ?17, ?18, ?19, ?20,
     ?21, ?22, ?23, ?24,
-    ?25, ?26, ?27, ?28
+    ?25, ?26, ?27, ?28, ?29
 )";
 
 /// SQLite index database.
@@ -123,6 +123,7 @@ impl Database {
                     meta.take,
                     meta.track,
                     meta.item,
+                    Option::<Vec<u8>>::None, // markers_blob
                 ])?;
             }
         }
@@ -264,6 +265,7 @@ impl Database {
                     meta.take,
                     meta.track,
                     meta.item,
+                    Option::<Vec<u8>>::None, // markers_blob
                 ])?;
             }
         }
@@ -323,6 +325,7 @@ impl Database {
                     meta.take,
                     meta.track,
                     meta.item,
+                    Option::<Vec<u8>>::None, // markers_blob
                 ])?;
             }
         }
@@ -644,7 +647,8 @@ fn create_schema(conn: &Connection) -> anyhow::Result<()> {
             date TEXT NOT NULL DEFAULT '',
             take TEXT NOT NULL DEFAULT '',
             track TEXT NOT NULL DEFAULT '',
-            item TEXT NOT NULL DEFAULT ''
+            item TEXT NOT NULL DEFAULT '',
+            markers_blob BLOB
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS samples_fts USING fts5(
@@ -731,6 +735,11 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         add_column_if_missing(conn, "take", "TEXT NOT NULL DEFAULT ''")?;
         add_column_if_missing(conn, "track", "TEXT NOT NULL DEFAULT ''")?;
         add_column_if_missing(conn, "item", "TEXT NOT NULL DEFAULT ''")?;
+    }
+
+    if version < 5 {
+        // v4 → v5: add markers_blob column.
+        add_column_if_missing(conn, "markers_blob", "BLOB")?;
     }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1041,10 +1050,25 @@ fn row_to_table_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::TableRow
         _ => None,
     };
 
+    // Load markers_blob if present (compressed 32 bytes).
+    let markers_blob: Option<Vec<u8>> = row.get("markers_blob").unwrap_or(None);
+    let markers = markers_blob.and_then(|blob| {
+        let decompressed = decompress_peaks(&blob);
+        if decompressed.len() == super::bext::MARKER_BLOCK_SIZE {
+            let arr: [u8; super::bext::MARKER_BLOCK_SIZE] =
+                decompressed.try_into().ok()?;
+            let config = super::bext::MarkerConfig::from_bytes(&arr);
+            if config.is_empty() { None } else { Some(config) }
+        } else {
+            None
+        }
+    });
+
     Ok(super::TableRow {
         meta,
         audio_info,
         marked: marked != 0,
+        markers,
     })
 }
 
@@ -1237,7 +1261,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     // --- Ticket 2 tests: DB path resolution ---
@@ -2126,7 +2150,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
 
         let mut stmt = db.conn.prepare("PRAGMA table_info(samples)").unwrap();
         let cols: Vec<String> = stmt
@@ -2144,6 +2168,7 @@ mod tests {
         assert!(cols.contains(&"take".to_string()));
         assert!(cols.contains(&"track".to_string()));
         assert!(cols.contains(&"item".to_string()));
+        assert!(cols.contains(&"markers_blob".to_string()));
     }
 
     #[test]
@@ -2194,7 +2219,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
 
         // All new columns should exist.
         let source: String = db
@@ -2222,6 +2247,8 @@ mod tests {
         assert!(has_column(&db.conn, "take"));
         assert!(has_column(&db.conn, "track"));
         assert!(has_column(&db.conn, "item"));
+        // v5 column should exist.
+        assert!(has_column(&db.conn, "markers_blob"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2275,7 +2302,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
 
         // v3 columns should exist.
         assert!(has_column(&db.conn, "marked"));
@@ -2283,6 +2310,8 @@ mod tests {
         // v4 columns should exist.
         assert!(has_column(&db.conn, "date"));
         assert!(has_column(&db.conn, "take"));
+        // v5 column should exist.
+        assert!(has_column(&db.conn, "markers_blob"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2433,7 +2462,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("test.db");
 
-        // Create v4 DB.
+        // Create v5 DB.
         let _db1 = Database::open(&db_path).unwrap();
         drop(_db1);
 
@@ -2443,7 +2472,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2568,5 +2597,86 @@ mod tests {
         drop(tx2);
         let results2: Vec<_> = rx2.iter().collect();
         assert_eq!(results2.len(), 1, "should find 1 Mars LOOP result");
+    }
+
+    // --- S9-T3 tests: Schema v5 markers_blob ---
+
+    #[test]
+    fn test_schema_v5_has_markers_blob() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(has_column(&db.conn, "markers_blob"));
+    }
+
+    #[test]
+    fn test_insert_and_load_markers() {
+        use super::super::bext::MarkerConfig;
+
+        let db = Database::open_in_memory().unwrap();
+        let meta = make_test_meta("/test/markers.wav", "V");
+        db.insert_batch(&[(meta, 100, None)]).unwrap();
+
+        // Manually store compressed markers_blob.
+        let config = MarkerConfig::preset_loop(48000);
+        let blob = compress_peaks(&config.to_bytes());
+        db.conn
+            .execute(
+                "UPDATE samples SET markers_blob = ?1 WHERE path = '/test/markers.wav'",
+                params![blob],
+            )
+            .unwrap();
+
+        // Search and verify TableRow has markers.
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        let query = SearchQuery::default();
+        db.search_table_rows(&query, &tx);
+        drop(tx);
+        let rows: Vec<_> = rx.iter().collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].markers, Some(config));
+    }
+
+    #[test]
+    fn test_insert_null_markers() {
+        let db = Database::open_in_memory().unwrap();
+        let meta = make_test_meta("/test/no_markers.wav", "V");
+        db.insert_batch(&[(meta, 100, None)]).unwrap();
+
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        db.search_table_rows(&SearchQuery::default(), &tx);
+        drop(tx);
+        let rows: Vec<_> = rx.iter().collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].markers, None);
+    }
+
+    #[test]
+    fn test_markers_survive_reindex() {
+        use super::super::bext::MarkerConfig;
+
+        let db = Database::open_in_memory().unwrap();
+        let meta = make_test_meta("/test/reindex.wav", "V");
+        db.insert_batch(&[(meta, 100, None)]).unwrap();
+
+        // Store markers.
+        let config = MarkerConfig::preset_shot();
+        let blob = compress_peaks(&config.to_bytes());
+        db.conn
+            .execute(
+                "UPDATE samples SET markers_blob = ?1 WHERE path = '/test/reindex.wav'",
+                params![blob],
+            )
+            .unwrap();
+
+        // Re-insert (INSERT OR REPLACE) — markers_blob should be NULL since insert passes None.
+        let meta2 = make_test_meta("/test/reindex.wav", "V2");
+        db.insert_batch(&[(meta2, 200, None)]).unwrap();
+
+        // After re-index, markers_blob is overwritten to NULL.
+        let (tx, rx) = crossbeam_channel::bounded(64);
+        db.search_table_rows(&SearchQuery::default(), &tx);
+        drop(tx);
+        let rows: Vec<_> = rx.iter().collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].markers, None);
     }
 }
