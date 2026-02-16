@@ -5,7 +5,8 @@ use ratatui::style::{Color, Modifier, Style};
 /// Color theme for the TUI.
 #[derive(Debug, Clone)]
 pub struct Theme {
-    /// Theme name.
+    /// Theme name (used for debug display).
+    #[allow(dead_code)]
     pub name: &'static str,
     /// Border style.
     pub border: Style,

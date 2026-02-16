@@ -226,22 +226,22 @@ pub fn resolve_marks_path(config: &Config) -> PathBuf {
     }
 }
 
-/// Load configuration from a specific path (for testing).
-pub fn load_config_from(path: &std::path::Path) -> Config {
-    let contents = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => return Config::default(),
-    };
-
-    match toml::from_str::<Config>(&contents) {
-        Ok(config) => config,
-        Err(_) => Config::default(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Load configuration from a specific path (for testing).
+    fn load_config_from(path: &std::path::Path) -> Config {
+        let contents = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => return Config::default(),
+        };
+
+        match toml::from_str::<Config>(&contents) {
+            Ok(config) => config,
+            Err(_) => Config::default(),
+        }
+    }
 
     #[test]
     fn test_default_config_is_valid() {

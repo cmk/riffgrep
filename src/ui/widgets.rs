@@ -81,221 +81,6 @@ pub fn render_search_prompt(app: &App, area: Rect, buf: &mut Buffer) {
     }
 }
 
-/// Render the results list.
-pub fn render_results_list(app: &App, area: Rect, buf: &mut Buffer) {
-    let theme = &app.theme;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme.border)
-        .title(" Results ");
-
-    let inner = block.inner(area);
-    block.render(area, buf);
-
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-
-    if app.results.is_empty() {
-        let msg = if app.search_in_progress {
-            "Searching..."
-        } else {
-            "No results"
-        };
-        let x = inner.x + inner.width.saturating_sub(msg.len() as u16) / 2;
-        let y = inner.y + inner.height / 2;
-        buf.set_string(x, y, msg, theme.status_text);
-        return;
-    }
-
-    let visible_count = inner.height as usize;
-    let start = app.scroll_offset;
-    let end = (start + visible_count).min(app.results.len());
-
-    for (i, idx) in (start..end).enumerate() {
-        let row = &app.results[idx];
-        let display = format_result_path(&row.meta.path);
-        let is_selected = idx == app.selected;
-
-        let style = if is_selected {
-            theme.results_selected
-        } else {
-            theme.results_normal
-        };
-
-        let y = inner.y + i as u16;
-        let prefix = if is_selected { "\u{25B6} " } else { "  " };
-        let max_w = inner.width as usize;
-        let text = format!("{prefix}{display}");
-        let truncated: String = text.chars().take(max_w).collect();
-        buf.set_string(inner.x, y, &truncated, style);
-
-        // Fill rest of the line with background for selected row.
-        if is_selected {
-            let remaining = max_w.saturating_sub(truncated.len());
-            if remaining > 0 {
-                buf.set_string(
-                    inner.x + truncated.len() as u16,
-                    y,
-                    &" ".repeat(remaining),
-                    style,
-                );
-            }
-        }
-    }
-}
-
-/// Render the preview pane (metadata table + waveform).
-pub fn render_preview_pane(app: &App, area: Rect, buf: &mut Buffer) {
-    let theme = &app.theme;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme.border)
-        .title(" Preview ");
-
-    let inner = block.inner(area);
-    block.render(area, buf);
-
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-
-    let preview = match &app.preview {
-        Some(p) => p,
-        None => {
-            if !app.results.is_empty() {
-                buf.set_string(
-                    inner.x + 1,
-                    inner.y + inner.height / 2,
-                    "Loading...",
-                    theme.status_text,
-                );
-            }
-            return;
-        }
-    };
-
-    let meta = &preview.metadata;
-    let max_w = inner.width as usize;
-    let mut y = inner.y;
-
-    // Metadata fields.
-    let fields: &[(&str, &str)] = &[
-        ("Path", &meta.path.to_string_lossy()),
-        ("Vendor", &meta.vendor),
-        ("Library", &meta.library),
-        ("Category", &meta.category),
-        ("Sound ID", &meta.sound_id),
-        ("Description", &meta.description),
-        ("Comment", &meta.comment),
-        ("Key", &meta.key),
-        ("Rating", &meta.rating),
-    ];
-
-    for &(key, value) in fields {
-        if y >= inner.y + inner.height {
-            break;
-        }
-        // Always show Path; skip empty fields otherwise.
-        if key != "Path" && value.is_empty() {
-            continue;
-        }
-        let label = format!("{key}: ");
-        buf.set_string(inner.x, y, &label, theme.metadata_key);
-
-        let value_x = inner.x + label.len() as u16;
-        let value_max = max_w.saturating_sub(label.len());
-        let truncated: String = value.chars().take(value_max).collect();
-        buf.set_string(value_x, y, &truncated, theme.metadata_value);
-        y += 1;
-    }
-
-    // BPM (special: Option<u16>).
-    if let Some(bpm) = meta.bpm {
-        if y < inner.y + inner.height {
-            let label = "BPM: ";
-            buf.set_string(inner.x, y, label, theme.metadata_key);
-            buf.set_string(
-                inner.x + label.len() as u16,
-                y,
-                &bpm.to_string(),
-                theme.metadata_value,
-            );
-            y += 1;
-        }
-    }
-
-    // Audio info (T11): duration, sample rate, format.
-    if let Some(ref info) = preview.audio_info {
-        if y < inner.y + inner.height {
-            let label = "Duration: ";
-            let value = format_duration(info.duration_secs);
-            buf.set_string(inner.x, y, label, theme.metadata_key);
-            buf.set_string(inner.x + label.len() as u16, y, &value, theme.metadata_value);
-            y += 1;
-        }
-        if y < inner.y + inner.height {
-            let label = "Sample Rate: ";
-            let value = format!("{} Hz", info.sample_rate);
-            buf.set_string(inner.x, y, label, theme.metadata_key);
-            buf.set_string(inner.x + label.len() as u16, y, &value, theme.metadata_value);
-            y += 1;
-        }
-        if y < inner.y + inner.height {
-            let label = "Format: ";
-            let value = info.format_display();
-            buf.set_string(inner.x, y, label, theme.metadata_key);
-            buf.set_string(inner.x + label.len() as u16, y, &value, theme.metadata_value);
-            y += 1;
-        }
-    }
-
-    // Separator.
-    if y < inner.y + inner.height {
-        let sep: String = "\u{2500}".repeat(max_w);
-        buf.set_string(inner.x, y, &sep, theme.border);
-        y += 1;
-    }
-
-    // Waveform (4-row in preview pane; full-width 8-row in two-panel mode).
-    let waveform_y_start = y;
-    let waveform_height = (inner.y + inner.height).saturating_sub(y) as usize;
-    if waveform_height >= 4 && inner.width >= 4 {
-        let wave_width = inner.width as usize;
-        let wave_rows = waveform_height.min(16);
-        let lines = if preview.peaks.is_empty() {
-            let blank = "\u{2800}".repeat(wave_width);
-            vec![blank; wave_rows]
-        } else {
-            render_braille_waveform_height(&preview.peaks, wave_width, wave_rows)
-        };
-
-        let positive_style = Style::default().fg(theme.waveform_positive);
-        let negative_style = Style::default().fg(theme.waveform_negative);
-        let half = lines.len() / 2;
-
-        for (i, line) in lines.iter().enumerate().take(waveform_height) {
-            let style = if i < half { positive_style } else { negative_style };
-            buf.set_string(inner.x, y, line, style);
-            y += 1;
-        }
-
-        // Playback cursor overlay.
-        let waveform_rows_drawn = lines.len().min(waveform_height);
-        if app.playback_position() > 0.0 && wave_width > 0 {
-            render_playback_cursor(
-                app.playback_position(),
-                inner.x,
-                waveform_y_start,
-                wave_width as u16,
-                waveform_rows_drawn as u16,
-                buf,
-                theme,
-            );
-        }
-    }
-}
-
 /// Render a vertical playback cursor on the waveform area.
 fn render_playback_cursor(
     position: f32,
@@ -752,24 +537,6 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     }
 }
 
-/// Format a path for display: show parent_folder/filename.
-fn format_result_path(path: &std::path::Path) -> String {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    let parent = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    if parent.is_empty() {
-        name.to_string()
-    } else {
-        format!("{parent}/{name}")
-    }
-}
-
 /// Renders peak data as an 8-row bipolar Braille waveform (default).
 ///
 /// Each Unicode Braille character (U+2800-U+28FF) is a 2×4 dot grid.
@@ -779,6 +546,9 @@ fn format_result_path(path: &std::path::Path) -> String {
 ///
 /// Returns 8 strings, each `width` characters wide.
 /// Peaks are resampled via linear interpolation to fit any terminal width.
+///
+/// Used by criterion benchmarks (not detected by `cargo build` dead code analysis).
+#[allow(dead_code)]
 pub fn render_braille_waveform(peaks: &[u8], width: usize) -> Vec<String> {
     render_braille_waveform_height(peaks, width, 16)
 }
@@ -1093,186 +863,6 @@ mod tests {
         assert!(out.contains("Search"), "should have Search title: {out}");
     }
 
-    // --- T8 tests: Results list widget ---
-
-    #[test]
-    fn test_results_renders_filenames() {
-        let mut app = App::new(Theme::default());
-        app.results = vec![
-            TableRow {
-                meta: UnifiedMetadata {
-                    path: std::path::PathBuf::from("/a/b/kick.wav"),
-                    ..Default::default()
-                },
-                audio_info: None,
-                marked: false,
-            },
-            TableRow {
-                meta: UnifiedMetadata {
-                    path: std::path::PathBuf::from("/c/d/snare.wav"),
-                    ..Default::default()
-                },
-                audio_info: None,
-                marked: false,
-            },
-        ];
-
-        let backend = TestBackend::new(40, 10);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                render_results_list(&app, f.area(), f.buffer_mut());
-            })
-            .unwrap();
-        let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("kick.wav"), "should show kick.wav: {out}");
-        assert!(out.contains("snare.wav"), "should show snare.wav: {out}");
-    }
-
-    #[test]
-    fn test_results_empty_shows_message() {
-        let app = App::new(Theme::default());
-        let backend = TestBackend::new(40, 10);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                render_results_list(&app, f.area(), f.buffer_mut());
-            })
-            .unwrap();
-        let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("No results"), "should show 'No results': {out}");
-    }
-
-    #[test]
-    fn test_results_path_display_format() {
-        let path = std::path::Path::new("/a/b/c/file.wav");
-        let display = format_result_path(path);
-        assert_eq!(display, "c/file.wav");
-    }
-
-    // --- T9 tests: Preview pane ---
-
-    #[test]
-    fn test_preview_shows_populated_fields() {
-        let mut app = App::new(Theme::default());
-        app.preview = Some(PreviewData {
-            metadata: UnifiedMetadata {
-                path: std::path::PathBuf::from("/test/file.wav"),
-                vendor: "Mars".to_string(),
-                library: "DX100".to_string(),
-                category: "LOOP".to_string(),
-                ..Default::default()
-            },
-            peaks: vec![],
-            audio_info: None,
-        });
-        app.results = vec![default_table_row()]; // non-empty so preview renders
-
-        let backend = TestBackend::new(40, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                render_preview_pane(&app, f.area(), f.buffer_mut());
-            })
-            .unwrap();
-        let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("Mars"), "should show vendor: {out}");
-        assert!(out.contains("DX100"), "should show library: {out}");
-    }
-
-    #[test]
-    fn test_preview_hides_empty_fields() {
-        let mut app = App::new(Theme::default());
-        app.preview = Some(PreviewData {
-            metadata: UnifiedMetadata {
-                path: std::path::PathBuf::from("/test/file.wav"),
-                vendor: "Mars".to_string(),
-                // library is empty
-                ..Default::default()
-            },
-            peaks: vec![],
-            audio_info: None,
-        });
-        app.results = vec![default_table_row()];
-
-        let backend = TestBackend::new(40, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                render_preview_pane(&app, f.area(), f.buffer_mut());
-            })
-            .unwrap();
-        let out = buffer_to_string(terminal.backend().buffer());
-        assert!(!out.contains("Library:"), "should hide empty Library: {out}");
-    }
-
-    #[test]
-    fn test_preview_path_always_shown() {
-        let mut app = App::new(Theme::default());
-        app.preview = Some(PreviewData {
-            metadata: UnifiedMetadata {
-                path: std::path::PathBuf::from("/test/file.wav"),
-                ..Default::default()
-            },
-            peaks: vec![],
-            audio_info: None,
-        });
-        app.results = vec![default_table_row()];
-
-        let backend = TestBackend::new(40, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                render_preview_pane(&app, f.area(), f.buffer_mut());
-            })
-            .unwrap();
-        let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("Path:"), "should always show Path: {out}");
-    }
-
-    #[test]
-    fn test_preview_loading_placeholder() {
-        let mut app = App::new(Theme::default());
-        app.results = vec![default_table_row()]; // non-empty
-        app.preview = None;
-
-        let backend = TestBackend::new(40, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                render_preview_pane(&app, f.area(), f.buffer_mut());
-            })
-            .unwrap();
-        let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("Loading"), "should show Loading: {out}");
-    }
-
-    #[test]
-    fn test_preview_waveform_renders() {
-        let mut app = App::new(Theme::default());
-        app.preview = Some(PreviewData {
-            metadata: UnifiedMetadata {
-                path: std::path::PathBuf::from("/test/file.wav"),
-                ..Default::default()
-            },
-            peaks: vec![128u8; 180],
-            audio_info: None,
-        });
-        app.results = vec![default_table_row()];
-
-        let backend = TestBackend::new(40, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                render_preview_pane(&app, f.area(), f.buffer_mut());
-            })
-            .unwrap();
-        let out = buffer_to_string(terminal.backend().buffer());
-        // Braille characters should appear.
-        let has_braille = out.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c));
-        assert!(has_braille, "should contain Braille waveform chars: {out}");
-    }
-
     // --- Braille renderer tests (8-row default) ---
 
     #[test]
@@ -1531,7 +1121,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render_preview_pane(&app, f.area(), f.buffer_mut());
+                render_waveform_panel(&app, f.area(), f.buffer_mut());
             })
             .unwrap();
         // No cursor should be rendered when position is 0.
@@ -1551,14 +1141,14 @@ mod tests {
     // --- T11 tests: Audio info in preview ---
 
     #[test]
-    fn test_preview_shows_audio_info() {
+    fn test_waveform_panel_shows_audio_info() {
         let mut app = App::new(Theme::default());
         app.preview = Some(PreviewData {
             metadata: UnifiedMetadata {
                 path: std::path::PathBuf::from("/test/file.wav"),
                 ..Default::default()
             },
-            peaks: vec![],
+            peaks: vec![128u8; 180],
             audio_info: Some(crate::engine::wav::AudioInfo {
                 duration_secs: 3.2,
                 sample_rate: 44100,
@@ -1568,28 +1158,27 @@ mod tests {
         });
         app.results = vec![default_table_row()];
 
-        let backend = TestBackend::new(50, 20);
+        let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render_preview_pane(&app, f.area(), f.buffer_mut());
+                render_waveform_panel(&app, f.area(), f.buffer_mut());
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("Duration:"), "should show Duration: {out}");
         assert!(out.contains("44100"), "should show sample rate: {out}");
         assert!(out.contains("16-bit stereo"), "should show format: {out}");
     }
 
     #[test]
-    fn test_preview_no_audio_info() {
+    fn test_waveform_panel_no_audio_info() {
         let mut app = App::new(Theme::default());
         app.preview = Some(PreviewData {
             metadata: UnifiedMetadata {
                 path: std::path::PathBuf::from("/test/file.wav"),
                 ..Default::default()
             },
-            peaks: vec![],
+            peaks: vec![128u8; 180],
             audio_info: None,
         });
         app.results = vec![default_table_row()];
@@ -1598,12 +1187,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render_preview_pane(&app, f.area(), f.buffer_mut());
+                render_waveform_panel(&app, f.area(), f.buffer_mut());
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        // No Duration line when audio_info is None.
-        assert!(!out.contains("Duration:"), "should not show Duration when None: {out}");
+        // Transport info line should show path but no sample rate/format when audio_info is None.
+        assert!(out.contains("file.wav"), "should show filename: {out}");
+        assert!(!out.contains("16-bit"), "should not show format when None: {out}");
     }
 
     #[test]

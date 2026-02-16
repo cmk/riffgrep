@@ -74,78 +74,6 @@ pub fn parse_fmt<R: Read + Seek>(reader: &mut R, map: &ChunkMap) -> Result<FmtCh
     })
 }
 
-/// Stream raw PCM samples as mono f32 values in [-1.0, 1.0].
-///
-/// Reads in 4096-byte buffer chunks for constant memory usage. Stereo is
-/// mixed down to mono via (L + R) / 2.0. Returns the total mono sample count.
-pub fn stream_samples<R: Read + Seek>(
-    reader: &mut R,
-    map: &ChunkMap,
-    fmt: &FmtChunk,
-    callback: &mut dyn FnMut(f32),
-) -> Result<u64, RiffError> {
-    let data_offset = map
-        .data_offset
-        .ok_or(RiffError::NotRiffWave)?;
-
-    reader.seek(SeekFrom::Start(data_offset))?;
-
-    let bytes_per_sample = (fmt.bits_per_sample / 8) as usize;
-    let channels = fmt.channels as usize;
-    let frame_size = bytes_per_sample * channels;
-
-    if frame_size == 0 {
-        return Ok(0);
-    }
-
-    let total_bytes = map.data_size as usize;
-    let total_frames = total_bytes / frame_size;
-
-    const BUF_SIZE: usize = 4096;
-    let mut buf = [0u8; BUF_SIZE];
-    let mut remaining_bytes = total_frames * frame_size;
-    let mut mono_count: u64 = 0;
-
-    // Align reads to frame boundaries to prevent misalignment across buffers.
-    // Without this, formats where frame_size doesn't divide BUF_SIZE (e.g.
-    // 24-bit stereo, frame_size=6) would drop partial frames at each buffer
-    // boundary, causing periodic phase-shift artifacts in the peak data.
-    let aligned_buf_size = (BUF_SIZE / frame_size) * frame_size;
-
-    while remaining_bytes > 0 {
-        let to_read = remaining_bytes.min(aligned_buf_size);
-        let slice = &mut buf[..to_read];
-        match reader.read_exact(slice) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(RiffError::Io(e)),
-        }
-
-        let mut pos = 0;
-        while pos + frame_size <= to_read {
-            // Decode all channels and mix to mono.
-            let mut mono_sum: f32 = 0.0;
-            for ch in 0..channels {
-                let sample_start = pos + ch * bytes_per_sample;
-                let sample = decode_sample(
-                    &slice[sample_start..sample_start + bytes_per_sample],
-                    fmt.format,
-                    fmt.bits_per_sample,
-                );
-                mono_sum += sample;
-            }
-            let mono = mono_sum / channels as f32;
-            callback(mono);
-            mono_count += 1;
-            pos += frame_size;
-        }
-
-        remaining_bytes -= to_read;
-    }
-
-    Ok(mono_count)
-}
-
 /// Decode a single sample from bytes to f32 in [-1.0, 1.0].
 fn decode_sample(bytes: &[u8], format: AudioFormat, bits: u16) -> f32 {
     match format {
@@ -229,64 +157,6 @@ impl PeakOptions {
 
 /// Number of u8 peak values to produce.
 pub const PEAK_COUNT: usize = 180;
-
-/// Compute [`PEAK_COUNT`] u8 peaks from a WAV file by streaming through audio data.
-///
-/// Algorithm: divide mono samples into equal bins, compute RMS (root-mean-square)
-/// per bin, normalize so global max RMS = 255.
-pub fn compute_peaks<R: Read + Seek>(
-    reader: &mut R,
-    map: &ChunkMap,
-    fmt: &FmtChunk,
-) -> Result<Vec<u8>, RiffError> {
-    let bytes_per_sample = (fmt.bits_per_sample / 8) as u64;
-    let channels = fmt.channels as u64;
-    let frame_size = bytes_per_sample * channels;
-
-    if frame_size == 0 {
-        return Ok(vec![0u8; PEAK_COUNT]);
-    }
-
-    let total_frames = map.data_size as u64 / frame_size;
-    if total_frames == 0 {
-        return Ok(vec![0u8; PEAK_COUNT]);
-    }
-
-    let bin_size = total_frames as f64 / PEAK_COUNT as f64;
-
-    // Track sum-of-squares and count per bin for RMS computation.
-    let mut bin_sum_sq = [0.0f64; PEAK_COUNT];
-    let mut bin_count = [0u64; PEAK_COUNT];
-    let mut sample_idx: u64 = 0;
-
-    stream_samples(reader, map, fmt, &mut |sample| {
-        let bin = (sample_idx as f64 / bin_size).min((PEAK_COUNT - 1) as f64) as usize;
-        bin_sum_sq[bin] += (sample as f64) * (sample as f64);
-        bin_count[bin] += 1;
-        sample_idx += 1;
-    })?;
-
-    // Compute RMS per bin.
-    let mut bin_rms = [0.0f64; PEAK_COUNT];
-    for i in 0..PEAK_COUNT {
-        if bin_count[i] > 0 {
-            bin_rms[i] = (bin_sum_sq[i] / bin_count[i] as f64).sqrt();
-        }
-    }
-
-    // Normalize: global max RMS → 255.
-    let global_max = bin_rms.iter().cloned().fold(0.0f64, f64::max);
-    if global_max == 0.0 {
-        return Ok(vec![0u8; PEAK_COUNT]);
-    }
-
-    let peaks: Vec<u8> = bin_rms
-        .iter()
-        .map(|&v| (v / global_max * 255.0).round() as u8)
-        .collect();
-
-    Ok(peaks)
-}
 
 /// Stream raw PCM samples with configurable channel mode.
 ///
@@ -451,15 +321,6 @@ pub fn compute_peaks_from_path_with_options(
     let map = super::bext::scan_chunks(&mut reader)?;
     let fmt = parse_fmt(&mut reader, &map)?;
     compute_peaks_with_options(&mut reader, &map, &fmt, opts)
-}
-
-/// Convenience: open a file, scan chunks, parse fmt, compute peaks.
-pub fn compute_peaks_from_path(path: &Path) -> Result<Vec<u8>, RiffError> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::with_capacity(8192, file);
-    let map = super::bext::scan_chunks(&mut reader)?;
-    let fmt = parse_fmt(&mut reader, &map)?;
-    compute_peaks(&mut reader, &map, &fmt)
 }
 
 /// Number of u8 peak values for stereo output (180 left + 180 right).
@@ -846,7 +707,7 @@ mod tests {
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
         let mut samples = Vec::new();
-        let count = stream_samples(&mut cursor, &map, &fmt, &mut |s| samples.push(s)).unwrap();
+        let count = stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |s| samples.push(s)).unwrap();
         assert_eq!(count, 2);
         assert!((samples[0] - 0.25).abs() < 0.001, "got {}", samples[0]);
         assert!((samples[1] - (-0.25)).abs() < 0.001, "got {}", samples[1]);
@@ -866,7 +727,7 @@ mod tests {
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
         let mut samples = Vec::new();
-        stream_samples(&mut cursor, &map, &fmt, &mut |s| samples.push(s)).unwrap();
+        stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |s| samples.push(s)).unwrap();
         assert_eq!(samples.len(), 1);
         assert!(
             (samples[0] - 1.0).abs() < 0.001,
@@ -887,7 +748,7 @@ mod tests {
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
         let mut samples = Vec::new();
-        stream_samples(&mut cursor, &map, &fmt, &mut |s| samples.push(s)).unwrap();
+        stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |s| samples.push(s)).unwrap();
         assert_eq!(samples.len(), 2);
         assert!((samples[0] - 0.5).abs() < 0.001);
         assert!((samples[1] - (-0.75)).abs() < 0.001);
@@ -902,7 +763,7 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let count = stream_samples(&mut cursor, &map, &fmt, &mut |_| {}).unwrap();
+        let count = stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |_| {}).unwrap();
         assert_eq!(count, 10);
     }
 
@@ -913,7 +774,7 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let count = stream_samples(&mut cursor, &map, &fmt, &mut |_| {}).unwrap();
+        let count = stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |_| {}).unwrap();
         assert_eq!(count, 0);
     }
 
@@ -957,7 +818,7 @@ mod tests {
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
         let mut count = 0u64;
-        let total = stream_samples(&mut cursor, &map, &fmt, &mut |_| {
+        let total = stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |_| {
             count += 1;
         })
         .unwrap();
@@ -1018,7 +879,7 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let peaks = compute_peaks(&mut cursor, &map, &fmt).unwrap();
+        let peaks = compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
         assert_eq!(peaks.len(), PEAK_COUNT);
         assert!(peaks.iter().all(|&v| v == 0));
     }
@@ -1033,7 +894,7 @@ mod tests {
             let entry = entry.unwrap();
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "wav") {
-                match compute_peaks_from_path(&path) {
+                match compute_peaks_from_path_with_options(&path, &PeakOptions::default()) {
                     Ok(peaks) => {
                         assert_eq!(
                             peaks.len(),
@@ -1062,7 +923,7 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let peaks = compute_peaks(&mut cursor, &map, &fmt).unwrap();
+        let peaks = compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
         assert_eq!(peaks.len(), PEAK_COUNT);
         assert!(
             peaks.iter().any(|&v| v == 255),
@@ -1084,7 +945,7 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let peaks = compute_peaks(&mut cursor, &map, &fmt).unwrap();
+        let peaks = compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
         assert_eq!(peaks.len(), PEAK_COUNT);
         // Most bins should be 0 since we only have 10 samples for 180 bins.
         let nonzero = peaks.iter().filter(|&&v| v > 0).count();
@@ -1097,7 +958,7 @@ mod tests {
         if !path.exists() {
             return;
         }
-        let peaks = compute_peaks_from_path(path).unwrap();
+        let peaks = compute_peaks_from_path_with_options(path, &PeakOptions::default()).unwrap();
         assert_eq!(peaks.len(), PEAK_COUNT);
     }
 
@@ -1157,33 +1018,6 @@ mod tests {
     }
 
     // --- T2: Multi-option peak computation ---
-
-    #[test]
-    fn test_channel_mode_mix_same_as_default() {
-        let mut audio = Vec::new();
-        for _ in 0..1000 {
-            audio.extend_from_slice(&i16::MAX.to_le_bytes()); // mono
-        }
-        let wav = make_wav(&make_fmt_pcm16_mono(), &audio);
-
-        let mut c1 = Cursor::new(wav.clone());
-        let map1 = scan_chunks(&mut c1).unwrap();
-        let fmt1 = parse_fmt(&mut c1, &map1).unwrap();
-        let default_peaks = compute_peaks(&mut c1, &map1, &fmt1).unwrap();
-
-        let mut c2 = Cursor::new(wav);
-        let map2 = scan_chunks(&mut c2).unwrap();
-        let fmt2 = parse_fmt(&mut c2, &map2).unwrap();
-        let mix_peaks = compute_peaks_with_options(
-            &mut c2,
-            &map2,
-            &fmt2,
-            &PeakOptions::default(),
-        )
-        .unwrap();
-
-        assert_eq!(default_peaks, mix_peaks);
-    }
 
     #[test]
     fn test_channel_mode_left_stereo() {
@@ -1258,33 +1092,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(left_peaks, mix_peaks);
-    }
-
-    #[test]
-    fn test_peak_measurement_rms_same_as_default() {
-        let mut audio = Vec::new();
-        for _ in 0..1000 {
-            audio.extend_from_slice(&i16::MAX.to_le_bytes());
-        }
-        let wav = make_wav(&make_fmt_pcm16_mono(), &audio);
-
-        let mut c1 = Cursor::new(wav.clone());
-        let map1 = scan_chunks(&mut c1).unwrap();
-        let fmt1 = parse_fmt(&mut c1, &map1).unwrap();
-        let default_peaks = compute_peaks(&mut c1, &map1, &fmt1).unwrap();
-
-        let mut c2 = Cursor::new(wav);
-        let map2 = scan_chunks(&mut c2).unwrap();
-        let fmt2 = parse_fmt(&mut c2, &map2).unwrap();
-        let rms_peaks = compute_peaks_with_options(
-            &mut c2,
-            &map2,
-            &fmt2,
-            &PeakOptions { channel: ChannelMode::Mix, measurement: PeakMeasurement::Rms },
-        )
-        .unwrap();
-
-        assert_eq!(default_peaks, rms_peaks);
     }
 
     #[test]
@@ -1486,7 +1293,7 @@ mod tests {
                 let mut cursor = Cursor::new(wav);
                 let map = scan_chunks(&mut cursor).unwrap();
                 let fmt = parse_fmt(&mut cursor, &map).unwrap();
-                let _ = stream_samples(&mut cursor, &map, &fmt, &mut |_| {});
+                let _ = stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |_| {});
             }
 
             /// compute_peaks always returns exactly PEAK_COUNT values or empty on error.
@@ -1498,7 +1305,7 @@ mod tests {
                 let mut cursor = Cursor::new(wav);
                 let map = scan_chunks(&mut cursor).unwrap();
                 let fmt = parse_fmt(&mut cursor, &map).unwrap();
-                let peaks = compute_peaks(&mut cursor, &map, &fmt).unwrap();
+                let peaks = compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
                 prop_assert_eq!(peaks.len(), PEAK_COUNT);
                 for &v in &peaks {
                     prop_assert!(v <= 255);

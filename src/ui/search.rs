@@ -26,6 +26,10 @@ pub enum SearchMode {
 }
 
 /// Handle to a running background search.
+///
+/// Produces raw `UnifiedMetadata` for headless/batch workflows.
+/// Currently unused — reserved for Lua scripting and batch actions.
+#[allow(dead_code)]
 pub struct SearchHandle {
     /// Receive search results.
     pub results_rx: mpsc::Receiver<UnifiedMetadata>,
@@ -116,8 +120,8 @@ pub struct SearchHandleTable {
     pub results_rx: mpsc::Receiver<TableRow>,
     /// Cancellation flag.
     cancel: Arc<AtomicBool>,
-    /// Join handle for the background thread.
-    join: Option<JoinHandle<usize>>,
+    /// Join handle for the background thread (held for ownership).
+    _join: Option<JoinHandle<usize>>,
 }
 
 impl SearchHandleTable {
@@ -196,22 +200,13 @@ impl SearchHandleTable {
         Self {
             results_rx: rx,
             cancel,
-            join: Some(handle),
+            _join: Some(handle),
         }
     }
 
     /// Signal cancellation.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
-    }
-
-    /// Block until the search thread completes. Returns total match count.
-    pub fn join(mut self) -> usize {
-        if let Some(handle) = self.join.take() {
-            handle.join().unwrap_or(0)
-        } else {
-            0
-        }
     }
 }
 

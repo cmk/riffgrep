@@ -54,6 +54,7 @@ pub enum Action {
 
 impl Action {
     /// All action variants (for exhaustive testing).
+    #[cfg(test)]
     pub const ALL: &'static [Action] = &[
         Action::MoveDown,
         Action::MoveUp,

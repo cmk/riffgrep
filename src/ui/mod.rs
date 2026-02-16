@@ -26,6 +26,9 @@ pub struct PreviewData {
 }
 
 /// Events that drive the TUI state machine.
+///
+/// Reserved for future event loop refactoring (currently using raw crossterm + mpsc).
+#[allow(dead_code)]
 pub enum AppEvent {
     /// Keyboard input.
     Key(KeyEvent),
@@ -583,14 +586,6 @@ impl App {
         }
     }
 
-    /// Get visible results (filtered by marked-only if enabled).
-    pub fn visible_results(&self) -> Vec<&TableRow> {
-        if self.show_marked_only {
-            self.results.iter().filter(|r| r.marked).collect()
-        } else {
-            self.results.iter().collect()
-        }
-    }
 }
 
 /// Sort key for column-based sorting.
