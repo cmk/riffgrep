@@ -104,11 +104,11 @@ pub fn read_metadata(path: &Path) -> Result<UnifiedMetadata, RiffError> {
     Ok(merge_metadata(path, bext, info))
 }
 
-/// Read metadata, extract BEXT peaks, and return the detected peaks format.
-/// Returns `(metadata, peaks_bytes, peaks_format)`.
+/// Read metadata, extract BEXT peaks, markers, and return the detected peaks format.
+/// Returns `(metadata, peaks_bytes, peaks_format, markers)`.
 pub fn read_metadata_with_peaks_format(
     path: &Path,
-) -> Result<(UnifiedMetadata, Vec<u8>, bext::PeaksFormat), RiffError> {
+) -> Result<(UnifiedMetadata, Vec<u8>, bext::PeaksFormat, Option<bext::MarkerConfig>), RiffError> {
     let file = std::fs::File::open(path)?;
     let mut reader = BufReader::with_capacity(8192, file);
 
@@ -116,9 +116,10 @@ pub fn read_metadata_with_peaks_format(
     let bext = bext::parse_bext_data(&mut reader, &map)?;
     let peaks = bext.peaks.clone();
     let peaks_format = bext.peaks_format;
+    let markers = bext.markers;
     let info = riff_info::parse_riff_info(&mut reader, &map)?;
 
-    Ok((merge_metadata(path, bext, info), peaks, peaks_format))
+    Ok((merge_metadata(path, bext, info), peaks, peaks_format, markers))
 }
 
 /// Merge BEXT and INFO fields. BEXT takes priority; INFO fills empty fields.
@@ -705,13 +706,14 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
         builder.threads(opts.threads);
     }
 
-    // Channel for walker → writer: (metadata, mtime, compressed_peaks, peaks_source, audio_info).
+    // Channel for walker → writer: (metadata, mtime, compressed_peaks, peaks_source, audio_info, markers).
     let (tx, rx) = crossbeam_channel::bounded::<(
         UnifiedMetadata,
         i64,
         Option<Vec<u8>>,
         String,
         Option<wav::AudioInfo>,
+        Option<bext::MarkerConfig>,
     )>(2048);
 
     // Track all discovered paths for deletion detection.
@@ -753,7 +755,7 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
             }
 
             match read_metadata_with_peaks_format(&path) {
-                Ok((meta, bext_peaks, peaks_format)) => {
+                Ok((meta, bext_peaks, peaks_format, markers)) => {
                     // Determine whether to generate peaks from audio.
                     // Only trust peaks from RiffgrepU8 format (our packed schema
                     // with bext_version >= 1). All other cases (Empty, BwfReserved)
@@ -787,7 +789,7 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
                         Some(wav::AudioInfo::from_fmt(&fmt, map.data_size))
                     })();
 
-                    if tx.send((meta, mtime, compressed_peaks, source, audio_info)).is_err() {
+                    if tx.send((meta, mtime, compressed_peaks, source, audio_info, markers)).is_err() {
                         return ignore::WalkState::Quit;
                     }
                 }

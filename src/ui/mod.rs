@@ -57,6 +57,67 @@ pub enum InputMode {
     Insert,
 }
 
+/// Active marker bank for editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bank {
+    /// Bank A (top half of waveform).
+    A,
+    /// Bank B (bottom half of waveform).
+    B,
+}
+
+/// A playback segment derived from marker boundaries.
+///
+/// Always exactly 4 segments per bank, indexed by slot (0..4).
+/// Direction is encoded by marker ordering: if the boundary at slot i
+/// exceeds the boundary at slot i+1, the segment plays in reverse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Segment {
+    /// Absolute sample where playback begins.
+    pub start: u32,
+    /// Absolute sample where playback ends.
+    pub end: u32,
+    /// Repetition count: 0=skip, 1-14=repeat, 15=infinite.
+    pub rep: u8,
+    /// True if start > end (reverse playback).
+    pub reverse: bool,
+}
+
+/// Compute exactly 4 segments from a marker bank and total sample count.
+///
+/// MARKER_EMPTY slots resolve to the previous boundary, collapsing that
+/// segment to zero-length (equivalent to skip). This is a pure function
+/// with no App state dependency, directly testable with proptest.
+pub fn segment_bounds(bank: &crate::engine::bext::MarkerBank, total: u32) -> Vec<Segment> {
+    use crate::engine::bext::MARKER_EMPTY;
+
+    let markers = [bank.m1, bank.m2, bank.m3];
+    let mut boundaries = Vec::with_capacity(5);
+    boundaries.push(0u32);
+
+    for &m in &markers {
+        let prev = *boundaries.last().unwrap();
+        if m == MARKER_EMPTY {
+            boundaries.push(prev); // collapse to previous
+        } else {
+            boundaries.push(m.min(total)); // clamp to file length
+        }
+    }
+    boundaries.push(total);
+
+    (0..4).map(|i| {
+        let raw_start = boundaries[i];
+        let raw_end = boundaries[i + 1];
+        let reverse = raw_start > raw_end;
+        Segment {
+            start: raw_start,
+            end: raw_end,
+            rep: bank.reps[i],
+            reverse,
+        }
+    }).collect()
+}
+
 /// TUI application state. All transitions are pure functions (no I/O).
 pub struct App {
     /// Current search query text.
@@ -122,6 +183,18 @@ pub struct App {
     pub keymap: actions::Keymap,
     /// Whether the help overlay is currently shown.
     pub show_help: bool,
+    /// Active marker bank for editing (A or B).
+    pub active_bank: Bank,
+    /// Segment playback: end sample boundary (stop playback when reached).
+    pub segment_end: Option<u32>,
+    /// Segment playback: start sample (for rep looping).
+    pub segment_start: Option<u32>,
+    /// Segment playback: remaining repetitions for current segment.
+    pub segment_reps_remaining: u8,
+    /// Program playback: ordered list of (start, end, reps) to play.
+    pub program_playlist: Vec<(u32, u32, u8)>,
+    /// Program playback: index into program_playlist.
+    pub program_index: usize,
     /// Transient status message shown in the status bar.
     pub status_message: Option<String>,
     /// Timestamp when the status message was set (for auto-clear).
@@ -166,6 +239,12 @@ impl App {
             sort_ascending: true,
             keymap: actions::Keymap::default(),
             show_help: false,
+            active_bank: Bank::A,
+            segment_end: None,
+            segment_start: None,
+            segment_reps_remaining: 0,
+            program_playlist: Vec::new(),
+            program_index: 0,
             status_message: None,
             status_message_time: None,
         }
@@ -186,7 +265,7 @@ impl App {
             Action::SortAscending => self.sort_by_selected_column(true),
             Action::SortDescending => self.sort_by_selected_column(false),
             Action::TogglePlayback => self.toggle_playback(),
-            Action::StopPlayback => self.stop_playback(),
+            // StopPlayback removed — space toggles pause, no separate stop needed.
             Action::SeekForwardSmall => self.seek_relative(self.scrub_small),
             Action::SeekForwardLarge => self.seek_relative(self.scrub_large),
             Action::SeekBackwardSmall => self.seek_relative(-self.scrub_small),
@@ -197,6 +276,16 @@ impl App {
             Action::ClearMarks => self.clear_all_marks(),
             Action::ToggleMarkedFilter => self.toggle_marked_filter(),
             Action::SaveMarkers => self.save_markers(),
+            Action::ToggleBank => self.toggle_bank(),
+            Action::SetMarker1 => self.set_marker(0),
+            Action::SetMarker2 => self.set_marker(1),
+            Action::SetMarker3 => self.set_marker(2),
+            Action::ClearNearestMarker => self.clear_nearest_marker(),
+            Action::ClearBankMarkers => self.clear_bank_markers(),
+            Action::IncrementRep => self.adjust_rep(1),
+            Action::DecrementRep => self.adjust_rep(-1),
+            Action::PlaySegment => self.play_segment(),
+            Action::PlayProgram => self.play_program(),
             Action::EnterInsertMode => self.enter_insert_mode(),
             Action::EnterNormalMode => self.enter_normal_mode(),
             Action::SearchSubmit => {
@@ -250,14 +339,19 @@ impl App {
     /// Resolve Normal mode key to Action via keymap, then dispatch.
     fn on_key_normal(&mut self, key: KeyEvent) {
         // Handle gg sequence: first g sets pending, second g dispatches MoveToTop.
+        // If 'g' is explicitly bound in the keymap, skip the gg sequence and dispatch directly.
         if key.code == KeyCode::Char('g') && key.modifiers.is_empty() {
-            if self.pending_g {
+            if self.keymap.resolve(key).is_some() {
+                // 'g' is explicitly bound — dispatch it directly, no gg sequence.
+                self.pending_g = false;
+            } else if self.pending_g {
                 self.pending_g = false;
                 self.dispatch(actions::Action::MoveToTop);
+                return;
             } else {
                 self.pending_g = true;
+                return;
             }
-            return;
         }
 
         // Any other key cancels pending g.
@@ -419,24 +513,18 @@ impl App {
         }
     }
 
-    /// Toggle playback: play selected file if stopped, else toggle pause.
+    /// Toggle playback: play program if stopped, else toggle pause.
+    /// All playback goes through the segment system.
     fn toggle_playback(&mut self) {
-        let engine = match &self.playback {
-            Some(e) => e,
-            None => return,
-        };
-        let state = engine.state();
+        let state = self.playback_state();
         match state {
             PlaybackState::Stopped => {
-                // Play the selected file.
-                if let Some(row) = self.results.get(self.selected) {
-                    if engine.play(&row.meta.path).is_ok() {
-                        self.played.insert(row.meta.path.clone());
-                    }
-                }
+                self.play_program();
             }
             PlaybackState::Playing | PlaybackState::Paused => {
-                engine.toggle_pause();
+                if let Some(ref engine) = self.playback {
+                    engine.toggle_pause();
+                }
             }
         }
     }
@@ -447,6 +535,11 @@ impl App {
             engine.stop();
         }
         self.was_playing = false;
+        self.segment_end = None;
+        self.segment_start = None;
+        self.segment_reps_remaining = 0;
+        self.program_playlist.clear();
+        self.program_index = 0;
     }
 
     /// Playback position as fraction 0.0–1.0 (derived from engine sample offset).
@@ -470,6 +563,35 @@ impl App {
             PlaybackState::Playing => {
                 engine.update_sample_offset();
                 self.was_playing = true;
+
+                // Segment boundary enforcement.
+                if let Some(seg_end) = self.segment_end {
+                    let current = engine.sample_offset();
+                    if current >= seg_end {
+                        if self.segment_reps_remaining == u8::MAX {
+                            // Infinite loop: always seek back, never decrement.
+                            if let Some(start) = self.segment_start {
+                                let _ = engine.seek_to_sample(start);
+                            }
+                        } else if self.segment_reps_remaining > 0 {
+                            // Finite loop: decrement and seek back.
+                            self.segment_reps_remaining -= 1;
+                            if let Some(start) = self.segment_start {
+                                let _ = engine.seek_to_sample(start);
+                            }
+                        } else if !self.program_playlist.is_empty() {
+                            // Program mode: advance to next segment.
+                            self.program_index += 1;
+                            self.start_program_segment();
+                        } else {
+                            // Single segment: stop.
+                            engine.stop();
+                            self.segment_end = None;
+                            self.segment_start = None;
+                            self.was_playing = false;
+                        }
+                    }
+                }
             }
             PlaybackState::Stopped => {
                 if self.auto_advance && self.was_playing {
@@ -551,7 +673,7 @@ impl App {
         self.status_message_time = Some(std::time::Instant::now());
     }
 
-    /// Get current markers from preview/row, or generate defaults.
+    /// Get current markers from preview/row, or generate duration-aware defaults.
     pub fn current_markers_or_default(&self) -> crate::engine::bext::MarkerConfig {
         // 1. Check preview.
         if let Some(ref preview) = self.preview {
@@ -565,8 +687,14 @@ impl App {
                 return m;
             }
         }
-        // 3. Default: preset_shot.
-        crate::engine::bext::MarkerConfig::preset_shot()
+        // 3. Duration-aware default: short files get shot, longer files get loop.
+        let total_samples = self.preview.as_ref()
+            .and_then(|p| p.audio_info.as_ref())
+            .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32);
+        match total_samples {
+            Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
+            _ => crate::engine::bext::MarkerConfig::preset_shot(),
+        }
     }
 
     /// Save markers to the BEXT chunk of the currently selected file.
@@ -582,7 +710,16 @@ impl App {
         let path = row.meta.path.clone();
         let markers = self.current_markers_or_default();
 
-        match crate::engine::bext::write_markers(&path, &markers) {
+        // Try writing to existing packed BEXT first; if not packed, initialize.
+        let result = match crate::engine::bext::write_markers(&path, &markers) {
+            Ok(()) => Ok(()),
+            Err(crate::engine::bext::BextWriteError::NotPacked) => {
+                crate::engine::bext::init_packed_and_write_markers(&path, &markers)
+            }
+            Err(e) => Err(e),
+        };
+
+        match result {
             Ok(()) => {
                 self.set_status(format!("Markers saved to {}", path.display()));
                 // Update preview markers to reflect what was written.
@@ -598,6 +735,326 @@ impl App {
                 self.set_status(format!("Save failed: {e}"));
             }
         }
+    }
+
+    /// Toggle active marker bank between A and B.
+    fn toggle_bank(&mut self) {
+        self.active_bank = match self.active_bank {
+            Bank::A => Bank::B,
+            Bank::B => Bank::A,
+        };
+        let label = match self.active_bank {
+            Bank::A => "Bank A",
+            Bank::B => "Bank B",
+        };
+        self.set_status(format!("Active: {label}"));
+    }
+
+    /// Get a mutable reference to the active bank's MarkerBank within preview markers.
+    /// Returns None if no preview or no markers.
+    fn active_bank_mut(&mut self) -> Option<&mut crate::engine::bext::MarkerBank> {
+        let markers = self.preview.as_mut()?.markers.as_mut()?;
+        match self.active_bank {
+            Bank::A => Some(&mut markers.bank_a),
+            Bank::B => Some(&mut markers.bank_b),
+        }
+    }
+
+    /// Get the active bank from preview markers (immutable).
+    fn active_bank_ref(&self) -> Option<&crate::engine::bext::MarkerBank> {
+        let markers = self.preview.as_ref()?.markers.as_ref()?;
+        match self.active_bank {
+            Bank::A => Some(&markers.bank_a),
+            Bank::B => Some(&markers.bank_b),
+        }
+    }
+
+    /// Compute total samples from preview audio_info, or None.
+    fn total_samples(&self) -> Option<u32> {
+        self.preview.as_ref()
+            .and_then(|p| p.audio_info.as_ref())
+            .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32)
+    }
+
+    /// Get the current playback position as an absolute sample offset.
+    fn playback_sample(&self) -> Option<u32> {
+        let total = self.total_samples()?;
+        let pos = self.playback_position();
+        if pos <= 0.0 {
+            return None;
+        }
+        Some(((pos as f64) * total as f64) as u32)
+    }
+
+    /// Ensure preview has markers (initialize from defaults if needed).
+    fn ensure_markers(&mut self) {
+        if let Some(ref mut preview) = self.preview {
+            if preview.markers.is_none() {
+                let total = preview.audio_info.as_ref()
+                    .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32);
+                preview.markers = Some(match total {
+                    Some(s) if s >= 2 * 48000 => {
+                        crate::engine::bext::MarkerConfig::preset_loop(s)
+                    }
+                    _ => crate::engine::bext::MarkerConfig::preset_shot(),
+                });
+            }
+        }
+    }
+
+    /// Set marker at index (0=m1, 1=m2, 2=m3) to current playback position.
+    fn set_marker(&mut self, index: usize) {
+        let sample = match self.playback_sample() {
+            Some(s) => s,
+            None => {
+                self.set_status("Play file first".to_string());
+                return;
+            }
+        };
+
+        self.ensure_markers();
+        if let Some(bank) = self.active_bank_mut() {
+            match index {
+                0 => bank.m1 = sample,
+                1 => bank.m2 = sample,
+                2 => bank.m3 = sample,
+                _ => return,
+            }
+            // No sorting — marker slot order encodes playback direction per
+            // MARKERSv2 spec: m_i > m_{i+1} means reverse playback.
+        }
+
+        let bank_label = match self.active_bank { Bank::A => "A", Bank::B => "B" };
+        self.set_status(format!("Marker {} set (bank {bank_label})", index + 1));
+    }
+
+    /// Clear the marker nearest to the playback cursor in the active bank.
+    fn clear_nearest_marker(&mut self) {
+        let sample = match self.playback_sample() {
+            Some(s) => s,
+            None => {
+                self.set_status("Play file first".to_string());
+                return;
+            }
+        };
+
+        if let Some(bank) = self.active_bank_mut() {
+            let markers = [bank.m1, bank.m2, bank.m3];
+            let nearest = markers.iter().enumerate()
+                .filter(|&(_, &v)| v != crate::engine::bext::MARKER_EMPTY)
+                .min_by_key(|&(_, &v)| (v as i64 - sample as i64).unsigned_abs());
+
+            if let Some((idx, _)) = nearest {
+                match idx {
+                    0 => bank.m1 = crate::engine::bext::MARKER_EMPTY,
+                    1 => bank.m2 = crate::engine::bext::MARKER_EMPTY,
+                    2 => bank.m3 = crate::engine::bext::MARKER_EMPTY,
+                    _ => {}
+                }
+                let bank_label = match self.active_bank { Bank::A => "A", Bank::B => "B" };
+                self.set_status(format!("Marker {} cleared (bank {bank_label})", idx + 1));
+            } else {
+                self.set_status("No markers to clear".to_string());
+            }
+        } else {
+            self.set_status("No markers".to_string());
+        }
+    }
+
+    /// Clear all markers in the active bank.
+    fn clear_bank_markers(&mut self) {
+        if let Some(bank) = self.active_bank_mut() {
+            *bank = crate::engine::bext::MarkerBank::empty();
+            let bank_label = match self.active_bank { Bank::A => "A", Bank::B => "B" };
+            self.set_status(format!("Bank {bank_label} cleared"));
+        } else {
+            self.set_status("No markers".to_string());
+        }
+    }
+
+    /// Determine which segment (0-3) the playback cursor is in.
+    /// Uses the active bank's segment boundaries.
+    fn current_segment_index(&self) -> Option<usize> {
+        let sample = self.playback_sample()?;
+        let segs = self.segments();
+        if segs.is_empty() {
+            return None;
+        }
+        for (i, seg) in segs.iter().enumerate() {
+            let (lo, hi) = if seg.reverse {
+                (seg.end, seg.start)
+            } else {
+                (seg.start, seg.end)
+            };
+            if sample >= lo && sample < hi {
+                return Some(i);
+            }
+        }
+        // Past the last boundary — return last segment.
+        Some(3)
+    }
+
+    /// Adjust repetition count for the segment containing the playback cursor.
+    /// When stopped, defaults to segment 0.
+    fn adjust_rep(&mut self, delta: i8) {
+        let seg = match self.current_segment_index() {
+            Some(s) if s < 4 => s,
+            None => {
+                // Default to segment 0 when stopped.
+                if self.segments().is_empty() {
+                    self.set_status("No segments".to_string());
+                    return;
+                }
+                0
+            }
+            _ => {
+                self.set_status("No active segment".to_string());
+                return;
+            }
+        };
+
+        self.ensure_markers();
+        if let Some(bank) = self.active_bank_mut() {
+            let current = bank.reps[seg];
+            let new_val = (current as i16 + delta as i16).clamp(0, 15) as u8;
+            bank.reps[seg] = new_val;
+            let label = if new_val == 15 { "inf".to_string() } else { format!("{new_val}") };
+            self.set_status(format!("Segment {} rep: {label}", seg + 1));
+        } else {
+            self.set_status("No markers".to_string());
+        }
+    }
+
+    /// Get segments for the active bank. Always returns exactly 4 segments,
+    /// or empty if no preview/audio_info/markers.
+    fn segments(&self) -> Vec<Segment> {
+        let total = match self.total_samples() {
+            Some(t) if t > 0 => t,
+            _ => return Vec::new(),
+        };
+        let bank = match self.active_bank_ref() {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
+        segment_bounds(bank, total)
+    }
+
+    /// Play the current segment (bounded by markers around playback cursor).
+    /// When stopped, defaults to segment 0 and auto-starts playback.
+    fn play_segment(&mut self) {
+        self.ensure_markers();
+        let seg_idx = match self.current_segment_index() {
+            Some(s) => s,
+            None => {
+                // Default to segment 0 when stopped or no position.
+                if self.segments().is_empty() {
+                    self.set_status("No segments".to_string());
+                    return;
+                }
+                0
+            }
+        };
+
+        let segs = self.segments();
+        if seg_idx >= segs.len() {
+            self.set_status("No active segment".to_string());
+            return;
+        }
+
+        let seg = segs[seg_idx];
+
+        if seg.reverse {
+            self.set_status(format!("Segment {}: reverse not yet supported", seg_idx + 1));
+            return;
+        }
+
+        // Start playback from segment start.
+        if let Some(row) = self.results.get(self.selected) {
+            let path = row.meta.path.clone();
+            if let Some(ref engine) = self.playback {
+                if engine.state() == PlaybackState::Stopped {
+                    let _ = engine.play(&path);
+                    self.played.insert(path);
+                }
+                let _ = engine.seek_to_sample(seg.start);
+            }
+        }
+
+        // Store segment boundaries for tick-based enforcement.
+        self.segment_start = Some(seg.start);
+        self.segment_end = Some(seg.end);
+        self.segment_reps_remaining = if seg.rep == 15 {
+            u8::MAX // infinite loop sentinel
+        } else if seg.rep == 0 {
+            0
+        } else {
+            seg.rep - 1
+        };
+
+        self.set_status(format!("Segment {}", seg_idx + 1));
+    }
+
+    /// Play full program: all non-skipped, non-reverse segments with repetitions.
+    fn play_program(&mut self) {
+        self.ensure_markers();
+        let segs = self.segments();
+        if segs.is_empty() {
+            self.set_status("No segments".to_string());
+            return;
+        }
+
+        // Build playlist: (start, end, reps) for non-skipped, non-reverse segments.
+        let playlist: Vec<(u32, u32, u8)> = segs.iter()
+            .filter(|seg| seg.rep > 0 && !seg.reverse && seg.start != seg.end)
+            .map(|seg| (seg.start, seg.end, seg.rep))
+            .collect();
+
+        if playlist.is_empty() {
+            self.set_status("All segments skipped".to_string());
+            return;
+        }
+
+        self.program_playlist = playlist;
+        self.program_index = 0;
+
+        // Start playing the first segment.
+        self.start_program_segment();
+    }
+
+    /// Start playing the current segment in the program playlist.
+    fn start_program_segment(&mut self) {
+        if self.program_index >= self.program_playlist.len() {
+            self.program_playlist.clear();
+            self.segment_end = None;
+            self.segment_start = None;
+            self.set_status("Program complete".to_string());
+            return;
+        }
+
+        let (start, end, reps) = self.program_playlist[self.program_index];
+
+        if let Some(row) = self.results.get(self.selected) {
+            let path = row.meta.path.clone();
+            if let Some(ref engine) = self.playback {
+                if engine.state() == PlaybackState::Stopped {
+                    let _ = engine.play(&path);
+                    self.played.insert(path);
+                }
+                let _ = engine.seek_to_sample(start);
+            }
+        }
+
+        self.segment_start = Some(start);
+        self.segment_end = Some(end);
+        self.segment_reps_remaining = if reps == 15 {
+            u8::MAX // infinite loop sentinel
+        } else {
+            reps.saturating_sub(1)
+        };
+
+        let seg_num = self.program_index + 1;
+        let total_segs = self.program_playlist.len();
+        self.set_status(format!("Program {seg_num}/{total_segs} rep {reps}"));
     }
 
     /// Sort results by the currently selected column.
@@ -2285,5 +2742,548 @@ mod tests {
         app.set_status("hello".to_string());
         assert_eq!(app.status_message.as_deref(), Some("hello"));
         assert!(app.status_message_time.is_some());
+    }
+
+    // --- S10-T2 tests: Duration-aware preset defaults ---
+
+    #[test]
+    fn test_default_preset_loop_for_long_file() {
+        let mut app = App::new(Theme::default());
+        // Preview with audio_info showing 5 seconds at 48kHz = 240000 samples.
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 5.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: None,
+        });
+        let markers = app.current_markers_or_default();
+        let expected = crate::engine::bext::MarkerConfig::preset_loop(240000);
+        assert_eq!(markers, expected, "5s file should get preset_loop");
+    }
+
+    #[test]
+    fn test_default_preset_shot_for_short_file() {
+        let mut app = App::new(Theme::default());
+        // Preview with audio_info showing 0.5 seconds.
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 0.5,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: None,
+        });
+        let markers = app.current_markers_or_default();
+        assert_eq!(
+            markers,
+            crate::engine::bext::MarkerConfig::preset_shot(),
+            "0.5s file should get preset_shot"
+        );
+    }
+
+    // --- S10-T3 tests: Active bank state ---
+
+    #[test]
+    fn test_toggle_bank() {
+        let mut app = App::new(Theme::default());
+        assert_eq!(app.active_bank, Bank::A);
+        app.toggle_bank();
+        assert_eq!(app.active_bank, Bank::B);
+        assert_eq!(app.status_message.as_deref(), Some("Active: Bank B"));
+        app.toggle_bank();
+        assert_eq!(app.active_bank, Bank::A);
+        assert_eq!(app.status_message.as_deref(), Some("Active: Bank A"));
+    }
+
+    #[test]
+    fn test_active_bank_mut_returns_correct_bank() {
+        let mut app = App::new(Theme::default());
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+        });
+        // Bank A is default.
+        let bank_a = app.active_bank_mut().unwrap();
+        assert_eq!(bank_a.m1, 12000);
+
+        // Toggle to Bank B and verify.
+        app.active_bank = Bank::B;
+        let bank_b = app.active_bank_mut().unwrap();
+        assert_eq!(bank_b.m1, 12000); // preset_loop has synced banks
+    }
+
+    #[test]
+    fn test_active_bank_mut_none_without_preview() {
+        let mut app = App::new(Theme::default());
+        assert!(app.active_bank_mut().is_none());
+    }
+
+    #[test]
+    fn test_active_bank_mut_none_without_markers() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: None,
+        });
+        assert!(app.active_bank_mut().is_none());
+    }
+
+    #[test]
+    fn test_total_samples() {
+        let mut app = App::new(Theme::default());
+        assert!(app.total_samples().is_none());
+
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 1.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: None,
+        });
+        assert_eq!(app.total_samples(), Some(48000));
+    }
+
+    // --- S10-T4 tests: Ensure markers ---
+
+    #[test]
+    fn test_ensure_markers_initializes_when_none() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 5.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: None,
+        });
+        assert!(app.preview.as_ref().unwrap().markers.is_none());
+        app.ensure_markers();
+        assert!(app.preview.as_ref().unwrap().markers.is_some());
+        let markers = app.preview.as_ref().unwrap().markers.unwrap();
+        // 5s @ 48kHz = 240000 samples → preset_loop
+        assert_eq!(markers, crate::engine::bext::MarkerConfig::preset_loop(240000));
+    }
+
+    #[test]
+    fn test_ensure_markers_preserves_existing() {
+        let mut app = App::new(Theme::default());
+        let custom = crate::engine::bext::MarkerConfig::preset_shot();
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(custom),
+        });
+        app.ensure_markers();
+        assert_eq!(app.preview.as_ref().unwrap().markers, Some(custom));
+    }
+
+    // --- S10-T5 tests: Clear bank markers ---
+
+    #[test]
+    fn test_clear_bank_markers() {
+        let mut app = App::new(Theme::default());
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+        });
+        app.clear_bank_markers();
+        let bank_a = app.active_bank_ref().unwrap();
+        assert!(bank_a.is_empty());
+        assert_eq!(app.status_message.as_deref(), Some("Bank A cleared"));
+    }
+
+    #[test]
+    fn test_clear_bank_markers_no_preview() {
+        let mut app = App::new(Theme::default());
+        app.clear_bank_markers();
+        assert_eq!(app.status_message.as_deref(), Some("No markers"));
+    }
+
+    // --- S10-T6 tests: Segment bounds ---
+
+    #[test]
+    fn test_segments_with_markers() {
+        let mut app = App::new(Theme::default());
+        let mut markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        markers.bank_a.m1 = 12000;
+        markers.bank_a.m2 = 24000;
+        markers.bank_a.m3 = 36000;
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 1.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: Some(markers),
+        });
+        let segs = app.segments();
+        assert_eq!(segs.len(), 4);
+        assert_eq!((segs[0].start, segs[0].end), (0, 12000));
+        assert_eq!((segs[1].start, segs[1].end), (12000, 24000));
+        assert_eq!((segs[2].start, segs[2].end), (24000, 36000));
+        assert_eq!((segs[3].start, segs[3].end), (36000, 48000));
+        assert!(segs.iter().all(|s| !s.reverse));
+    }
+
+    #[test]
+    fn test_segments_no_preview() {
+        let app = App::new(Theme::default());
+        assert!(app.segments().is_empty());
+    }
+
+    #[test]
+    fn test_segments_empty_markers() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 1.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: Some(crate::engine::bext::MarkerConfig {
+                bank_a: crate::engine::bext::MarkerBank::empty(),
+                bank_b: crate::engine::bext::MarkerBank::empty(),
+            }),
+        });
+        let segs = app.segments();
+        // Always exactly 4 segments. EMPTY markers collapse to zero-length.
+        assert_eq!(segs.len(), 4);
+        // First 3 are zero-length (all EMPTY markers resolve to 0).
+        assert_eq!(segs[0].start, 0);
+        assert_eq!(segs[0].end, 0);
+        assert_eq!(segs[1].start, 0);
+        assert_eq!(segs[1].end, 0);
+        assert_eq!(segs[2].start, 0);
+        assert_eq!(segs[2].end, 0);
+        // Last segment spans full file.
+        assert_eq!(segs[3].start, 0);
+        assert_eq!(segs[3].end, 48000);
+    }
+
+    #[test]
+    fn test_segments_reverse_encoding() {
+        // When m1 > m2, segment 2 should be marked reverse.
+        use crate::engine::bext::{MarkerBank, MARKER_EMPTY};
+        let bank = MarkerBank {
+            m1: 30000,
+            m2: 10000,
+            m3: MARKER_EMPTY,
+            reps: [1, 1, 1, 1],
+        };
+        let segs = segment_bounds(&bank, 48000);
+        assert_eq!(segs.len(), 4);
+        // seg 0: [0, 30000] forward
+        assert_eq!((segs[0].start, segs[0].end), (0, 30000));
+        assert!(!segs[0].reverse);
+        // seg 1: [30000, 10000] reverse
+        assert_eq!((segs[1].start, segs[1].end), (30000, 10000));
+        assert!(segs[1].reverse);
+        // seg 2: [10000, 10000] zero-length (EMPTY resolves to prev=10000)
+        assert_eq!((segs[2].start, segs[2].end), (10000, 10000));
+        assert!(!segs[2].reverse);
+        // seg 3: [10000, 48000] forward
+        assert_eq!((segs[3].start, segs[3].end), (10000, 48000));
+        assert!(!segs[3].reverse);
+    }
+
+    // --- S10-T7/T8 tests: Segment/program playback state ---
+
+    #[test]
+    fn test_stop_playback_clears_segment_state() {
+        let mut app = App::new(Theme::default());
+        app.segment_start = Some(1000);
+        app.segment_end = Some(2000);
+        app.segment_reps_remaining = 3;
+        app.program_playlist = vec![(0, 1000, 2)];
+        app.program_index = 0;
+        app.stop_playback();
+        assert!(app.segment_start.is_none());
+        assert!(app.segment_end.is_none());
+        assert_eq!(app.segment_reps_remaining, 0);
+        assert!(app.program_playlist.is_empty());
+        assert_eq!(app.program_index, 0);
+    }
+
+    #[test]
+    fn test_play_program_empty_bounds() {
+        let mut app = App::new(Theme::default());
+        // No preview → empty segment_bounds → should report "No segments".
+        app.play_program();
+        assert_eq!(app.status_message.as_deref(), Some("No segments"));
+    }
+
+    #[test]
+    fn test_start_program_segment_past_end() {
+        let mut app = App::new(Theme::default());
+        app.program_playlist = vec![(0, 100, 1)];
+        app.program_index = 5; // past the end
+        app.start_program_segment();
+        assert_eq!(app.status_message.as_deref(), Some("Program complete"));
+        assert!(app.program_playlist.is_empty());
+    }
+
+    // --- S10F-T5: Proptest coverage for segments ---
+
+    mod segment_proptests {
+        use super::*;
+        use crate::engine::bext::{MarkerBank, MARKER_EMPTY};
+        use proptest::prelude::*;
+
+        // --- Generators ---
+        //
+        // Domain-aware strategies that weight interesting values:
+        //   - MARKER_EMPTY (~25%): the sentinel for "no marker in this slot"
+        //   - 0 and total (~10% each): file boundaries where segments collapse
+        //   - Interior (~55%): uniform over [0, total]
+        //
+        // Total sample count is also weighted toward small values where
+        // boundary collisions are more likely.
+
+        /// File length: weighted toward small values for denser boundary coverage.
+        fn arb_total() -> impl Strategy<Value = u32> {
+            prop_oneof![
+                3 => 1u32..=4,              // tiny: markers must collide
+                3 => 5u32..=1_000,          // small: boundaries close together
+                4 => 1_001u32..=1_000_000,  // normal: realistic file lengths
+            ]
+        }
+
+        /// Single marker value for a given file length.
+        fn arb_marker(total: u32) -> impl Strategy<Value = u32> {
+            prop_oneof![
+                5 => Just(MARKER_EMPTY),  // ~25%: empty slot
+                2 => Just(0u32),          // ~10%: start-of-file
+                2 => Just(total),         // ~10%: end-of-file
+                11 => 0..=total,          // ~55%: uniform interior
+            ]
+        }
+
+        /// Full MarkerBank with weighted marker and rep generation.
+        fn arb_bank(total: u32) -> impl Strategy<Value = MarkerBank> {
+            (
+                arb_marker(total), arb_marker(total), arb_marker(total),
+                0u8..16, 0u8..16, 0u8..16, 0u8..16,
+            ).prop_map(|(m1, m2, m3, r0, r1, r2, r3)| {
+                MarkerBank { m1, m2, m3, reps: [r0, r1, r2, r3] }
+            })
+        }
+
+        /// (total, bank) pair where markers are valid for the given total.
+        fn arb_total_and_bank() -> impl Strategy<Value = (u32, MarkerBank)> {
+            arb_total().prop_flat_map(|total| {
+                arb_bank(total).prop_map(move |bank| (total, bank))
+            })
+        }
+
+        // --- Group 3: Segment computation invariants ---
+
+        proptest! {
+            #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+            /// P3: Always exactly 4 segments.
+            #[test]
+            fn proptest_always_4_segments((total, bank) in arb_total_and_bank()) {
+                let segs = segment_bounds(&bank, total);
+                prop_assert_eq!(segs.len(), 4);
+            }
+
+            /// P4: Rep indices match bank slots.
+            #[test]
+            fn proptest_rep_indices_match((total, bank) in arb_total_and_bank()) {
+                let segs = segment_bounds(&bank, total);
+                for i in 0..4 {
+                    prop_assert_eq!(segs[i].rep, bank.reps[i]);
+                }
+            }
+
+            /// P5: All boundaries within [0, total].
+            #[test]
+            fn proptest_boundaries_in_range((total, bank) in arb_total_and_bank()) {
+                let segs = segment_bounds(&bank, total);
+                for (i, seg) in segs.iter().enumerate() {
+                    let hi = seg.start.max(seg.end);
+                    prop_assert!(hi <= total,
+                        "seg[{}]: max({}, {}) = {} > total={}", i, seg.start, seg.end, hi, total);
+                }
+            }
+
+            /// P6: Forward segments have start <= end.
+            #[test]
+            fn proptest_forward_start_le_end((total, bank) in arb_total_and_bank()) {
+                let segs = segment_bounds(&bank, total);
+                for (i, seg) in segs.iter().enumerate() {
+                    if !seg.reverse {
+                        prop_assert!(seg.start <= seg.end,
+                            "seg[{}]: forward but start={} > end={}", i, seg.start, seg.end);
+                    }
+                }
+            }
+
+            /// P7: Reverse segments have start > end.
+            #[test]
+            fn proptest_reverse_start_gt_end((total, bank) in arb_total_and_bank()) {
+                let segs = segment_bounds(&bank, total);
+                for (i, seg) in segs.iter().enumerate() {
+                    if seg.reverse {
+                        prop_assert!(seg.start > seg.end,
+                            "seg[{}]: reverse but start={} <= end={}", i, seg.start, seg.end);
+                    }
+                }
+            }
+
+            // --- Group 4: Direction encoding ---
+
+            /// P8: Marker order determines direction of the segment between them.
+            #[test]
+            fn proptest_marker_order_direction(
+                total in arb_total(),
+                m1_frac in 0.0f64..=1.0,
+                m2_frac in 0.0f64..=1.0,
+            ) {
+                let m1 = (m1_frac * total as f64) as u32;
+                let m2 = (m2_frac * total as f64) as u32;
+                let bank = MarkerBank {
+                    m1, m2, m3: MARKER_EMPTY,
+                    reps: [1, 1, 0, 0],
+                };
+                let segs = segment_bounds(&bank, total);
+                if m1 > m2 {
+                    prop_assert!(segs[1].reverse,
+                        "m1={} > m2={} but seg[1] not reverse", m1, m2);
+                } else {
+                    prop_assert!(!segs[1].reverse,
+                        "m1={} <= m2={} but seg[1] reverse", m1, m2);
+                }
+            }
+
+            /// P9: Identical adjacent markers produce zero-length forward segment.
+            #[test]
+            fn proptest_identical_markers_zero_length(
+                total in arb_total(),
+                pos_frac in 0.0f64..=1.0,
+            ) {
+                let pos = (pos_frac * total as f64) as u32;
+                let bank = MarkerBank {
+                    m1: pos, m2: pos, m3: MARKER_EMPTY,
+                    reps: [1, 1, 0, 0],
+                };
+                let segs = segment_bounds(&bank, total);
+                prop_assert_eq!(segs[1].start, segs[1].end);
+                prop_assert!(!segs[1].reverse);
+            }
+
+            // --- Group 5: MARKER_EMPTY handling ---
+
+            /// P10: All-EMPTY bank: first 3 zero-length, last spans full file.
+            #[test]
+            fn proptest_all_empty_bank(total in arb_total()) {
+                let bank = MarkerBank::empty();
+                let segs = segment_bounds(&bank, total);
+                for i in 0..3 {
+                    prop_assert_eq!(segs[i].start, 0);
+                    prop_assert_eq!(segs[i].end, 0);
+                }
+                prop_assert_eq!(segs[3].start, 0);
+                prop_assert_eq!(segs[3].end, total);
+            }
+
+            /// P11: Single EMPTY marker collapses its segment to zero-length.
+            #[test]
+            fn proptest_single_empty_collapses(
+                total in arb_total(),
+                m1_frac in 0.0f64..=1.0,
+                m3_frac in 0.0f64..=1.0,
+            ) {
+                let m1 = (m1_frac * total as f64) as u32;
+                let m3 = (m3_frac * total as f64) as u32;
+                let bank = MarkerBank {
+                    m1, m2: MARKER_EMPTY, m3,
+                    reps: [1, 1, 1, 1],
+                };
+                let segs = segment_bounds(&bank, total);
+                // m2 resolves to m1 (previous boundary), so seg[1] is zero-length.
+                prop_assert_eq!(segs[1].start, segs[1].end,
+                    "EMPTY m2: seg[1] should be zero-length, got {}..{}", segs[1].start, segs[1].end);
+            }
+        }
+
+        // --- Group 7: Infinite loop / skip ---
+
+        #[test]
+        fn test_rep15_stored_in_segment() {
+            let bank = MarkerBank {
+                m1: 12000, m2: 24000, m3: 36000,
+                reps: [15, 1, 1, 1],
+            };
+            let segs = segment_bounds(&bank, 48000);
+            // rep=15 stored as-is in Segment; the runtime sentinel (u8::MAX)
+            // is applied in play_segment/start_program_segment/update_playback_position.
+            assert_eq!(segs[0].rep, 15);
+        }
+
+        #[test]
+        fn test_rep0_means_skip() {
+            let bank = MarkerBank {
+                m1: 12000, m2: 24000, m3: 36000,
+                reps: [0, 1, 0, 1],
+            };
+            let segs = segment_bounds(&bank, 48000);
+            assert_eq!(segs[0].rep, 0);
+            assert_eq!(segs[2].rep, 0);
+        }
+    }
+
+    // --- S10 action name round-trip tests ---
+
+    #[test]
+    fn test_new_action_names_roundtrip() {
+        use crate::ui::actions::Action;
+        let actions = [
+            Action::ToggleBank,
+            Action::SetMarker1,
+            Action::SetMarker2,
+            Action::SetMarker3,
+            Action::ClearNearestMarker,
+            Action::ClearBankMarkers,
+            Action::IncrementRep,
+            Action::DecrementRep,
+            Action::PlaySegment,
+            Action::PlayProgram,
+        ];
+        for action in &actions {
+            let name = action.name();
+            let parsed = Action::from_name(name);
+            assert_eq!(parsed, Some(*action), "round-trip failed for {name}");
+        }
     }
 }

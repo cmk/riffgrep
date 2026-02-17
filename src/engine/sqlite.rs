@@ -186,15 +186,15 @@ impl Database {
         Ok(total)
     }
 
-    /// Consume records with per-record peaks_source and audio info from a channel.
+    /// Consume records with per-record peaks_source, audio info, and markers from a channel.
     /// Returns the total number of records inserted.
     pub fn index_writer_with_audio(
         &self,
-        rx: &Receiver<(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>)>,
+        rx: &Receiver<(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>, Option<super::bext::MarkerConfig>)>,
         batch_size: usize,
     ) -> anyhow::Result<usize> {
         let mut total = 0;
-        let mut batch: Vec<(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>)> =
+        let mut batch: Vec<(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>, Option<super::bext::MarkerConfig>)> =
             Vec::with_capacity(batch_size);
 
         for item in rx {
@@ -274,16 +274,16 @@ impl Database {
         Ok(count)
     }
 
-    /// Insert records with per-record peaks_source and audio info.
+    /// Insert records with per-record peaks_source, audio info, and markers.
     pub fn insert_batch_with_audio(
         &self,
-        records: &[(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>)],
+        records: &[(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>, Option<super::bext::MarkerConfig>)],
     ) -> anyhow::Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare_cached(INSERT_SQL)?;
 
-            for (meta, mtime, peaks, source, audio_info) in records {
+            for (meta, mtime, peaks, source, audio_info, markers) in records {
                 let name = meta
                     .path
                     .file_stem()
@@ -295,6 +295,8 @@ impl Database {
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 let path_str = meta.path.to_string_lossy();
+
+                let markers_blob: Option<Vec<u8>> = markers.map(|m| m.to_bytes().to_vec());
 
                 stmt.execute(params![
                     path_str.as_ref(),
@@ -325,7 +327,7 @@ impl Database {
                     meta.take,
                     meta.track,
                     meta.item,
-                    Option::<Vec<u8>>::None, // markers_blob
+                    markers_blob,
                 ])?;
             }
         }
@@ -1613,7 +1615,7 @@ mod tests {
         drop(tx);
 
         let results: Vec<_> = rx.iter().collect();
-        assert_eq!(results.len(), 9, "expected 9 results, got {}", results.len());
+        assert_eq!(results.len(), 10, "expected 10 results, got {}", results.len());
     }
 
     #[test]
@@ -1911,7 +1913,7 @@ mod tests {
         index_test_files(&db);
 
         let stats = db.stats().unwrap();
-        assert_eq!(stats.file_count, 9);
+        assert_eq!(stats.file_count, 10);
     }
 
     #[test]
@@ -2379,7 +2381,7 @@ mod tests {
             channels: 2,
         });
 
-        db.insert_batch_with_audio(&[(meta, 100, None, "none".to_string(), audio_info)])
+        db.insert_batch_with_audio(&[(meta, 100, None, "none".to_string(), audio_info, None)])
             .unwrap();
 
         let (dur, sr, bd, ch): (Option<f64>, Option<i32>, Option<i32>, Option<i32>) = db

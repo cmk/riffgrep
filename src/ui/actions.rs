@@ -23,7 +23,6 @@ pub enum Action {
 
     // Playback
     TogglePlayback,
-    StopPlayback,
     SeekForwardSmall,
     SeekForwardLarge,
     SeekBackwardSmall,
@@ -36,6 +35,18 @@ pub enum Action {
     ClearMarks,
     ToggleMarkedFilter,
     SaveMarkers,
+
+    // Markers
+    ToggleBank,
+    SetMarker1,
+    SetMarker2,
+    SetMarker3,
+    ClearNearestMarker,
+    ClearBankMarkers,
+    IncrementRep,
+    DecrementRep,
+    PlaySegment,
+    PlayProgram,
 
     // Mode
     EnterInsertMode,
@@ -68,7 +79,6 @@ impl Action {
         Action::SortAscending,
         Action::SortDescending,
         Action::TogglePlayback,
-        Action::StopPlayback,
         Action::SeekForwardSmall,
         Action::SeekForwardLarge,
         Action::SeekBackwardSmall,
@@ -79,6 +89,16 @@ impl Action {
         Action::ClearMarks,
         Action::ToggleMarkedFilter,
         Action::SaveMarkers,
+        Action::ToggleBank,
+        Action::SetMarker1,
+        Action::SetMarker2,
+        Action::SetMarker3,
+        Action::ClearNearestMarker,
+        Action::ClearBankMarkers,
+        Action::IncrementRep,
+        Action::DecrementRep,
+        Action::PlaySegment,
+        Action::PlayProgram,
         Action::EnterInsertMode,
         Action::EnterNormalMode,
         Action::SearchSubmit,
@@ -102,7 +122,7 @@ impl Action {
             "sort_ascending" => Some(Action::SortAscending),
             "sort_descending" => Some(Action::SortDescending),
             "toggle_playback" => Some(Action::TogglePlayback),
-            "stop_playback" => Some(Action::StopPlayback),
+
             "seek_forward_small" => Some(Action::SeekForwardSmall),
             "seek_forward_large" => Some(Action::SeekForwardLarge),
             "seek_backward_small" => Some(Action::SeekBackwardSmall),
@@ -113,6 +133,16 @@ impl Action {
             "clear_marks" => Some(Action::ClearMarks),
             "toggle_marked_filter" => Some(Action::ToggleMarkedFilter),
             "save_markers" => Some(Action::SaveMarkers),
+            "toggle_bank" => Some(Action::ToggleBank),
+            "set_marker_1" => Some(Action::SetMarker1),
+            "set_marker_2" => Some(Action::SetMarker2),
+            "set_marker_3" => Some(Action::SetMarker3),
+            "clear_nearest_marker" => Some(Action::ClearNearestMarker),
+            "clear_bank_markers" => Some(Action::ClearBankMarkers),
+            "increment_rep" => Some(Action::IncrementRep),
+            "decrement_rep" => Some(Action::DecrementRep),
+            "play_segment" => Some(Action::PlaySegment),
+            "play_program" => Some(Action::PlayProgram),
             "enter_insert_mode" => Some(Action::EnterInsertMode),
             "enter_normal_mode" => Some(Action::EnterNormalMode),
             "search_submit" => Some(Action::SearchSubmit),
@@ -138,7 +168,6 @@ impl Action {
             Action::SortAscending => "sort_ascending",
             Action::SortDescending => "sort_descending",
             Action::TogglePlayback => "toggle_playback",
-            Action::StopPlayback => "stop_playback",
             Action::SeekForwardSmall => "seek_forward_small",
             Action::SeekForwardLarge => "seek_forward_large",
             Action::SeekBackwardSmall => "seek_backward_small",
@@ -149,6 +178,16 @@ impl Action {
             Action::ClearMarks => "clear_marks",
             Action::ToggleMarkedFilter => "toggle_marked_filter",
             Action::SaveMarkers => "save_markers",
+            Action::ToggleBank => "toggle_bank",
+            Action::SetMarker1 => "set_marker_1",
+            Action::SetMarker2 => "set_marker_2",
+            Action::SetMarker3 => "set_marker_3",
+            Action::ClearNearestMarker => "clear_nearest_marker",
+            Action::ClearBankMarkers => "clear_bank_markers",
+            Action::IncrementRep => "increment_rep",
+            Action::DecrementRep => "decrement_rep",
+            Action::PlaySegment => "play_segment",
+            Action::PlayProgram => "play_program",
             Action::EnterInsertMode => "enter_insert_mode",
             Action::EnterNormalMode => "enter_normal_mode",
             Action::SearchSubmit => "search_submit",
@@ -181,7 +220,6 @@ impl Action {
             Action::SortAscending => "Sort column ascending",
             Action::SortDescending => "Sort column descending",
             Action::TogglePlayback => "Play / pause",
-            Action::StopPlayback => "Stop playback",
             Action::SeekForwardSmall => "Seek forward (small)",
             Action::SeekForwardLarge => "Seek forward (large)",
             Action::SeekBackwardSmall => "Seek backward (small)",
@@ -192,6 +230,16 @@ impl Action {
             Action::ClearMarks => "Clear all marks",
             Action::ToggleMarkedFilter => "Filter to marked only",
             Action::SaveMarkers => "Save markers to file",
+            Action::ToggleBank => "Toggle marker bank A/B",
+            Action::SetMarker1 => "Set marker 1 at cursor",
+            Action::SetMarker2 => "Set marker 2 at cursor",
+            Action::SetMarker3 => "Set marker 3 at cursor",
+            Action::ClearNearestMarker => "Clear nearest marker",
+            Action::ClearBankMarkers => "Clear all bank markers",
+            Action::IncrementRep => "Increment segment rep",
+            Action::DecrementRep => "Decrement segment rep",
+            Action::PlaySegment => "Play current segment",
+            Action::PlayProgram => "Play bank program",
             Action::EnterInsertMode => "Enter search mode",
             Action::EnterNormalMode => "Exit search mode",
             Action::SearchSubmit => "Submit search",
@@ -215,7 +263,6 @@ impl Action {
             | Action::MoveColumnRight => "Navigation",
             Action::SortAscending | Action::SortDescending => "Sort",
             Action::TogglePlayback
-            | Action::StopPlayback
             | Action::SeekForwardSmall
             | Action::SeekForwardLarge
             | Action::SeekBackwardSmall
@@ -226,6 +273,15 @@ impl Action {
             | Action::ClearMarks
             | Action::ToggleMarkedFilter
             | Action::SaveMarkers => "Marks",
+            Action::ToggleBank
+            | Action::SetMarker1
+            | Action::SetMarker2
+            | Action::SetMarker3
+            | Action::ClearNearestMarker
+            | Action::ClearBankMarkers
+            | Action::IncrementRep
+            | Action::DecrementRep => "Markers",
+            Action::PlaySegment | Action::PlayProgram => "Playback",
             Action::EnterInsertMode
             | Action::EnterNormalMode
             | Action::SearchSubmit
@@ -340,7 +396,7 @@ impl Keymap {
 
         // Playback
         bindings.insert((KeyCode::Char(' '), none), Action::TogglePlayback);
-        bindings.insert((KeyCode::Char('s'), none), Action::StopPlayback);
+
         bindings.insert((KeyCode::Right, none), Action::SeekForwardSmall);
         bindings.insert((KeyCode::Left, none), Action::SeekBackwardSmall);
         bindings.insert((KeyCode::Right, shift), Action::SeekForwardLarge);
@@ -353,6 +409,19 @@ impl Keymap {
         bindings.insert((KeyCode::Char('M'), shift), Action::ClearMarks);
         bindings.insert((KeyCode::Char('f'), none), Action::ToggleMarkedFilter);
         bindings.insert((KeyCode::Char('w'), none), Action::SaveMarkers);
+
+        // Markers
+        bindings.insert((KeyCode::Char('b'), none), Action::ToggleBank);
+        bindings.insert((KeyCode::Char('1'), none), Action::SetMarker1);
+        bindings.insert((KeyCode::Char('2'), none), Action::SetMarker2);
+        bindings.insert((KeyCode::Char('3'), none), Action::SetMarker3);
+        bindings.insert((KeyCode::Char('x'), none), Action::ClearNearestMarker);
+        bindings.insert((KeyCode::Char('X'), shift), Action::ClearBankMarkers);
+        bindings.insert((KeyCode::Char('+'), none), Action::IncrementRep);
+        bindings.insert((KeyCode::Char('='), none), Action::IncrementRep);
+        bindings.insert((KeyCode::Char('-'), none), Action::DecrementRep);
+        bindings.insert((KeyCode::Char('p'), none), Action::PlaySegment);
+        bindings.insert((KeyCode::Char('P'), shift), Action::PlayProgram);
 
         // Mode
         bindings.insert((KeyCode::Char('i'), none), Action::EnterInsertMode);
@@ -449,7 +518,7 @@ impl Keymap {
         }
 
         // Return in a stable category order.
-        let order = ["Navigation", "Sort", "Playback", "Marks", "Mode", "Selection", "App"];
+        let order = ["Navigation", "Sort", "Playback", "Marks", "Markers", "Mode", "Selection", "App"];
         let mut result = Vec::new();
         for &cat in &order {
             if let Some(entries) = groups.remove(cat) {
@@ -485,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_all_count_matches_variants() {
-        assert_eq!(Action::ALL.len(), 29);
+        assert_eq!(Action::ALL.len(), 38);
     }
 
     #[test]
@@ -607,8 +676,8 @@ mod tests {
     fn test_keymap_mode_aware() {
         let km = Keymap::default_keymap();
         // Unbound key returns None (Insert mode keys are not in the Normal keymap).
-        let x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
-        assert_eq!(km.resolve(x), None);
+        let z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
+        assert_eq!(km.resolve(z), None);
     }
 
     #[test]
@@ -676,7 +745,7 @@ mod tests {
 
     #[test]
     fn test_action_all_count_final() {
-        assert_eq!(Action::ALL.len(), 29, "Sprint 9 final count should be 29");
+        assert_eq!(Action::ALL.len(), 38, "Sprint 10 final count should be 39");
     }
 
     // --- S9-T9 tests: SaveMarkers action ---

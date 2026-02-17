@@ -33,7 +33,7 @@ fn count_all_files() {
         .args(["--count", "./test_files/"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("9 matches"));
+        .stdout(predicate::str::contains("10 matches"));
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn no_filters_lists_all_wav() {
         .lines()
         .filter(|l| !l.is_empty())
         .collect();
-    assert_eq!(lines.len(), 9, "expected 9 WAV files");
+    assert_eq!(lines.len(), 10, "expected 10 WAV files");
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn index_test_files() {
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains("Indexed 9 files"));
+        .stderr(predicate::str::contains("Indexed 10 files"));
 
     let _ = std::fs::remove_file(&db_path);
 }
@@ -219,7 +219,7 @@ fn sqlite_count_mode() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("9 matches"));
+        .stdout(predicate::str::contains("10 matches"));
 
     let _ = std::fs::remove_file(&db_path);
 }
@@ -250,7 +250,7 @@ fn no_db_overrides_sqlite() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("9 matches"));
+        .stdout(predicate::str::contains("10 matches"));
 
     let _ = std::fs::remove_file(&db_path);
 }
@@ -278,7 +278,7 @@ fn db_stats_after_index() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Files:    9"));
+        .stdout(predicate::str::contains("Files:    10"));
 
     let _ = std::fs::remove_file(&db_path);
 }
@@ -325,7 +325,7 @@ fn force_reindex() {
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains("Indexed 9 files"));
+        .stderr(predicate::str::contains("Indexed 10 files"));
 
     let _ = std::fs::remove_file(&db_path);
 }
@@ -434,7 +434,7 @@ fn piped_output_headless() {
         .args(["--count", "./test_files/"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("9 matches"));
+        .stdout(predicate::str::contains("10 matches"));
 }
 
 #[test]
@@ -444,7 +444,7 @@ fn no_tui_forces_headless() {
         .args(["--no-tui", "--count", "./test_files/"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("9 matches"));
+        .stdout(predicate::str::contains("10 matches"));
 }
 
 #[test]
@@ -454,7 +454,7 @@ fn theme_flag_parsed() {
         .args(["--no-tui", "--theme", "ableton", "--count", "./test_files/"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("9 matches"));
+        .stdout(predicate::str::contains("10 matches"));
 }
 
 #[test]

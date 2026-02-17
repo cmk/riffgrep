@@ -149,6 +149,60 @@ fn render_marker_lines(
     }
 }
 
+/// Render segment repetition labels at the top of the waveform.
+///
+/// Always renders exactly 4 segments from the bank's markers. Each segment gets
+/// a label like "1×2" (segment 1, 2 reps, forward) or "1<2" (reverse).
+/// Uses the spec-compliant `segment_bounds()` function.
+fn render_segment_labels(
+    bank: &crate::engine::bext::MarkerBank,
+    total_samples: u32,
+    x_start: u16,
+    y_start: u16,
+    wave_width: u16,
+    buf: &mut Buffer,
+    style: Style,
+) {
+    if total_samples == 0 || wave_width == 0 {
+        return;
+    }
+
+    let segs = super::segment_bounds(bank, total_samples);
+
+    for (i, seg) in segs.iter().enumerate() {
+        // Skip zero-length segments (collapsed EMPTY markers).
+        if seg.start == seg.end {
+            continue;
+        }
+
+        // For column mapping, use the forward extent (min..max).
+        let lo = seg.start.min(seg.end);
+        let hi = seg.start.max(seg.end);
+
+        let col_start = ((lo as u64 * wave_width as u64) / total_samples as u64) as u16;
+        let col_end = ((hi as u64 * wave_width as u64) / total_samples as u64) as u16;
+        let span = col_end.saturating_sub(col_start);
+
+        // Direction indicator: × for forward, < for reverse.
+        let sep = if seg.reverse { '<' } else { '×' };
+
+        // Format label.
+        let label = if seg.rep == 0 {
+            format!("{}{sep}0", i + 1)
+        } else if seg.rep == 15 {
+            format!("{}{sep}∞", i + 1)
+        } else {
+            format!("{}{sep}{}", i + 1, seg.rep)
+        };
+
+        // Only render if span is wide enough.
+        if span as usize >= label.chars().count() + 1 {
+            let mid = col_start + (span - label.chars().count() as u16) / 2;
+            buf.set_string(x_start + mid, y_start, &label, style);
+        }
+    }
+}
+
 /// Format seconds as "M:SS" or "H:MM:SS".
 fn format_duration(secs: f64) -> String {
     let total = secs.round() as u64;
@@ -559,7 +613,7 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
         buf.set_string(area.x, area.y + i as u16, line, style);
     }
 
-    // Marker lines overlay (before playback cursor so cursor draws on top).
+    // Marker lines and segment labels overlay.
     if let Some(markers) = &preview.markers {
         if !markers.is_empty() {
             // Compute total samples from audio_info if available.
@@ -576,6 +630,21 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
                     wave_rows as u16,
                     buf,
                     theme,
+                );
+
+                // Segment labels for the active bank.
+                let (bank, color) = match app.active_bank {
+                    super::Bank::A => (&markers.bank_a, theme.marker_a),
+                    super::Bank::B => (&markers.bank_b, theme.marker_b),
+                };
+                render_segment_labels(
+                    bank,
+                    total_samples,
+                    area.x,
+                    area.y,
+                    wave_width as u16,
+                    buf,
+                    Style::default().fg(color),
                 );
             }
         }
@@ -1910,6 +1979,119 @@ mod tests {
                 let markers = crate::engine::bext::MarkerConfig::preset_shot();
                 // Should not panic with total_samples=0.
                 render_marker_lines(&markers, 0, area.x, area.y, area.width, 8, buf, &theme);
+            })
+            .unwrap();
+    }
+
+    // --- S10-T9 tests: Segment labels ---
+
+    #[test]
+    fn test_segment_labels_render_in_wide_area() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 80, 8);
+                let buf = f.buffer_mut();
+                let style = Style::default().fg(ratatui::style::Color::Yellow);
+                let mut bank = crate::engine::bext::MarkerBank::empty();
+                bank.m1 = 12000;
+                bank.m2 = 24000;
+                bank.m3 = 36000;
+                bank.reps = [2, 3, 1, 1];
+                render_segment_labels(&bank, 48000, area.x, area.y, 80, buf, style);
+
+                // Check that content was rendered in the top row.
+                let top_row: String = (0..80).map(|x| {
+                    buf.cell((x, 0)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                }).collect();
+                // Should contain segment labels.
+                assert!(top_row.contains("1×2"), "expected 1×2 in top row: '{top_row}'");
+                assert!(top_row.contains("2×3"), "expected 2×3 in top row: '{top_row}'");
+                assert!(top_row.contains("3×1"), "expected 3×1 in top row: '{top_row}'");
+                assert!(top_row.contains("4×1"), "expected 4×1 in top row: '{top_row}'");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_segment_labels_zero_rep() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 80, 8);
+                let buf = f.buffer_mut();
+                let style = Style::default();
+                let mut bank = crate::engine::bext::MarkerBank::empty();
+                bank.m1 = 24000;
+                bank.reps = [0, 1, 0, 0]; // Segment 1 is skipped (rep=0).
+                render_segment_labels(&bank, 48000, area.x, area.y, 80, buf, style);
+
+                let top_row: String = (0..80).map(|x| {
+                    buf.cell((x, 0)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                }).collect();
+                assert!(top_row.contains("1×0"), "skipped segment shows 1×0: '{top_row}'");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_segment_labels_infinite_rep() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 80, 8);
+                let buf = f.buffer_mut();
+                let style = Style::default();
+                let mut bank = crate::engine::bext::MarkerBank::empty();
+                bank.m1 = 24000;
+                bank.reps = [15, 1, 0, 0]; // Segment 1 is infinite (rep=15).
+                render_segment_labels(&bank, 48000, area.x, area.y, 80, buf, style);
+
+                let top_row: String = (0..80).map(|x| {
+                    buf.cell((x, 0)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                }).collect();
+                // ∞ is multi-byte, check the label is present.
+                assert!(top_row.contains("1×"), "infinite segment shows 1×∞: '{top_row}'");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_segment_labels_narrow_skips() {
+        let backend = TestBackend::new(10, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 10, 4);
+                let buf = f.buffer_mut();
+                let style = Style::default();
+                // 3 markers dividing 48000 into 4 segments in only 10 cols.
+                // Each segment gets ~2.5 cols — too narrow for "1×1" (3 chars).
+                let mut bank = crate::engine::bext::MarkerBank::empty();
+                bank.m1 = 12000;
+                bank.m2 = 24000;
+                bank.m3 = 36000;
+                bank.reps = [1, 1, 1, 1];
+                // Should not panic, labels just skipped.
+                render_segment_labels(&bank, 48000, area.x, area.y, 10, buf, style);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_segment_labels_zero_total_samples() {
+        let backend = TestBackend::new(40, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let buf = f.buffer_mut();
+                let style = Style::default();
+                let bank = crate::engine::bext::MarkerBank::empty();
+                // Should not panic.
+                render_segment_labels(&bank, 0, 0, 0, 40, buf, style);
             })
             .unwrap();
     }

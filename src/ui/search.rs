@@ -174,18 +174,22 @@ impl SearchHandleTable {
                             break;
                         }
                         count += 1;
-                        let audio_info = (|| {
+                        let (audio_info, markers) = (|| {
                             let file = std::fs::File::open(&meta.path).ok()?;
                             let mut rdr = std::io::BufReader::with_capacity(8192, file);
                             let map = crate::engine::bext::scan_chunks(&mut rdr).ok()?;
                             let fmt = crate::engine::wav::parse_fmt(&mut rdr, &map).ok()?;
-                            Some(crate::engine::wav::AudioInfo::from_fmt(&fmt, map.data_size))
-                        })();
+                            let ai = crate::engine::wav::AudioInfo::from_fmt(&fmt, map.data_size);
+                            let markers = crate::engine::bext::parse_bext_data(&mut rdr, &map)
+                                .ok()
+                                .and_then(|bext| bext.markers);
+                            Some((ai, markers))
+                        })().map_or((None, None), |(ai, m)| (Some(ai), m));
                         let row = TableRow {
                             meta,
                             audio_info,
                             marked: false,
-                            markers: None,
+                            markers,
                         };
                         if tx.blocking_send(row).is_err() {
                             break;
@@ -362,7 +366,7 @@ mod tests {
         while handle.results_rx.recv().await.is_some() {
             count += 1;
         }
-        assert_eq!(count, 9);
+        assert_eq!(count, 10);
         let _ = std::fs::remove_file(&db_path);
     }
 
@@ -381,7 +385,7 @@ mod tests {
         while handle.results_rx.recv().await.is_some() {
             count += 1;
         }
-        assert_eq!(count, 9);
+        assert_eq!(count, 10);
     }
 
     #[tokio::test]
@@ -503,7 +507,7 @@ mod tests {
                 bit_depth: 16,
                 channels: 2,
             });
-            db.insert_batch_with_audio(&[(meta, 100, None, "none".to_string(), audio_info)])
+            db.insert_batch_with_audio(&[(meta, 100, None, "none".to_string(), audio_info, None)])
                 .unwrap();
         }
 
@@ -572,6 +576,6 @@ mod tests {
             );
             count += 1;
         }
-        assert_eq!(count, 9, "should get 9 test files as TableRows");
+        assert_eq!(count, 10, "should get 10 test files as TableRows");
     }
 }

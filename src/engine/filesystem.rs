@@ -113,8 +113,8 @@ mod tests {
         let query = SearchQuery::default(); // matches everything
         finder.walk(&query, tx);
         let results: Vec<_> = rx.iter().collect();
-        // There are 11 WAV files in test_files/.
-        assert_eq!(results.len(), 9, "expected 9 WAV files, got {}", results.len());
+        // There are WAV files in test_files/ (including packed_markers.wav).
+        assert_eq!(results.len(), 10, "expected 10 WAV files, got {}", results.len());
     }
 
     #[test]

@@ -501,6 +501,52 @@ pub fn write_markers(
     Ok(())
 }
 
+/// Initialize packed schema on an existing unpacked BEXT chunk and write markers.
+///
+/// For files with BEXT that are NOT yet packed:
+/// 1. Writes recid=0 at Description[0:8]
+/// 2. Writes version_major=0, version_minor=2 at Description[8:12]
+/// 3. Writes marker data at Description[12:44]
+/// 4. Sets bext_version to 1 at offset 346 (enables packed detection on re-read)
+///
+/// Preserves all other BEXT fields (Originator, OriginatorReference, Date, UMID, etc.)
+/// since those live at fixed offsets outside [0:44].
+pub fn init_packed_and_write_markers(
+    path: &std::path::Path,
+    markers: &MarkerConfig,
+) -> Result<(), BextWriteError> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::with_capacity(4096, file);
+    let map = scan_chunks(&mut reader)?;
+
+    let _bext_offset = map.bext_offset.ok_or(BextWriteError::NoBextChunk)?;
+
+    if map.bext_size < BEXT_STANDARD_SIZE as u32 {
+        return Err(BextWriteError::BextTooSmall {
+            actual: map.bext_size,
+            offset: 0,
+            len: BEXT_STANDARD_SIZE,
+        });
+    }
+
+    drop(reader);
+
+    // 1. Write recid=0 at Description[0:8].
+    write_bext_field(path, &map, 0, &0u64.to_le_bytes())?;
+
+    // 2. Write version_major=0, version_minor=2 at Description[8:12].
+    write_bext_field(path, &map, 8, &0u16.to_le_bytes())?;
+    write_bext_field(path, &map, 10, &PACKED_VERSION_MINOR_V2.to_le_bytes())?;
+
+    // 3. Write marker data at Description[12:44].
+    write_bext_field(path, &map, 12, &markers.to_bytes())?;
+
+    // 4. Set bext_version to 1 at offset 346 (enables packed detection).
+    write_bext_field(path, &map, 346, &1u16.to_le_bytes())?;
+
+    Ok(())
+}
+
 // --- MARKERSv2 binary format ---
 
 /// Sentinel value indicating an unused marker slot (all-ones u32).
@@ -1872,6 +1918,88 @@ mod tests {
                 prop_assert_eq!(rt, config);
             }
 
+            // --- Group 2: Nibble packing ---
+
+            /// P1: Nibble round-trip via bank serialization.
+            #[test]
+            fn proptest_nibble_roundtrip(
+                r0 in 0u8..16, r1 in 0u8..16, r2 in 0u8..16, r3 in 0u8..16,
+            ) {
+                let bank = MarkerBank { m1: 0, m2: 0, m3: 0, reps: [r0, r1, r2, r3] };
+                let bytes = bank.to_bytes();
+                let rt = MarkerBank::from_bytes(&bytes);
+                prop_assert_eq!(rt.reps, [r0, r1, r2, r3]);
+            }
+
+            /// P2: High nibble byte independence — byte[12] depends only on r0,r1;
+            /// byte[13] depends only on r2,r3.
+            #[test]
+            fn proptest_nibble_byte_independence(
+                a0 in 0u8..16, a1 in 0u8..16, a2 in 0u8..16, a3 in 0u8..16,
+                b2 in 0u8..16, b3 in 0u8..16,
+            ) {
+                let bank_a = MarkerBank { m1: 0, m2: 0, m3: 0, reps: [a0, a1, a2, a3] };
+                let bank_b = MarkerBank { m1: 0, m2: 0, m3: 0, reps: [a0, a1, b2, b3] };
+                let bytes_a = bank_a.to_bytes();
+                let bytes_b = bank_b.to_bytes();
+                // Byte 12 (first nibble byte) should be identical since r0,r1 are same.
+                prop_assert_eq!(bytes_a[12], bytes_b[12]);
+            }
+
+            // --- Group 6: Preset properties ---
+
+            /// P12: Preset shot encodes single full-file play (segments 0-2 zero-length).
+            #[test]
+            fn proptest_preset_shot_segments(total in 1u32..1_000_000) {
+                let config = MarkerConfig::preset_shot();
+                let bank = &config.bank_a;
+                let segs = crate::ui::segment_bounds(bank, total);
+                prop_assert_eq!(segs.len(), 4);
+                // First 3 segments: zero-length (all markers at 0).
+                for i in 0..3 {
+                    prop_assert_eq!(segs[i].start, segs[i].end);
+                }
+                // Segment 4 spans full file.
+                prop_assert_eq!(segs[3].start, 0);
+                prop_assert_eq!(segs[3].end, total);
+                prop_assert_eq!(segs[3].rep, 1);
+                prop_assert!(!segs[3].reverse);
+            }
+
+            /// P13: Preset loop has 4 non-empty forward segments (total >= 4).
+            #[test]
+            fn proptest_preset_loop_forward(total in 4u32..1_000_000) {
+                let config = MarkerConfig::preset_loop(total);
+                let bank = &config.bank_a;
+                let segs = crate::ui::segment_bounds(bank, total);
+                prop_assert_eq!(segs.len(), 4);
+                for (i, seg) in segs.iter().enumerate() {
+                    prop_assert!(seg.start < seg.end);
+                    prop_assert!(!seg.reverse);
+                    prop_assert_eq!(seg.rep, 1);
+                }
+            }
+
+            /// P14: Preset loop markers are strictly increasing.
+            #[test]
+            fn proptest_preset_loop_increasing(total in 4u32..1_000_000) {
+                let config = MarkerConfig::preset_loop(total);
+                let bank = &config.bank_a;
+                prop_assert!(bank.m1 > 0);
+                prop_assert!(bank.m1 < bank.m2);
+                prop_assert!(bank.m2 < bank.m3);
+                prop_assert!(bank.m3 < total);
+            }
+
+            /// P15: Presets are synced (bank_a == bank_b).
+            #[test]
+            fn proptest_presets_synced(total in 1u32..1_000_000) {
+                let shot = MarkerConfig::preset_shot();
+                prop_assert!(shot.is_synced());
+                let looper = MarkerConfig::preset_loop(total);
+                prop_assert!(looper.is_synced());
+            }
+
             /// scan_chunks never panics on arbitrary bytes after valid RIFF/WAVE.
             #[test]
             fn scan_chunks_panic_freedom(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
@@ -1984,6 +2112,128 @@ mod tests {
             buf.extend_from_slice(b"WAVE");
             buf.extend_from_slice(inner);
             buf
+        }
+
+        // --- S10-T1 tests: Init packed BEXT on save ---
+
+        #[test]
+        fn test_init_packed_roundtrip() {
+            // Create file with unpacked BEXT (plain text Description).
+            let mut bext_data = [0u8; BEXT_STANDARD_SIZE];
+            bext_data[0..11].copy_from_slice(b"Hello World");
+            let riff = make_riff(&[
+                (b"fmt ", &[0u8; 16]),
+                (b"bext", &bext_data),
+                (b"data", &[0u8; 100]),
+            ]);
+            let path = std::env::temp_dir().join(format!(
+                "riffgrep_test_init_packed_{}.wav",
+                std::process::id()
+            ));
+            std::fs::write(&path, &riff).unwrap();
+
+            // write_markers should fail (not packed).
+            let markers = MarkerConfig::preset_loop(48000);
+            assert!(matches!(
+                write_markers(&path, &markers),
+                Err(BextWriteError::NotPacked)
+            ));
+
+            // init_packed_and_write_markers should succeed.
+            init_packed_and_write_markers(&path, &markers).unwrap();
+
+            // Re-read: should now be packed with our markers.
+            let mut file = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
+            let map = scan_chunks(&mut file).unwrap();
+            let fields = parse_bext_data(&mut file, &map).unwrap();
+            assert!(fields.packed, "should be packed after init");
+            assert_eq!(
+                fields.markers.unwrap(),
+                markers,
+                "markers should round-trip"
+            );
+
+            // write_markers should now succeed (already packed).
+            let markers2 = MarkerConfig::preset_shot();
+            write_markers(&path, &markers2).unwrap();
+            let mut file2 = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
+            let map2 = scan_chunks(&mut file2).unwrap();
+            let fields2 = parse_bext_data(&mut file2, &map2).unwrap();
+            assert_eq!(fields2.markers.unwrap(), markers2);
+
+            std::fs::remove_file(&path).unwrap();
+        }
+
+        #[test]
+        fn test_init_packed_no_bext_errors() {
+            let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"data", &[0u8; 100])]);
+            let path = std::env::temp_dir().join(format!(
+                "riffgrep_test_init_no_bext_{}.wav",
+                std::process::id()
+            ));
+            std::fs::write(&path, &riff).unwrap();
+
+            let result =
+                init_packed_and_write_markers(&path, &MarkerConfig::preset_shot());
+            assert!(matches!(result, Err(BextWriteError::NoBextChunk)));
+
+            std::fs::remove_file(&path).unwrap();
+        }
+
+        #[test]
+        fn test_init_packed_preserves_originator() {
+            let mut bext_data = [0u8; BEXT_STANDARD_SIZE];
+            // Write vendor at Originator (bytes 256-288).
+            bext_data[256..266].copy_from_slice(b"MyVendorXX");
+            // Write library at OriginatorReference (bytes 288-320).
+            bext_data[288..298].copy_from_slice(b"MyLibraryY");
+            let riff = make_riff(&[
+                (b"fmt ", &[0u8; 16]),
+                (b"bext", &bext_data),
+                (b"data", &[0u8; 100]),
+            ]);
+            let path = std::env::temp_dir().join(format!(
+                "riffgrep_test_init_preserve_{}.wav",
+                std::process::id()
+            ));
+            std::fs::write(&path, &riff).unwrap();
+
+            init_packed_and_write_markers(&path, &MarkerConfig::preset_shot()).unwrap();
+
+            // Originator and OriginatorReference should be preserved.
+            let mut file = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
+            let map = scan_chunks(&mut file).unwrap();
+            let fields = parse_bext_data(&mut file, &map).unwrap();
+            assert_eq!(fields.vendor, "MyVendorXX");
+            assert_eq!(fields.library, "MyLibraryY");
+
+            std::fs::remove_file(&path).unwrap();
+        }
+
+        #[test]
+        fn test_init_packed_preserves_file_size() {
+            let bext_data = [0u8; BEXT_STANDARD_SIZE];
+            let riff = make_riff(&[
+                (b"fmt ", &[0u8; 16]),
+                (b"bext", &bext_data),
+                (b"data", &[0u8; 1000]),
+            ]);
+            let path = std::env::temp_dir().join(format!(
+                "riffgrep_test_init_size_{}.wav",
+                std::process::id()
+            ));
+            std::fs::write(&path, &riff).unwrap();
+            let original_size = std::fs::metadata(&path).unwrap().len();
+
+            init_packed_and_write_markers(&path, &MarkerConfig::preset_shot()).unwrap();
+
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().len(),
+                original_size,
+                "file size should not change"
+            );
+
+            std::fs::remove_file(&path).unwrap();
         }
     }
 }
