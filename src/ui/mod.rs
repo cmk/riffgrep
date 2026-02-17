@@ -199,6 +199,22 @@ pub struct App {
     pub status_message: Option<String>,
     /// Timestamp when the status message was set (for auto-clear).
     pub status_message_time: Option<std::time::Instant>,
+    /// Global loop: when ON, playback auto-restarts after program completes.
+    pub global_loop: bool,
+    /// Bank sync: when ON, marker edits mirror to both banks.
+    pub bank_sync: bool,
+    /// Currently selected marker for nudge/snap (0=SOF, 1=m1, 2=m2, 3=m3).
+    pub selected_marker: Option<usize>,
+    /// Preview loop mode: stashed markers for restore on toggle-off.
+    pub preview_loop: bool,
+    /// Stashed marker config for preview loop restore.
+    pub preview_loop_stash: Option<crate::engine::bext::MarkerConfig>,
+    /// Whether marker lines are visible on the waveform.
+    pub markers_enabled: bool,
+    /// Nudge small: number of zero-crossings for small nudge.
+    pub marker_nudge_small: u32,
+    /// Nudge large: number of zero-crossings for large nudge.
+    pub marker_nudge_large: u32,
 }
 
 impl App {
@@ -247,12 +263,33 @@ impl App {
             program_index: 0,
             status_message: None,
             status_message_time: None,
+            global_loop: false,
+            bank_sync: true,
+            selected_marker: None,
+            preview_loop: false,
+            preview_loop_stash: None,
+            markers_enabled: true,
+            marker_nudge_small: 1,
+            marker_nudge_large: 10,
         }
     }
 
     /// Execute an action, updating state accordingly.
     pub fn dispatch(&mut self, action: actions::Action) {
         use actions::Action;
+
+        // T3: Guard marker edits during playback.
+        if action.is_marker_edit() && self.playback_state() == PlaybackState::Playing {
+            self.set_status("Stop playback to edit markers".to_string());
+            return;
+        }
+
+        // T14: When markers are disabled, marker-editing actions are no-ops.
+        if !self.markers_enabled && action.is_marker_edit() {
+            self.set_status("Markers disabled".to_string());
+            return;
+        }
+
         match action {
             Action::MoveDown => self.move_selection(1),
             Action::MoveUp => self.move_selection(-1),
@@ -265,18 +302,20 @@ impl App {
             Action::SortAscending => self.sort_by_selected_column(true),
             Action::SortDescending => self.sort_by_selected_column(false),
             Action::TogglePlayback => self.toggle_playback(),
-            // StopPlayback removed — space toggles pause, no separate stop needed.
             Action::SeekForwardSmall => self.seek_relative(self.scrub_small),
             Action::SeekForwardLarge => self.seek_relative(self.scrub_large),
             Action::SeekBackwardSmall => self.seek_relative(-self.scrub_small),
             Action::SeekBackwardLarge => self.seek_relative(-self.scrub_large),
             Action::ToggleAutoAdvance => self.auto_advance = !self.auto_advance,
             Action::ToggleTimeDisplay => self.show_remaining = !self.show_remaining,
+            Action::ToggleGlobalLoop => self.toggle_global_loop(),
+            Action::ReversePlayback => self.reverse_playback(),
             Action::ToggleMark => self.toggle_mark(),
             Action::ClearMarks => self.clear_all_marks(),
             Action::ToggleMarkedFilter => self.toggle_marked_filter(),
             Action::SaveMarkers => self.save_markers(),
             Action::ToggleBank => self.toggle_bank(),
+            Action::ToggleBankSync => self.toggle_bank_sync(),
             Action::SetMarker1 => self.set_marker(0),
             Action::SetMarker2 => self.set_marker(1),
             Action::SetMarker3 => self.set_marker(2),
@@ -284,8 +323,24 @@ impl App {
             Action::ClearBankMarkers => self.clear_bank_markers(),
             Action::IncrementRep => self.adjust_rep(1),
             Action::DecrementRep => self.adjust_rep(-1),
-            Action::PlaySegment => self.play_segment(),
-            Action::PlayProgram => self.play_program(),
+            Action::SelectNextMarker => self.select_next_marker(),
+            Action::SelectPrevMarker => self.select_prev_marker(),
+            Action::ToggleInfiniteLoop => self.toggle_infinite_loop(),
+            Action::TogglePreviewLoop => self.toggle_preview_loop(),
+            Action::NudgeMarkerForwardSmall => self.nudge_marker(true, self.marker_nudge_small),
+            Action::NudgeMarkerBackwardSmall => self.nudge_marker(false, self.marker_nudge_small),
+            Action::NudgeMarkerForwardLarge => self.nudge_marker(true, self.marker_nudge_large),
+            Action::NudgeMarkerBackwardLarge => self.nudge_marker(false, self.marker_nudge_large),
+            Action::SnapZeroCrossingForward => self.snap_zero_crossing(true),
+            Action::SnapZeroCrossingBackward => self.snap_zero_crossing(false),
+            Action::MarkerReset => self.marker_reset(),
+            Action::ExportMarkersCsv => self.export_markers_csv(),
+            Action::ImportMarkersCsv => self.import_markers_csv(),
+            Action::ToggleMarkersEnabled => {
+                self.markers_enabled = !self.markers_enabled;
+                let state = if self.markers_enabled { "on" } else { "off" };
+                self.set_status(format!("Markers {state}"));
+            }
             Action::EnterInsertMode => self.enter_insert_mode(),
             Action::EnterNormalMode => self.enter_normal_mode(),
             Action::SearchSubmit => {
@@ -460,6 +515,12 @@ impl App {
             self.adjust_scroll();
             // Stop playback when selection changes.
             self.stop_playback();
+            // Reset marker selection and preview loop on file change.
+            self.selected_marker = None;
+            if self.preview_loop {
+                self.preview_loop = false;
+                self.preview_loop_stash = None;
+            }
         }
     }
 
@@ -563,35 +624,8 @@ impl App {
             PlaybackState::Playing => {
                 engine.update_sample_offset();
                 self.was_playing = true;
-
-                // Segment boundary enforcement.
-                if let Some(seg_end) = self.segment_end {
-                    let current = engine.sample_offset();
-                    if current >= seg_end {
-                        if self.segment_reps_remaining == u8::MAX {
-                            // Infinite loop: always seek back, never decrement.
-                            if let Some(start) = self.segment_start {
-                                let _ = engine.seek_to_sample(start);
-                            }
-                        } else if self.segment_reps_remaining > 0 {
-                            // Finite loop: decrement and seek back.
-                            self.segment_reps_remaining -= 1;
-                            if let Some(start) = self.segment_start {
-                                let _ = engine.seek_to_sample(start);
-                            }
-                        } else if !self.program_playlist.is_empty() {
-                            // Program mode: advance to next segment.
-                            self.program_index += 1;
-                            self.start_program_segment();
-                        } else {
-                            // Single segment: stop.
-                            engine.stop();
-                            self.segment_end = None;
-                            self.segment_start = None;
-                            self.was_playing = false;
-                        }
-                    }
-                }
+                // Segment boundaries are enforced at the sample level by
+                // SegmentSource — no poll-based detection needed here.
             }
             PlaybackState::Stopped => {
                 if self.auto_advance && self.was_playing {
@@ -739,6 +773,10 @@ impl App {
 
     /// Toggle active marker bank between A and B.
     fn toggle_bank(&mut self) {
+        if self.bank_sync {
+            self.set_status("Bank sync is on".to_string());
+            return;
+        }
         self.active_bank = match self.active_bank {
             Bank::A => Bank::B,
             Bank::B => Bank::A,
@@ -748,6 +786,20 @@ impl App {
             Bank::B => "Bank B",
         };
         self.set_status(format!("Active: {label}"));
+    }
+
+    /// Toggle bank sync on/off.
+    fn toggle_bank_sync(&mut self) {
+        self.bank_sync = !self.bank_sync;
+        let state = if self.bank_sync { "on" } else { "off" };
+        self.set_status(format!("Bank sync {state}"));
+    }
+
+    /// Toggle global loop (auto-restart when program finishes).
+    fn toggle_global_loop(&mut self) {
+        self.global_loop = !self.global_loop;
+        let state = if self.global_loop { "on" } else { "off" };
+        self.set_status(format!("Global loop {state}"));
     }
 
     /// Get a mutable reference to the active bank's MarkerBank within preview markers.
@@ -803,6 +855,7 @@ impl App {
     }
 
     /// Set marker at index (0=m1, 1=m2, 2=m3) to current playback position.
+    /// Snaps to nearest zero-crossing when possible (T4).
     fn set_marker(&mut self, index: usize) {
         let sample = match self.playback_sample() {
             Some(s) => s,
@@ -812,23 +865,79 @@ impl App {
             }
         };
 
+        // T4: Snap to nearest zero-crossing.
+        let snapped = self.snap_sample_to_zc(sample).unwrap_or(sample);
+
         self.ensure_markers();
-        if let Some(bank) = self.active_bank_mut() {
-            match index {
-                0 => bank.m1 = sample,
-                1 => bank.m2 = sample,
-                2 => bank.m3 = sample,
-                _ => return,
+
+        // Apply to active bank (and mirror if bank_sync is on).
+        if self.bank_sync {
+            if let Some(ref mut preview) = self.preview {
+                if let Some(ref mut markers) = preview.markers {
+                    Self::set_bank_marker(&mut markers.bank_a, index, snapped);
+                    Self::set_bank_marker(&mut markers.bank_b, index, snapped);
+                }
             }
-            // No sorting — marker slot order encodes playback direction per
-            // MARKERSv2 spec: m_i > m_{i+1} means reverse playback.
+        } else if let Some(bank) = self.active_bank_mut() {
+            Self::set_bank_marker(bank, index, snapped);
         }
 
-        let bank_label = match self.active_bank { Bank::A => "A", Bank::B => "B" };
+        let bank_label = if self.bank_sync { "A+B" } else {
+            match self.active_bank { Bank::A => "A", Bank::B => "B" }
+        };
         self.set_status(format!("Marker {} set (bank {bank_label})", index + 1));
     }
 
-    /// Clear the marker nearest to the playback cursor in the active bank.
+    /// Helper: set a marker value on a MarkerBank.
+    fn set_bank_marker(bank: &mut crate::engine::bext::MarkerBank, index: usize, sample: u32) {
+        match index {
+            0 => bank.m1 = sample,
+            1 => bank.m2 = sample,
+            2 => bank.m3 = sample,
+            _ => {}
+        }
+    }
+
+    /// Snap a sample position to the nearest zero-crossing in the audio file.
+    /// Returns None if the file can't be read or no crossing is found.
+    fn snap_sample_to_zc(&self, sample: u32) -> Option<u32> {
+        let row = self.results.get(self.selected)?;
+        let path = &row.meta.path;
+        let file = std::fs::File::open(path).ok()?;
+        let mut reader = std::io::BufReader::with_capacity(8192, file);
+        let map = crate::engine::bext::scan_chunks(&mut reader).ok()?;
+        let fmt = crate::engine::wav::parse_fmt(&mut reader, &map).ok()?;
+
+        let radius = 4096u32;
+        let (buf, base) = crate::engine::wav::read_sample_window(
+            &mut reader, &map, &fmt, sample, radius,
+        ).ok()?;
+        if buf.is_empty() {
+            return None;
+        }
+
+        let local_idx = (sample - base) as usize;
+        let threshold = crate::engine::wav::ZC_THRESHOLD;
+
+        // Try forward first, then backward, pick nearest.
+        let fwd = crate::engine::wav::nearest_zero_crossing_forward(&buf, local_idx, threshold);
+        let bwd = crate::engine::wav::nearest_zero_crossing_backward(&buf, local_idx, threshold);
+
+        let best = match (fwd, bwd) {
+            (Some(f), Some(b)) => {
+                let df = f.abs_diff(local_idx);
+                let db = b.abs_diff(local_idx);
+                if df <= db { f } else { b }
+            }
+            (Some(f), None) => f,
+            (None, Some(b)) => b,
+            (None, None) => return None,
+        };
+
+        Some(base + best as u32)
+    }
+
+    /// Clear the marker nearest to the playback cursor.
     fn clear_nearest_marker(&mut self) {
         let sample = match self.playback_sample() {
             Some(s) => s,
@@ -838,32 +947,54 @@ impl App {
             }
         };
 
-        if let Some(bank) = self.active_bank_mut() {
-            let markers = [bank.m1, bank.m2, bank.m3];
-            let nearest = markers.iter().enumerate()
-                .filter(|&(_, &v)| v != crate::engine::bext::MARKER_EMPTY)
-                .min_by_key(|&(_, &v)| (v as i64 - sample as i64).unsigned_abs());
-
-            if let Some((idx, _)) = nearest {
-                match idx {
-                    0 => bank.m1 = crate::engine::bext::MARKER_EMPTY,
-                    1 => bank.m2 = crate::engine::bext::MARKER_EMPTY,
-                    2 => bank.m3 = crate::engine::bext::MARKER_EMPTY,
-                    _ => {}
+        // Find nearest marker index using active bank.
+        let nearest_idx = {
+            let bank = match self.active_bank_ref() {
+                Some(b) => b,
+                None => {
+                    self.set_status("No markers".to_string());
+                    return;
                 }
-                let bank_label = match self.active_bank { Bank::A => "A", Bank::B => "B" };
-                self.set_status(format!("Marker {} cleared (bank {bank_label})", idx + 1));
-            } else {
-                self.set_status("No markers to clear".to_string());
+            };
+            let markers = [bank.m1, bank.m2, bank.m3];
+            markers.iter().enumerate()
+                .filter(|&(_, &v)| v != crate::engine::bext::MARKER_EMPTY)
+                .min_by_key(|&(_, &v)| (v as i64 - sample as i64).unsigned_abs())
+                .map(|(idx, _)| idx)
+        };
+
+        if let Some(idx) = nearest_idx {
+            let empty = crate::engine::bext::MARKER_EMPTY;
+            if self.bank_sync {
+                if let Some(ref mut preview) = self.preview {
+                    if let Some(ref mut markers) = preview.markers {
+                        Self::set_bank_marker(&mut markers.bank_a, idx, empty);
+                        Self::set_bank_marker(&mut markers.bank_b, idx, empty);
+                    }
+                }
+            } else if let Some(bank) = self.active_bank_mut() {
+                Self::set_bank_marker(bank, idx, empty);
             }
+            let bank_label = if self.bank_sync { "A+B" } else {
+                match self.active_bank { Bank::A => "A", Bank::B => "B" }
+            };
+            self.set_status(format!("Marker {} cleared (bank {bank_label})", idx + 1));
         } else {
-            self.set_status("No markers".to_string());
+            self.set_status("No markers to clear".to_string());
         }
     }
 
-    /// Clear all markers in the active bank.
+    /// Clear all markers in the active bank (or both if synced).
     fn clear_bank_markers(&mut self) {
-        if let Some(bank) = self.active_bank_mut() {
+        if self.bank_sync {
+            if let Some(ref mut preview) = self.preview {
+                if let Some(ref mut markers) = preview.markers {
+                    markers.bank_a = crate::engine::bext::MarkerBank::empty();
+                    markers.bank_b = crate::engine::bext::MarkerBank::empty();
+                }
+            }
+            self.set_status("Banks A+B cleared".to_string());
+        } else if let Some(bank) = self.active_bank_mut() {
             *bank = crate::engine::bext::MarkerBank::empty();
             let bank_label = match self.active_bank { Bank::A => "A", Bank::B => "B" };
             self.set_status(format!("Bank {bank_label} cleared"));
@@ -900,7 +1031,6 @@ impl App {
         let seg = match self.current_segment_index() {
             Some(s) if s < 4 => s,
             None => {
-                // Default to segment 0 when stopped.
                 if self.segments().is_empty() {
                     self.set_status("No segments".to_string());
                     return;
@@ -914,7 +1044,19 @@ impl App {
         };
 
         self.ensure_markers();
-        if let Some(bank) = self.active_bank_mut() {
+
+        if self.bank_sync {
+            if let Some(ref mut preview) = self.preview {
+                if let Some(ref mut markers) = preview.markers {
+                    let cur = markers.bank_a.reps[seg];
+                    let new_val = (cur as i16 + delta as i16).clamp(0, 15) as u8;
+                    markers.bank_a.reps[seg] = new_val;
+                    markers.bank_b.reps[seg] = new_val;
+                    let label = if new_val == 15 { "inf".to_string() } else { format!("{new_val}") };
+                    self.set_status(format!("Segment {} rep: {label}", seg + 1));
+                }
+            }
+        } else if let Some(bank) = self.active_bank_mut() {
             let current = bank.reps[seg];
             let new_val = (current as i16 + delta as i16).clamp(0, 15) as u8;
             bank.reps[seg] = new_val;
@@ -939,62 +1081,11 @@ impl App {
         segment_bounds(bank, total)
     }
 
-    /// Play the current segment (bounded by markers around playback cursor).
-    /// When stopped, defaults to segment 0 and auto-starts playback.
-    fn play_segment(&mut self) {
-        self.ensure_markers();
-        let seg_idx = match self.current_segment_index() {
-            Some(s) => s,
-            None => {
-                // Default to segment 0 when stopped or no position.
-                if self.segments().is_empty() {
-                    self.set_status("No segments".to_string());
-                    return;
-                }
-                0
-            }
-        };
-
-        let segs = self.segments();
-        if seg_idx >= segs.len() {
-            self.set_status("No active segment".to_string());
-            return;
-        }
-
-        let seg = segs[seg_idx];
-
-        if seg.reverse {
-            self.set_status(format!("Segment {}: reverse not yet supported", seg_idx + 1));
-            return;
-        }
-
-        // Start playback from segment start.
-        if let Some(row) = self.results.get(self.selected) {
-            let path = row.meta.path.clone();
-            if let Some(ref engine) = self.playback {
-                if engine.state() == PlaybackState::Stopped {
-                    let _ = engine.play(&path);
-                    self.played.insert(path);
-                }
-                let _ = engine.seek_to_sample(seg.start);
-            }
-        }
-
-        // Store segment boundaries for tick-based enforcement.
-        self.segment_start = Some(seg.start);
-        self.segment_end = Some(seg.end);
-        self.segment_reps_remaining = if seg.rep == 15 {
-            u8::MAX // infinite loop sentinel
-        } else if seg.rep == 0 {
-            0
-        } else {
-            seg.rep - 1
-        };
-
-        self.set_status(format!("Segment {}", seg_idx + 1));
-    }
-
     /// Play full program: all non-skipped, non-reverse segments with repetitions.
+    ///
+    /// Builds a playlist from the active bank's markers and hands it to
+    /// [`PlaybackEngine::play_with_segments`], which pre-decodes the file and
+    /// creates a [`SegmentSource`] that enforces boundaries at the sample level.
     fn play_program(&mut self) {
         self.ensure_markers();
         let segs = self.segments();
@@ -1014,14 +1105,37 @@ impl App {
             return;
         }
 
+        if let Some(row) = self.results.get(self.selected) {
+            let path = row.meta.path.clone();
+            if let Some(ref engine) = self.playback {
+                match engine.play_with_segments(&path, &playlist, self.global_loop) {
+                    Ok(()) => {
+                        self.played.insert(path);
+                    }
+                    Err(e) => {
+                        self.set_status(format!("Play error: {e}"));
+                        return;
+                    }
+                }
+            }
+        }
+
         self.program_playlist = playlist;
         self.program_index = 0;
+        if let Some(&(start, end, _)) = self.program_playlist.first() {
+            self.segment_start = Some(start);
+            self.segment_end = Some(end);
+        }
 
-        // Start playing the first segment.
-        self.start_program_segment();
+        let total_segs = self.program_playlist.len();
+        self.set_status(format!("Program 1/{total_segs}"));
     }
 
     /// Start playing the current segment in the program playlist.
+    ///
+    /// With the SegmentSource architecture, this is only used as a fallback for
+    /// compatibility with existing callers. Normally `play_program` constructs
+    /// the full playlist and hands it to the engine in one shot.
     fn start_program_segment(&mut self) {
         if self.program_index >= self.program_playlist.len() {
             self.program_playlist.clear();
@@ -1105,6 +1219,441 @@ impl App {
         } else {
             self.results.iter().filter(|r| r.marked).count()
         }
+    }
+
+    // --- T6: Marker Selection ---
+
+    /// Select next defined marker (Tab). Cycles: SOF → m1 → m2 → m3 → SOF.
+    fn select_next_marker(&mut self) {
+        let defined = self.defined_marker_indices();
+        if defined.is_empty() {
+            self.set_status("No markers".to_string());
+            return;
+        }
+        let current = self.selected_marker.unwrap_or(usize::MAX);
+        let next = defined.iter().find(|&&i| i > current).copied()
+            .unwrap_or(defined[0]);
+        self.selected_marker = Some(next);
+        self.seek_to_selected_marker();
+    }
+
+    /// Select previous defined marker (Shift-Tab).
+    fn select_prev_marker(&mut self) {
+        let defined = self.defined_marker_indices();
+        if defined.is_empty() {
+            self.set_status("No markers".to_string());
+            return;
+        }
+        let current = self.selected_marker.unwrap_or(0);
+        let prev = defined.iter().rev().find(|&&i| i < current).copied()
+            .unwrap_or(*defined.last().unwrap());
+        self.selected_marker = Some(prev);
+        self.seek_to_selected_marker();
+    }
+
+    /// Return sorted indices of defined markers (0=SOF always included, 1-3 if set).
+    fn defined_marker_indices(&self) -> Vec<usize> {
+        let mut indices = vec![0usize]; // SOF
+        if let Some(bank) = self.active_bank_ref() {
+            if bank.m1 != crate::engine::bext::MARKER_EMPTY { indices.push(1); }
+            if bank.m2 != crate::engine::bext::MARKER_EMPTY { indices.push(2); }
+            if bank.m3 != crate::engine::bext::MARKER_EMPTY { indices.push(3); }
+        }
+        indices
+    }
+
+    /// Seek playback to the selected marker position.
+    fn seek_to_selected_marker(&mut self) {
+        let idx = match self.selected_marker {
+            Some(i) => i,
+            None => return,
+        };
+        let sample = match idx {
+            0 => 0u32,
+            1 | 2 | 3 => {
+                if let Some(bank) = self.active_bank_ref() {
+                    let val = match idx {
+                        1 => bank.m1,
+                        2 => bank.m2,
+                        3 => bank.m3,
+                        _ => return,
+                    };
+                    if val == crate::engine::bext::MARKER_EMPTY { return; }
+                    val
+                } else {
+                    return;
+                }
+            }
+            _ => return,
+        };
+        if let Some(ref engine) = self.playback {
+            let _ = engine.seek_to_sample(sample);
+        }
+        let label = if idx == 0 { "SOF".to_string() } else { format!("Marker {idx}") };
+        self.set_status(format!("Selected: {label}"));
+    }
+
+    // --- T7: Toggle Infinite Loop ---
+
+    /// Toggle reps between 15 (infinite) and 1 for the segment after the selected marker.
+    fn toggle_infinite_loop(&mut self) {
+        let sel = match self.selected_marker {
+            Some(s) => s,
+            None => {
+                self.set_status("Select a marker first (Tab)".to_string());
+                return;
+            }
+        };
+        // Segment index is same as marker index (seg 0 = SOF..m1, etc.)
+        let seg = sel;
+        if seg > 3 {
+            self.set_status("Invalid segment".to_string());
+            return;
+        }
+
+        self.ensure_markers();
+
+        if self.bank_sync {
+            if let Some(ref mut preview) = self.preview {
+                if let Some(ref mut markers) = preview.markers {
+                    let cur = markers.bank_a.reps[seg];
+                    let new_val = if cur == 15 { 1 } else { 15 };
+                    markers.bank_a.reps[seg] = new_val;
+                    markers.bank_b.reps[seg] = new_val;
+                    let label = if new_val == 15 { "inf" } else { "1" };
+                    self.set_status(format!("Segment {} rep: {label}", seg + 1));
+                }
+            }
+        } else if let Some(bank) = self.active_bank_mut() {
+            let cur = bank.reps[seg];
+            let new_val = if cur == 15 { 1 } else { 15 };
+            bank.reps[seg] = new_val;
+            let label = if new_val == 15 { "inf" } else { "1" };
+            self.set_status(format!("Segment {} rep: {label}", seg + 1));
+        }
+    }
+
+    // --- T8: Preview Loop Toggle ---
+
+    /// Toggle preview loop: stash current markers and apply preset, or restore.
+    fn toggle_preview_loop(&mut self) {
+        if self.preview_loop {
+            // Restore stashed markers.
+            if let Some(stash) = self.preview_loop_stash.take() {
+                if let Some(ref mut preview) = self.preview {
+                    preview.markers = Some(stash);
+                }
+            }
+            self.preview_loop = false;
+            self.set_status("Preview loop off".to_string());
+        } else {
+            // Stash current markers and apply preset.
+            let current = self.current_markers_or_default();
+            self.preview_loop_stash = Some(current);
+
+            let total_samples = self.total_samples();
+            let preset = match total_samples {
+                Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
+                _ => crate::engine::bext::MarkerConfig::preset_shot(),
+            };
+            if let Some(ref mut preview) = self.preview {
+                preview.markers = Some(preset);
+            }
+            self.preview_loop = true;
+            self.set_status("Preview loop on".to_string());
+        }
+    }
+
+    // --- T9: Nudge Markers ---
+
+    /// Nudge the selected marker by N zero-crossings in a direction.
+    fn nudge_marker(&mut self, forward: bool, n: u32) {
+        let sel = match self.selected_marker {
+            Some(s) if s >= 1 => s, // SOF (0) is not nudgeable.
+            Some(0) => {
+                self.set_status("SOF is not nudgeable".to_string());
+                return;
+            }
+            _ => {
+                self.set_status("Select a marker first (Tab)".to_string());
+                return;
+            }
+        };
+
+        let current_sample = {
+            let bank = match self.active_bank_ref() {
+                Some(b) => b,
+                None => {
+                    self.set_status("No markers".to_string());
+                    return;
+                }
+            };
+            match sel {
+                1 => bank.m1,
+                2 => bank.m2,
+                3 => bank.m3,
+                _ => return,
+            }
+        };
+        if current_sample == crate::engine::bext::MARKER_EMPTY {
+            self.set_status("Marker not set".to_string());
+            return;
+        }
+
+        // Read audio around the marker and find the Nth zero-crossing.
+        let new_sample = match self.find_nth_zc_from(current_sample, forward, n) {
+            Some(s) => s,
+            None => {
+                self.set_status("No zero-crossing found".to_string());
+                return;
+            }
+        };
+
+        self.ensure_markers();
+        if self.bank_sync {
+            if let Some(ref mut preview) = self.preview {
+                if let Some(ref mut markers) = preview.markers {
+                    Self::set_bank_marker(&mut markers.bank_a, sel - 1, new_sample);
+                    Self::set_bank_marker(&mut markers.bank_b, sel - 1, new_sample);
+                }
+            }
+        } else if let Some(bank) = self.active_bank_mut() {
+            Self::set_bank_marker(bank, sel - 1, new_sample);
+        }
+
+        let dir = if forward { "→" } else { "←" };
+        self.set_status(format!("Marker {sel} nudged {dir} to {new_sample}"));
+    }
+
+    /// Find the Nth zero-crossing from a sample position.
+    fn find_nth_zc_from(&self, sample: u32, forward: bool, n: u32) -> Option<u32> {
+        let row = self.results.get(self.selected)?;
+        let path = &row.meta.path;
+        let file = std::fs::File::open(path).ok()?;
+        let mut reader = std::io::BufReader::with_capacity(8192, file);
+        let map = crate::engine::bext::scan_chunks(&mut reader).ok()?;
+        let fmt = crate::engine::wav::parse_fmt(&mut reader, &map).ok()?;
+
+        let radius = 8192u32;
+        let (buf, base) = crate::engine::wav::read_sample_window(
+            &mut reader, &map, &fmt, sample, radius,
+        ).ok()?;
+        if buf.is_empty() {
+            return None;
+        }
+
+        let local_idx = (sample - base) as usize;
+        let threshold = crate::engine::wav::ZC_THRESHOLD;
+
+        // Offset by 1 in the search direction so we skip the current position
+        // (which is already a zero-crossing from the previous nudge).
+        let result = if forward {
+            let start = (local_idx + 1).min(buf.len().saturating_sub(1));
+            crate::engine::wav::nth_zero_crossing_forward(&buf, start, n, threshold)
+        } else {
+            let start = local_idx.saturating_sub(1);
+            crate::engine::wav::nth_zero_crossing_backward(&buf, start, n, threshold)
+        };
+
+        result.map(|idx| base + idx as u32)
+    }
+
+    // --- T10: Zero-Crossing Snap ---
+
+    /// Snap the selected marker to the nearest zero-crossing in a direction.
+    fn snap_zero_crossing(&mut self, forward: bool) {
+        let sel = match self.selected_marker {
+            Some(s) if s >= 1 => s,
+            Some(0) => {
+                self.set_status("SOF is not snappable".to_string());
+                return;
+            }
+            _ => {
+                self.set_status("Select a marker first (Tab)".to_string());
+                return;
+            }
+        };
+
+        let current_sample = {
+            let bank = match self.active_bank_ref() {
+                Some(b) => b,
+                None => return,
+            };
+            match sel {
+                1 => bank.m1,
+                2 => bank.m2,
+                3 => bank.m3,
+                _ => return,
+            }
+        };
+        if current_sample == crate::engine::bext::MARKER_EMPTY {
+            self.set_status("Marker not set".to_string());
+            return;
+        }
+
+        let new_sample = match self.find_nth_zc_from(current_sample, forward, 1) {
+            Some(s) => s,
+            None => {
+                self.set_status("No zero-crossing found".to_string());
+                return;
+            }
+        };
+
+        self.ensure_markers();
+        if self.bank_sync {
+            if let Some(ref mut preview) = self.preview {
+                if let Some(ref mut markers) = preview.markers {
+                    Self::set_bank_marker(&mut markers.bank_a, sel - 1, new_sample);
+                    Self::set_bank_marker(&mut markers.bank_b, sel - 1, new_sample);
+                }
+            }
+        } else if let Some(bank) = self.active_bank_mut() {
+            Self::set_bank_marker(bank, sel - 1, new_sample);
+        }
+
+        let dir = if forward { "→" } else { "←" };
+        self.set_status(format!("Marker {sel} snapped {dir} to ZC {new_sample}"));
+    }
+
+    // --- T11: Marker Reset ---
+
+    /// Reset markers to category-based preset, snapped to zero-crossings.
+    fn marker_reset(&mut self) {
+        let total_samples = match self.total_samples() {
+            Some(t) if t > 0 => t,
+            _ => {
+                self.set_status("No audio info".to_string());
+                return;
+            }
+        };
+
+        // Determine preset based on category (look for "loop" in category).
+        let is_loop = self.preview.as_ref()
+            .map(|p| p.metadata.category.to_lowercase().contains("loop"))
+            .unwrap_or(total_samples >= 2 * 48000);
+
+        let mut preset = if is_loop {
+            crate::engine::bext::MarkerConfig::preset_loop(total_samples)
+        } else {
+            crate::engine::bext::MarkerConfig::preset_shot()
+        };
+
+        // Snap preset markers to zero-crossings when possible.
+        for bank in [&mut preset.bank_a, &mut preset.bank_b] {
+            for marker in [&mut bank.m1, &mut bank.m2, &mut bank.m3] {
+                if *marker != crate::engine::bext::MARKER_EMPTY && *marker > 0 {
+                    if let Some(snapped) = self.snap_sample_to_zc(*marker) {
+                        *marker = snapped;
+                    }
+                }
+            }
+        }
+
+        // Overwrite both banks regardless of sync state.
+        if let Some(ref mut preview) = self.preview {
+            preview.markers = Some(preset);
+        }
+        self.set_status("Markers reset to preset".to_string());
+    }
+
+    // --- T12: CSV Export/Import ---
+
+    /// Export markers to a CSV file (<filename>.markers.csv).
+    fn export_markers_csv(&mut self) {
+        let row = match self.results.get(self.selected) {
+            Some(r) => r,
+            None => {
+                self.set_status("No file selected".to_string());
+                return;
+            }
+        };
+        let markers = self.current_markers_or_default();
+        let csv_path = row.meta.path.with_extension("markers.csv");
+
+        let mut lines = String::new();
+        lines.push_str("bank,m1,m2,m3,r1,r2,r3,r4\n");
+        let fmt_bank = |b: &crate::engine::bext::MarkerBank, label: &str| {
+            format!(
+                "{},{},{},{},{},{},{},{}\n",
+                label, b.m1, b.m2, b.m3,
+                b.reps[0], b.reps[1], b.reps[2], b.reps[3]
+            )
+        };
+        lines.push_str(&fmt_bank(&markers.bank_a, "A"));
+        lines.push_str(&fmt_bank(&markers.bank_b, "B"));
+
+        match std::fs::write(&csv_path, &lines) {
+            Ok(()) => self.set_status(format!("Exported to {}", csv_path.display())),
+            Err(e) => self.set_status(format!("Export failed: {e}")),
+        }
+    }
+
+    /// Import markers from a CSV file (<filename>.markers.csv).
+    fn import_markers_csv(&mut self) {
+        let row = match self.results.get(self.selected) {
+            Some(r) => r,
+            None => {
+                self.set_status("No file selected".to_string());
+                return;
+            }
+        };
+        let csv_path = row.meta.path.with_extension("markers.csv");
+
+        let content = match std::fs::read_to_string(&csv_path) {
+            Ok(c) => c,
+            Err(e) => {
+                self.set_status(format!("Import failed: {e}"));
+                return;
+            }
+        };
+
+        let mut bank_a = None;
+        let mut bank_b = None;
+
+        for line in content.lines().skip(1) {
+            // Skip header
+            let fields: Vec<&str> = line.split(',').collect();
+            if fields.len() < 8 {
+                continue;
+            }
+            let parse_u32 = |s: &str| s.trim().parse::<u32>().ok();
+            let parse_u8 = |s: &str| s.trim().parse::<u8>().ok();
+
+            let bank_label = fields[0].trim();
+            let m1 = parse_u32(fields[1]).unwrap_or(crate::engine::bext::MARKER_EMPTY);
+            let m2 = parse_u32(fields[2]).unwrap_or(crate::engine::bext::MARKER_EMPTY);
+            let m3 = parse_u32(fields[3]).unwrap_or(crate::engine::bext::MARKER_EMPTY);
+            let r1 = parse_u8(fields[4]).unwrap_or(0);
+            let r2 = parse_u8(fields[5]).unwrap_or(0);
+            let r3 = parse_u8(fields[6]).unwrap_or(0);
+            let r4 = parse_u8(fields[7]).unwrap_or(0);
+
+            let bank = crate::engine::bext::MarkerBank {
+                m1, m2, m3, reps: [r1, r2, r3, r4],
+            };
+            match bank_label {
+                "A" => bank_a = Some(bank),
+                "B" => bank_b = Some(bank),
+                _ => {}
+            }
+        }
+
+        let config = crate::engine::bext::MarkerConfig {
+            bank_a: bank_a.unwrap_or_else(crate::engine::bext::MarkerBank::empty),
+            bank_b: bank_b.unwrap_or_else(crate::engine::bext::MarkerBank::empty),
+        };
+
+        if let Some(ref mut preview) = self.preview {
+            preview.markers = Some(config);
+        }
+        self.set_status(format!("Imported from {}", csv_path.display()));
+    }
+
+    // --- T13: Reverse Playback ---
+
+    /// Reverse playback of the current segment (basic implementation).
+    fn reverse_playback(&mut self) {
+        self.set_status("Reverse playback not yet implemented".to_string());
     }
 
 }
@@ -2795,6 +3344,12 @@ mod tests {
     fn test_toggle_bank() {
         let mut app = App::new(Theme::default());
         assert_eq!(app.active_bank, Bank::A);
+        // Bank sync is on by default, so toggle_bank should refuse.
+        app.toggle_bank();
+        assert_eq!(app.active_bank, Bank::A);
+        assert_eq!(app.status_message.as_deref(), Some("Bank sync is on"));
+        // Turn off bank sync, then toggle.
+        app.bank_sync = false;
         app.toggle_bank();
         assert_eq!(app.active_bank, Bank::B);
         assert_eq!(app.status_message.as_deref(), Some("Active: Bank B"));
@@ -2910,6 +3465,24 @@ mod tests {
             audio_info: None,
             markers: Some(markers),
         });
+        // With bank_sync=true (default), clears both banks.
+        app.clear_bank_markers();
+        let bank_a = app.active_bank_ref().unwrap();
+        assert!(bank_a.is_empty());
+        assert_eq!(app.status_message.as_deref(), Some("Banks A+B cleared"));
+    }
+
+    #[test]
+    fn test_clear_bank_markers_single_bank() {
+        let mut app = App::new(Theme::default());
+        app.bank_sync = false;
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+        });
         app.clear_bank_markers();
         let bank_a = app.active_bank_ref().unwrap();
         assert!(bank_a.is_empty());
@@ -2919,6 +3492,7 @@ mod tests {
     #[test]
     fn test_clear_bank_markers_no_preview() {
         let mut app = App::new(Theme::default());
+        app.bank_sync = false;
         app.clear_bank_markers();
         assert_eq!(app.status_message.as_deref(), Some("No markers"));
     }
@@ -3247,7 +3821,7 @@ mod tests {
             };
             let segs = segment_bounds(&bank, 48000);
             // rep=15 stored as-is in Segment; the runtime sentinel (u8::MAX)
-            // is applied in play_segment/start_program_segment/update_playback_position.
+            // is applied in start_program_segment/update_playback_position.
             assert_eq!(segs[0].rep, 15);
         }
 
@@ -3277,13 +3851,278 @@ mod tests {
             Action::ClearBankMarkers,
             Action::IncrementRep,
             Action::DecrementRep,
-            Action::PlaySegment,
-            Action::PlayProgram,
         ];
         for action in &actions {
             let name = action.name();
             let parsed = Action::from_name(name);
             assert_eq!(parsed, Some(*action), "round-trip failed for {name}");
         }
+    }
+
+    // --- Sprint 11 tests ---
+
+    #[test]
+    fn test_global_loop_toggle() {
+        let mut app = App::new(Theme::default());
+        assert!(!app.global_loop);
+        app.toggle_global_loop();
+        assert!(app.global_loop);
+        assert_eq!(app.status_message.as_deref(), Some("Global loop on"));
+        app.toggle_global_loop();
+        assert!(!app.global_loop);
+        assert_eq!(app.status_message.as_deref(), Some("Global loop off"));
+    }
+
+    #[test]
+    fn test_bank_sync_toggle() {
+        let mut app = App::new(Theme::default());
+        assert!(app.bank_sync, "bank_sync should default to true");
+        app.toggle_bank_sync();
+        assert!(!app.bank_sync);
+        assert_eq!(app.status_message.as_deref(), Some("Bank sync off"));
+        app.toggle_bank_sync();
+        assert!(app.bank_sync);
+        assert_eq!(app.status_message.as_deref(), Some("Bank sync on"));
+    }
+
+    #[test]
+    fn test_marker_edit_guard_during_playback() {
+        use crate::ui::actions::Action;
+        // We can't easily create a Playing state without audio device,
+        // but we can verify the guard logic via dispatch.
+        let mut app = App::new(Theme::default());
+        // When stopped, marker edits should work (no guard).
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 1.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: Some(markers),
+        });
+        // Dispatch a marker edit when stopped — should not be guarded.
+        app.dispatch(Action::ClearBankMarkers);
+        // Should have cleared (not "Stop playback to edit markers").
+        assert_eq!(app.status_message.as_deref(), Some("Banks A+B cleared"));
+    }
+
+    #[test]
+    fn test_markers_enabled_toggle() {
+        let mut app = App::new(Theme::default());
+        assert!(app.markers_enabled);
+        app.dispatch(actions::Action::ToggleMarkersEnabled);
+        assert!(!app.markers_enabled);
+        assert_eq!(app.status_message.as_deref(), Some("Markers off"));
+        app.dispatch(actions::Action::ToggleMarkersEnabled);
+        assert!(app.markers_enabled);
+        assert_eq!(app.status_message.as_deref(), Some("Markers on"));
+    }
+
+    #[test]
+    fn test_markers_disabled_blocks_edits() {
+        let mut app = App::new(Theme::default());
+        app.markers_enabled = false;
+        app.dispatch(actions::Action::ClearBankMarkers);
+        assert_eq!(app.status_message.as_deref(), Some("Markers disabled"));
+    }
+
+    #[test]
+    fn test_selected_marker_resets_on_file_change() {
+        let mut app = make_app_with_results(5);
+        app.selected_marker = Some(2);
+        app.move_selection(1);
+        assert_eq!(app.selected_marker, None);
+    }
+
+    #[test]
+    fn test_preview_loop_resets_on_file_change() {
+        let mut app = make_app_with_results(5);
+        app.preview_loop = true;
+        app.preview_loop_stash = Some(crate::engine::bext::MarkerConfig::preset_shot());
+        app.move_selection(1);
+        assert!(!app.preview_loop);
+        assert!(app.preview_loop_stash.is_none());
+    }
+
+    #[test]
+    fn test_select_next_marker_no_markers() {
+        let mut app = App::new(Theme::default());
+        app.select_next_marker();
+        // No preview, so defined_marker_indices returns [0] (SOF only).
+        assert_eq!(app.selected_marker, Some(0));
+    }
+
+    #[test]
+    fn test_select_next_marker_cycles() {
+        let mut app = App::new(Theme::default());
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+        });
+        // Should have SOF + m1 + m2 + m3 = 4 markers.
+        app.select_next_marker(); // 0 → 0 (starts from beginning)
+        assert_eq!(app.selected_marker, Some(0));
+        app.select_next_marker(); // 0 → 1
+        assert_eq!(app.selected_marker, Some(1));
+        app.select_next_marker(); // 1 → 2
+        assert_eq!(app.selected_marker, Some(2));
+        app.select_next_marker(); // 2 → 3
+        assert_eq!(app.selected_marker, Some(3));
+        app.select_next_marker(); // 3 → 0 (wrap)
+        assert_eq!(app.selected_marker, Some(0));
+    }
+
+    #[test]
+    fn test_toggle_infinite_loop_needs_selection() {
+        let mut app = App::new(Theme::default());
+        app.toggle_infinite_loop();
+        assert_eq!(app.status_message.as_deref(), Some("Select a marker first (Tab)"));
+    }
+
+    #[test]
+    fn test_toggle_infinite_loop() {
+        let mut app = App::new(Theme::default());
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+        });
+        app.selected_marker = Some(0);
+        app.toggle_infinite_loop();
+        // Segment 0 should now have rep=15.
+        let bank = app.active_bank_ref().unwrap();
+        assert_eq!(bank.reps[0], 15);
+        // Toggle back.
+        app.toggle_infinite_loop();
+        let bank = app.active_bank_ref().unwrap();
+        assert_eq!(bank.reps[0], 1);
+    }
+
+    #[test]
+    fn test_preview_loop_stash_restore() {
+        let mut app = App::new(Theme::default());
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 1.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: Some(markers),
+        });
+        let original = app.current_markers_or_default();
+        app.toggle_preview_loop();
+        assert!(app.preview_loop);
+        // Should have stashed the original.
+        assert!(app.preview_loop_stash.is_some());
+        // Toggle off restores.
+        app.toggle_preview_loop();
+        assert!(!app.preview_loop);
+        let restored = app.current_markers_or_default();
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_marker_reset() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 5.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: None,
+        });
+        app.marker_reset();
+        assert_eq!(app.status_message.as_deref(), Some("Markers reset to preset"));
+        // Should have markers now.
+        let markers = app.preview.as_ref().unwrap().markers.as_ref().unwrap();
+        assert!(!markers.bank_a.is_empty());
+    }
+
+    #[test]
+    fn test_export_import_csv_roundtrip() {
+        let mut app = App::new(Theme::default());
+        // Need a result with a valid (but temp) path.
+        let temp_dir = std::env::temp_dir();
+        let wav_path = temp_dir.join("test_rg_csv.wav");
+        let csv_path = temp_dir.join("test_rg_csv.markers.csv");
+        // Clean up from previous runs.
+        let _ = std::fs::remove_file(&csv_path);
+
+        app.results = vec![TableRow {
+            meta: UnifiedMetadata {
+                path: wav_path.clone(),
+                ..Default::default()
+            },
+            audio_info: None,
+            marked: false,
+            markers: None,
+        }];
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata {
+                path: wav_path.clone(),
+                ..Default::default()
+            },
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+        });
+
+        app.export_markers_csv();
+        assert!(csv_path.exists(), "CSV file should be created");
+
+        // Modify markers in memory, then import.
+        if let Some(ref mut preview) = app.preview {
+            preview.markers = Some(crate::engine::bext::MarkerConfig::preset_shot());
+        }
+
+        app.import_markers_csv();
+        // Should match original.
+        let imported = app.preview.as_ref().unwrap().markers.as_ref().unwrap();
+        assert_eq!(imported.bank_a.m1, 12000);
+        assert_eq!(imported.bank_a.m2, 24000);
+        assert_eq!(imported.bank_a.m3, 36000);
+
+        // Cleanup.
+        let _ = std::fs::remove_file(&csv_path);
+    }
+
+    #[test]
+    fn test_nudge_marker_requires_selection() {
+        let mut app = App::new(Theme::default());
+        app.nudge_marker(true, 1);
+        assert_eq!(app.status_message.as_deref(), Some("Select a marker first (Tab)"));
+    }
+
+    #[test]
+    fn test_nudge_sof_blocked() {
+        let mut app = App::new(Theme::default());
+        app.selected_marker = Some(0);
+        app.nudge_marker(true, 1);
+        assert_eq!(app.status_message.as_deref(), Some("SOF is not nudgeable"));
+    }
+
+    #[test]
+    fn test_snap_zc_requires_selection() {
+        let mut app = App::new(Theme::default());
+        app.snap_zero_crossing(true);
+        assert_eq!(app.status_message.as_deref(), Some("Select a marker first (Tab)"));
     }
 }

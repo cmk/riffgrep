@@ -124,10 +124,20 @@ TUI KEYS (Normal mode):
   i, /    Enter search mode       Esc, Ctrl-C  Exit search mode
   j/k     Navigate rows           h/l          Navigate columns
   o/O     Sort ascending/desc     Space        Play/pause
-  s       Stop playback           Left/Right   Seek +/-0.1s
-  S-Left/Right  Seek +/-1.0s      a            Toggle auto-advance
-  t       Toggle time display     m            Toggle mark
-  M       Clear all marks         f            Filter to marked
+  Left/Right   Seek +/-0.1s       S-Left/Right  Seek +/-1.0s
+  a       Toggle auto-advance     t            Toggle time display
+  p       Toggle global loop      r            Reverse playback
+  m       Toggle mark             M            Clear all marks
+  f       Filter to marked        w            Save markers
+  b       Toggle bank A/B         B            Toggle bank sync
+  1/2/3   Set marker 1/2/3        x            Clear nearest marker
+  X       Clear bank markers      +/-          Inc/dec segment rep
+  Tab/S-Tab  Select next/prev marker
+  Ctrl-l  Toggle infinite loop    Ctrl-p       Toggle preview loop
+  Ctrl-Right/Left  Nudge marker   Ctrl-S-Right/Left  Nudge large
+  Ctrl-]/[  Snap to zero-crossing Ctrl-r       Reset markers
+  Ctrl-e  Export markers CSV      Ctrl-i       Import markers CSV
+  Ctrl-Alt-m  Toggle markers display
   g/G     Jump to top/bottom      q            Quit
   ?       Show keybinding help
  .

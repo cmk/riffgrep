@@ -1,11 +1,14 @@
 //! Audio playback engine using symphonia for decoding and rodio for output.
+//!
+//! Segment boundaries, looping, and crossfades are enforced at the sample level
+//! by [`SegmentSource`], eliminating pops from rodio's mixer buffering.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rodio::{OutputStream, OutputStreamHandle, Sink};
+use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 
 /// Playback state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +43,252 @@ impl PlaybackState {
 /// Stopped. Prevents audible click from premature buffer teardown.
 const DRAIN_GRACE_MS: u64 = 150;
 
+// ---------------------------------------------------------------------------
+// SegmentSource — sample-level boundary enforcement
+// ---------------------------------------------------------------------------
+
+/// Sentinel for "no pending seek".
+const NO_SEEK: u32 = u32::MAX;
+
+/// Crossfade duration in frames (~1.3ms at 48kHz).
+const CROSSFADE_FRAMES: u32 = 64;
+
+/// Shared state between the [`SegmentSource`] (mixer thread) and the UI.
+pub struct SourceControl {
+    /// Current frame position (written by source, read by UI).
+    pub frame: AtomicU32,
+    /// Pending seek target frame (written by UI, consumed by source).
+    pub pending_seek: AtomicU32,
+}
+
+impl SourceControl {
+    fn new() -> Self {
+        Self {
+            frame: AtomicU32::new(0),
+            pending_seek: AtomicU32::new(NO_SEEK),
+        }
+    }
+}
+
+/// A segment in the playback program.
+#[derive(Clone)]
+struct PlaySegment {
+    /// Start frame (inclusive).
+    start: u32,
+    /// End frame (exclusive).
+    end: u32,
+    /// Repetitions: 1 = play once, 2+ = repeat, 255 = infinite loop.
+    reps: u8,
+}
+
+/// Pre-decoded audio buffer with segment-aware, pop-free playback.
+///
+/// Handles segment boundaries, looping, and program advance entirely at the
+/// sample level on the mixer thread. Discontinuities (loop-back, seek, segment
+/// advance) are smoothed with matched fade-out / fade-in ramps.
+struct SegmentSource {
+    /// Pre-decoded interleaved f32 samples (normalized to -1.0..1.0).
+    buffer: Vec<f32>,
+    channels: u16,
+    rate: u32,
+    total_frames: u32,
+
+    /// Current interleaved sample index.
+    pos: usize,
+    /// Which channel within the current frame (0..channels).
+    channel: u16,
+
+    /// Program playlist (immutable once playback starts).
+    playlist: Vec<PlaySegment>,
+    /// Current segment index in playlist.
+    seg_idx: usize,
+    /// Remaining reps for current segment (255 = infinite).
+    reps_left: u8,
+    /// Restart playlist from beginning when all segments complete.
+    global_loop: bool,
+
+    /// Fade-out frames remaining before a boundary (counts down to 0).
+    fade_out: u32,
+    /// Fade-in frames remaining after a jump (counts down to 0).
+    fade_in: u32,
+
+    /// Shared control for UI communication.
+    control: Arc<SourceControl>,
+}
+
+impl SegmentSource {
+    /// Current frame index.
+    fn frame(&self) -> u32 {
+        (self.pos / self.channels as usize) as u32
+    }
+
+    /// Jump to a frame, applying a short fade-in.
+    fn jump_to(&mut self, frame: u32) {
+        self.pos = frame as usize * self.channels as usize;
+        self.channel = 0;
+        self.fade_in = CROSSFADE_FRAMES;
+        self.fade_out = 0;
+        self.control.frame.store(frame, Ordering::Relaxed);
+    }
+
+    /// Whether the current segment will loop (infinite or reps > 1).
+    fn will_loop(&self) -> bool {
+        self.reps_left == 255 || self.reps_left > 1
+    }
+
+    /// Process frame-boundary logic. Returns `false` if the source should end.
+    fn on_frame_boundary(&mut self) -> bool {
+        // 1. Pending seek from UI (user scrub / marker jump).
+        let seek = self.control.pending_seek.swap(NO_SEEK, Ordering::Relaxed);
+        if seek != NO_SEEK {
+            let target = seek.min(self.total_frames);
+            self.jump_to(target);
+            return true;
+        }
+
+        // 2. Segment boundary logic.
+        if let Some(seg) = self.playlist.get(self.seg_idx).cloned() {
+            let frame = self.frame();
+
+            // 2a. Start fade-out before segment end for loops.
+            let fade_len = CROSSFADE_FRAMES.min(seg.end.saturating_sub(seg.start));
+            let fo_start = seg.end.saturating_sub(fade_len);
+            if self.fade_out == 0
+                && self.will_loop()
+                && frame >= fo_start
+                && frame < seg.end
+            {
+                self.fade_out = seg.end - frame;
+            }
+
+            // 2b. At segment end: handle loop or advance.
+            if frame >= seg.end {
+                self.fade_out = 0;
+
+                if self.reps_left == 255 {
+                    // Infinite loop: jump to segment start with fade-in.
+                    self.pos = seg.start as usize * self.channels as usize;
+                    self.channel = 0;
+                    self.fade_in = fade_len;
+                } else if self.reps_left > 1 {
+                    self.reps_left -= 1;
+                    self.pos = seg.start as usize * self.channels as usize;
+                    self.channel = 0;
+                    self.fade_in = fade_len;
+                } else {
+                    // Reps exhausted: advance to next segment.
+                    self.seg_idx += 1;
+                    if self.seg_idx >= self.playlist.len() {
+                        if self.global_loop {
+                            self.seg_idx = 0;
+                        } else {
+                            self.control.frame.store(self.frame(), Ordering::Relaxed);
+                            return false; // Program complete.
+                        }
+                    }
+                    let next = self.playlist[self.seg_idx].clone();
+                    self.reps_left = next.reps;
+                    // Sequential segments share boundaries — no jump needed.
+                    if self.frame() == next.start {
+                        // Continuous: no seek.
+                    } else {
+                        self.jump_to(next.start);
+                    }
+                }
+            }
+        }
+
+        // 3. Update UI position.
+        self.control.frame.store(self.frame(), Ordering::Relaxed);
+        true
+    }
+}
+
+impl Iterator for SegmentSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        // Frame boundary logic runs once per frame (on channel 0).
+        if self.channel == 0 && !self.on_frame_boundary() {
+            return None;
+        }
+
+        if self.pos >= self.buffer.len() {
+            return None;
+        }
+
+        let mut sample = self.buffer[self.pos];
+
+        // Fade-out before a loop boundary (decreasing gain → 0).
+        if self.fade_out > 0 {
+            let t = self.fade_out as f32 / CROSSFADE_FRAMES as f32;
+            sample *= t;
+            if self.channel == self.channels - 1 {
+                self.fade_out -= 1;
+            }
+        }
+
+        // Fade-in after a jump (increasing gain from 0 → 1).
+        if self.fade_in > 0 {
+            let t = 1.0 - (self.fade_in as f32 / CROSSFADE_FRAMES as f32);
+            sample *= t;
+            if self.channel == self.channels - 1 {
+                self.fade_in -= 1;
+            }
+        }
+
+        self.pos += 1;
+        self.channel += 1;
+        if self.channel >= self.channels {
+            self.channel = 0;
+        }
+
+        Some(sample)
+    }
+}
+
+impl rodio::Source for SegmentSource {
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+        let frame = (pos.as_secs_f64() * self.rate as f64) as u32;
+        self.jump_to(frame.min(self.total_frames));
+        Ok(())
+    }
+}
+
+/// Pre-decode a WAV file to interleaved f32 samples.
+///
+/// Returns `(samples, channels, sample_rate)`.
+fn pre_decode(path: &Path) -> Result<(Vec<f32>, u16, u32), anyhow::Error> {
+    let file = std::fs::File::open(path)?;
+    let reader = std::io::BufReader::new(file);
+    let decoder = rodio::Decoder::new(reader)
+        .map_err(|e| anyhow::anyhow!("decode error: {e}"))?;
+    let channels = decoder.channels();
+    let sample_rate = decoder.sample_rate();
+    let samples: Vec<f32> = decoder.map(|s| s as f32 / 32768.0).collect();
+    Ok((samples, channels, sample_rate))
+}
+
+// ---------------------------------------------------------------------------
+// PlaybackEngine
+// ---------------------------------------------------------------------------
+
 /// Thread-safe audio playback engine.
 ///
 /// Holds the audio output stream and provides play/pause/stop controls.
@@ -61,6 +310,8 @@ pub struct PlaybackEngine {
     total_samples: Arc<Mutex<u32>>,
     /// Sample rate of the current file in Hz.
     sample_rate_hz: Arc<Mutex<u32>>,
+    /// Shared control for the active SegmentSource (None when stopped).
+    source_control: Arc<Mutex<Option<Arc<SourceControl>>>>,
 }
 
 impl PlaybackEngine {
@@ -82,37 +333,127 @@ impl PlaybackEngine {
             sample_offset: Arc::new(Mutex::new(0)),
             total_samples: Arc::new(Mutex::new(0)),
             sample_rate_hz: Arc::new(Mutex::new(0)),
+            source_control: Arc::new(Mutex::new(None)),
         })
     }
 
-    /// Start playing a WAV file. Stops any current playback first.
+    /// Start playing a WAV file from the beginning. Stops any current playback.
+    ///
+    /// Uses a [`SegmentSource`] with a single segment spanning the entire file
+    /// (no boundaries, no looping).
     pub fn play(&self, path: &Path) -> Result<(), anyhow::Error> {
         self.stop();
 
-        let file = std::fs::File::open(path)?;
-        let reader = std::io::BufReader::new(file);
+        let (samples, channels, sample_rate) = pre_decode(path)?;
+        let total_frames = samples.len() as u32 / channels as u32;
+
+        let control = Arc::new(SourceControl::new());
+        let source = SegmentSource {
+            buffer: samples,
+            channels,
+            rate: sample_rate,
+            total_frames,
+            pos: 0,
+            channel: 0,
+            playlist: vec![PlaySegment {
+                start: 0,
+                end: total_frames,
+                reps: 1,
+            }],
+            seg_idx: 0,
+            reps_left: 1,
+            global_loop: false,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
 
         let sink = Sink::try_new(&self.stream_handle)
             .map_err(|e| anyhow::anyhow!("audio output error: {e}"))?;
-
-        let source = rodio::Decoder::new(reader)
-            .map_err(|e| anyhow::anyhow!("decode error: {e}"))?;
-
         sink.append(source);
 
-        // Compute duration and sample info from WAV headers.
-        if let Ok((dur, total, rate)) = compute_playback_info(path) {
-            *self.duration.lock().unwrap() = Some(dur);
-            *self.total_samples.lock().unwrap() = total;
-            *self.sample_rate_hz.lock().unwrap() = rate;
-        }
+        // Compute duration from pre-decoded data.
+        let dur = Duration::from_secs_f64(total_frames as f64 / sample_rate as f64);
 
         *self.sink.lock().unwrap() = Some(sink);
+        *self.source_control.lock().unwrap() = Some(control);
+        *self.duration.lock().unwrap() = Some(dur);
+        *self.total_samples.lock().unwrap() = total_frames;
+        *self.sample_rate_hz.lock().unwrap() = sample_rate;
         *self.play_start.lock().unwrap() = Some(Instant::now());
         *self.paused_elapsed.lock().unwrap() = Duration::ZERO;
         *self.current_path.lock().unwrap() = Some(path.to_path_buf());
         *self.drain_start.lock().unwrap() = None;
         *self.sample_offset.lock().unwrap() = 0;
+        self.state.store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
+
+        Ok(())
+    }
+
+    /// Start segment-based playback with a program playlist.
+    ///
+    /// Each entry is `(start_frame, end_frame, reps)` where reps: 1 = play once,
+    /// 2+ = repeat, 15 = infinite loop. `global_loop` restarts the entire
+    /// playlist when all segments complete. Boundaries, looping, and crossfades
+    /// are handled at the sample level — no pops.
+    pub fn play_with_segments(
+        &self,
+        path: &Path,
+        playlist: &[(u32, u32, u8)],
+        global_loop: bool,
+    ) -> Result<(), anyhow::Error> {
+        self.stop();
+
+        let (samples, channels, sample_rate) = pre_decode(path)?;
+        let total_frames = samples.len() as u32 / channels as u32;
+
+        let segments: Vec<PlaySegment> = playlist
+            .iter()
+            .map(|&(start, end, reps)| PlaySegment {
+                start,
+                end: end.min(total_frames),
+                reps: if reps == 15 { 255 } else { reps },
+            })
+            .collect();
+
+        let first_reps = segments.first().map(|s| s.reps).unwrap_or(1);
+        let first_start = segments.first().map(|s| s.start).unwrap_or(0);
+
+        let control = Arc::new(SourceControl::new());
+        control.frame.store(first_start, Ordering::Relaxed);
+
+        let source = SegmentSource {
+            buffer: samples,
+            channels,
+            rate: sample_rate,
+            total_frames,
+            pos: first_start as usize * channels as usize,
+            channel: 0,
+            playlist: segments,
+            seg_idx: 0,
+            reps_left: first_reps,
+            global_loop,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
+
+        let sink = Sink::try_new(&self.stream_handle)
+            .map_err(|e| anyhow::anyhow!("audio output error: {e}"))?;
+        sink.append(source);
+
+        let dur = Duration::from_secs_f64(total_frames as f64 / sample_rate as f64);
+
+        *self.sink.lock().unwrap() = Some(sink);
+        *self.source_control.lock().unwrap() = Some(control);
+        *self.duration.lock().unwrap() = Some(dur);
+        *self.total_samples.lock().unwrap() = total_frames;
+        *self.sample_rate_hz.lock().unwrap() = sample_rate;
+        *self.play_start.lock().unwrap() = Some(Instant::now());
+        *self.paused_elapsed.lock().unwrap() = Duration::ZERO;
+        *self.current_path.lock().unwrap() = Some(path.to_path_buf());
+        *self.drain_start.lock().unwrap() = None;
+        *self.sample_offset.lock().unwrap() = first_start;
         self.state.store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
 
         Ok(())
@@ -148,6 +489,7 @@ impl PlaybackEngine {
         if let Some(sink) = self.sink.lock().unwrap().take() {
             sink.stop();
         }
+        *self.source_control.lock().unwrap() = None;
         *self.play_start.lock().unwrap() = None;
         *self.paused_elapsed.lock().unwrap() = Duration::ZERO;
         *self.current_path.lock().unwrap() = None;
@@ -241,24 +583,21 @@ impl PlaybackEngine {
             return Ok(());
         }
 
-        let secs = clamped as f64 / rate as f64;
-        let duration = Duration::from_secs_f64(secs);
-
-        // Seek the rodio sink.
-        if let Some(ref sink) = *self.sink.lock().unwrap() {
-            sink.try_seek(duration)
-                .map_err(|e| anyhow::anyhow!("seek error: {e}"))?;
+        // Request seek via source control (consumed on mixer thread).
+        if let Some(ref ctl) = *self.source_control.lock().unwrap() {
+            ctl.pending_seek.store(clamped, Ordering::Relaxed);
+            ctl.frame.store(clamped, Ordering::Relaxed);
         }
 
-        // Update sample offset.
+        // Update sample offset immediately for UI responsiveness.
         *self.sample_offset.lock().unwrap() = clamped;
 
         // Reset elapsed tracking to match the new position.
+        let duration = Duration::from_secs_f64(clamped as f64 / rate as f64);
         *self.paused_elapsed.lock().unwrap() = duration;
         if state == PlaybackState::Playing {
             *self.play_start.lock().unwrap() = Some(Instant::now());
         }
-        // If paused, play_start stays None — position updates but no resume.
 
         // Clear drain_start (seeking restarts drain detection).
         *self.drain_start.lock().unwrap() = None;
@@ -282,23 +621,19 @@ impl PlaybackEngine {
         self.seek_to_sample(target)
     }
 
-    /// Recompute sample_offset from elapsed playback time.
+    /// Sync sample_offset from the source's authoritative frame position.
     ///
-    /// Called from the TUI tick loop to keep the sample offset in sync with
-    /// wall-clock elapsed time. Clamped to total_samples.
+    /// Called from the TUI tick loop. Reads from the [`SourceControl`] atomic
+    /// on the mixer thread — no wall-clock drift.
     pub fn update_sample_offset(&self) {
         let state = PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
         if state != PlaybackState::Playing {
             return;
         }
-        let rate = self.sample_rate();
-        if rate == 0 {
-            return;
+        if let Some(ref ctl) = *self.source_control.lock().unwrap() {
+            let frame = ctl.frame.load(Ordering::Relaxed);
+            *self.sample_offset.lock().unwrap() = frame;
         }
-        let elapsed_secs = self.compute_elapsed().as_secs_f64();
-        let total = self.total_samples();
-        let offset = ((elapsed_secs * rate as f64) as u32).min(total);
-        *self.sample_offset.lock().unwrap() = offset;
     }
 
     fn compute_elapsed(&self) -> Duration {
@@ -310,20 +645,9 @@ impl PlaybackEngine {
     }
 }
 
-/// Compute playback info from a WAV file's fmt + data chunks.
-///
-/// Returns `(duration, total_samples, sample_rate)`.
-fn compute_playback_info(path: &Path) -> Result<(Duration, u32, u32), anyhow::Error> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::with_capacity(8192, file);
-    let map = crate::engine::bext::scan_chunks(&mut reader)?;
-    let fmt = crate::engine::wav::parse_fmt(&mut reader, &map)?;
-    let info = crate::engine::wav::AudioInfo::from_fmt(&fmt, map.data_size);
-    let duration = Duration::from_secs_f64(info.duration_secs);
-    let sample_rate = info.sample_rate;
-    let total_samples = (info.duration_secs * sample_rate as f64).round() as u32;
-    Ok((duration, total_samples, sample_rate))
-}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 impl PlaybackEngine {
@@ -596,7 +920,7 @@ mod tests {
         );
     }
 
-    // --- S8-T3 tests: Seek API ---
+    // --- Seek API tests ---
 
     #[test]
     fn test_seek_to_sample_zero_rewinds() {
@@ -609,7 +933,6 @@ mod tests {
             return;
         }
         engine.play(path).unwrap();
-        // Advance offset artificially.
         *engine.sample_offset.lock().unwrap() = 22050;
         engine.seek_to_sample(0).unwrap();
         assert_eq!(engine.sample_offset(), 0, "seek_to_sample(0) should rewind to start");
@@ -713,7 +1036,6 @@ mod tests {
             Ok(e) => e,
             Err(_) => return,
         };
-        // Engine is Stopped by default. Set up sample info to verify no change.
         engine.test_set_sample_position(0, 48000);
         engine.test_set_sample_rate(48000);
         engine.seek_to_sample(44100).unwrap();
@@ -736,7 +1058,6 @@ mod tests {
             return;
         }
         engine.play(path).unwrap();
-        // Simulate drain_start being set.
         engine.test_set_drain_start(Some(Instant::now()));
         engine.seek_to_sample(0).unwrap();
         assert!(
@@ -757,15 +1078,208 @@ mod tests {
         }
         engine.play(path).unwrap();
         let rate = engine.sample_rate();
-        // Seek to 2s mark.
         engine.seek_to_sample(rate * 2).unwrap();
-        // Seek back 1s.
         engine.seek_relative(-1.0).unwrap();
-        let expected = rate; // Should be at ~1s mark.
+        let expected = rate;
         let actual = engine.sample_offset();
         assert!(
             actual.abs_diff(expected) <= 1,
             "after seek to 2s then -1s, should be at ~1s ({expected}), got {actual}"
         );
+    }
+
+    // --- SegmentSource unit tests ---
+
+    #[test]
+    fn test_segment_source_single_segment() {
+        // Build a tiny mono buffer: 100 frames of ascending values.
+        let buffer: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+        let control = Arc::new(SourceControl::new());
+        let mut src = SegmentSource {
+            buffer,
+            channels: 1,
+            rate: 48000,
+            total_frames: 100,
+            pos: 0,
+            channel: 0,
+            playlist: vec![PlaySegment { start: 0, end: 100, reps: 1 }],
+            seg_idx: 0,
+            reps_left: 1,
+            global_loop: false,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
+
+        // Should yield all 100 samples then None.
+        let mut count = 0;
+        while src.next().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 100);
+        assert_eq!(control.frame.load(Ordering::Relaxed), 100);
+    }
+
+    #[test]
+    fn test_segment_source_loops_with_crossfade() {
+        // 200-frame mono buffer, segment 0..100, reps=2 (play twice).
+        let buffer: Vec<f32> = (0..200).map(|i| i as f32 / 200.0).collect();
+        let control = Arc::new(SourceControl::new());
+        let mut src = SegmentSource {
+            buffer,
+            channels: 1,
+            rate: 48000,
+            total_frames: 200,
+            pos: 0,
+            channel: 0,
+            playlist: vec![PlaySegment { start: 0, end: 100, reps: 2 }],
+            seg_idx: 0,
+            reps_left: 2,
+            global_loop: false,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
+
+        let mut count = 0;
+        while src.next().is_some() {
+            count += 1;
+        }
+        // Two passes of 100 frames = 200 samples.
+        // Second pass starts with crossfade (64 frames overlap with end of first),
+        // but total output count should be 200 (100 + 100).
+        assert_eq!(count, 200);
+    }
+
+    #[test]
+    fn test_segment_source_pending_seek() {
+        let buffer: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+        let control = Arc::new(SourceControl::new());
+        let mut src = SegmentSource {
+            buffer,
+            channels: 1,
+            rate: 48000,
+            total_frames: 100,
+            pos: 0,
+            channel: 0,
+            playlist: vec![PlaySegment { start: 0, end: 100, reps: 1 }],
+            seg_idx: 0,
+            reps_left: 1,
+            global_loop: false,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
+
+        // Consume 10 samples (frames 0–9).
+        for _ in 0..10 {
+            src.next();
+        }
+        // Frame counter reflects the last frame processed (frame 9).
+        assert_eq!(control.frame.load(Ordering::Relaxed), 9);
+
+        // Request seek to frame 50.
+        control.pending_seek.store(50, Ordering::Relaxed);
+        let sample = src.next().unwrap();
+        // After seek, jump_to stores the target frame immediately.
+        assert_eq!(control.frame.load(Ordering::Relaxed), 50);
+        // Sample should be attenuated (fade-in gain near 0).
+        assert!(sample.abs() < 0.5, "fade-in should attenuate: {sample}");
+    }
+
+    #[test]
+    fn test_segment_source_sequential_advance() {
+        // Two sequential segments: 0..50, 50..100 — continuous, no crossfade needed.
+        let buffer: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+        let control = Arc::new(SourceControl::new());
+        let mut src = SegmentSource {
+            buffer: buffer.clone(),
+            channels: 1,
+            rate: 48000,
+            total_frames: 100,
+            pos: 0,
+            channel: 0,
+            playlist: vec![
+                PlaySegment { start: 0, end: 50, reps: 1 },
+                PlaySegment { start: 50, end: 100, reps: 1 },
+            ],
+            seg_idx: 0,
+            reps_left: 1,
+            global_loop: false,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
+
+        let samples: Vec<f32> = std::iter::from_fn(|| src.next()).collect();
+        assert_eq!(samples.len(), 100);
+        // Sequential segments should produce continuous output (no crossfade gain dip).
+        // Check that sample at frame 50 is close to the buffer value (no attenuation).
+        assert!(
+            (samples[50] - buffer[50]).abs() < 0.01,
+            "sequential segment boundary should be continuous"
+        );
+    }
+
+    #[test]
+    fn test_segment_source_crossfade_no_pop() {
+        // Segment 0..50 with 2 reps. On loop-back, crossfade should prevent
+        // discontinuity. Use a ramp that ends at 1.0 and restarts at 0.0 —
+        // without crossfade that would be a hard jump at the loop point.
+        let buffer: Vec<f32> = (0..100).map(|i| (i % 50) as f32 / 49.0).collect();
+        // buffer[49] = 1.0, buffer[0] = 0.0 — the loop-back discontinuity.
+        let control = Arc::new(SourceControl::new());
+        let mut src = SegmentSource {
+            buffer,
+            channels: 1,
+            rate: 48000,
+            total_frames: 100,
+            pos: 0,
+            channel: 0,
+            playlist: vec![PlaySegment { start: 0, end: 50, reps: 2 }],
+            seg_idx: 0,
+            reps_left: 2,
+            global_loop: false,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
+
+        let samples: Vec<f32> = std::iter::from_fn(|| src.next()).collect();
+        assert_eq!(samples.len(), 100);
+        // At the loop point (around sample 50), the crossfade should smooth the
+        // transition. Check that the maximum inter-sample jump is well below 1.0
+        // (a hard pop would be ~1.0; crossfade should keep it under ~0.1).
+        let max_delta: f32 = samples
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_delta < 0.15,
+            "crossfade should smooth loop transition, max delta = {max_delta}"
+        );
+    }
+
+    #[test]
+    fn test_play_with_segments_basic() {
+        let engine = match PlaybackEngine::try_new() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let path = std::path::Path::new("test_files/clean_base.wav");
+        if !path.exists() {
+            return;
+        }
+        let total = {
+            engine.play(path).unwrap();
+            let t = engine.total_samples();
+            engine.stop();
+            t
+        };
+        let playlist = vec![(0, total / 2, 1u8), (total / 2, total, 1u8)];
+        engine.play_with_segments(path, &playlist, false).unwrap();
+        assert_eq!(engine.state(), PlaybackState::Playing);
+        assert_eq!(engine.sample_offset(), 0);
+        engine.stop();
     }
 }

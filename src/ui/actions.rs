@@ -29,6 +29,8 @@ pub enum Action {
     SeekBackwardLarge,
     ToggleAutoAdvance,
     ToggleTimeDisplay,
+    ToggleGlobalLoop,
+    ReversePlayback,
 
     // Marks
     ToggleMark,
@@ -38,6 +40,7 @@ pub enum Action {
 
     // Markers
     ToggleBank,
+    ToggleBankSync,
     SetMarker1,
     SetMarker2,
     SetMarker3,
@@ -45,8 +48,20 @@ pub enum Action {
     ClearBankMarkers,
     IncrementRep,
     DecrementRep,
-    PlaySegment,
-    PlayProgram,
+    SelectNextMarker,
+    SelectPrevMarker,
+    ToggleInfiniteLoop,
+    TogglePreviewLoop,
+    NudgeMarkerForwardSmall,
+    NudgeMarkerBackwardSmall,
+    NudgeMarkerForwardLarge,
+    NudgeMarkerBackwardLarge,
+    SnapZeroCrossingForward,
+    SnapZeroCrossingBackward,
+    MarkerReset,
+    ExportMarkersCsv,
+    ImportMarkersCsv,
+    ToggleMarkersEnabled,
 
     // Mode
     EnterInsertMode,
@@ -85,11 +100,14 @@ impl Action {
         Action::SeekBackwardLarge,
         Action::ToggleAutoAdvance,
         Action::ToggleTimeDisplay,
+        Action::ToggleGlobalLoop,
+        Action::ReversePlayback,
         Action::ToggleMark,
         Action::ClearMarks,
         Action::ToggleMarkedFilter,
         Action::SaveMarkers,
         Action::ToggleBank,
+        Action::ToggleBankSync,
         Action::SetMarker1,
         Action::SetMarker2,
         Action::SetMarker3,
@@ -97,8 +115,20 @@ impl Action {
         Action::ClearBankMarkers,
         Action::IncrementRep,
         Action::DecrementRep,
-        Action::PlaySegment,
-        Action::PlayProgram,
+        Action::SelectNextMarker,
+        Action::SelectPrevMarker,
+        Action::ToggleInfiniteLoop,
+        Action::TogglePreviewLoop,
+        Action::NudgeMarkerForwardSmall,
+        Action::NudgeMarkerBackwardSmall,
+        Action::NudgeMarkerForwardLarge,
+        Action::NudgeMarkerBackwardLarge,
+        Action::SnapZeroCrossingForward,
+        Action::SnapZeroCrossingBackward,
+        Action::MarkerReset,
+        Action::ExportMarkersCsv,
+        Action::ImportMarkersCsv,
+        Action::ToggleMarkersEnabled,
         Action::EnterInsertMode,
         Action::EnterNormalMode,
         Action::SearchSubmit,
@@ -122,18 +152,20 @@ impl Action {
             "sort_ascending" => Some(Action::SortAscending),
             "sort_descending" => Some(Action::SortDescending),
             "toggle_playback" => Some(Action::TogglePlayback),
-
             "seek_forward_small" => Some(Action::SeekForwardSmall),
             "seek_forward_large" => Some(Action::SeekForwardLarge),
             "seek_backward_small" => Some(Action::SeekBackwardSmall),
             "seek_backward_large" => Some(Action::SeekBackwardLarge),
             "toggle_auto_advance" => Some(Action::ToggleAutoAdvance),
             "toggle_time_display" => Some(Action::ToggleTimeDisplay),
+            "toggle_global_loop" => Some(Action::ToggleGlobalLoop),
+            "reverse_playback" => Some(Action::ReversePlayback),
             "toggle_mark" => Some(Action::ToggleMark),
             "clear_marks" => Some(Action::ClearMarks),
             "toggle_marked_filter" => Some(Action::ToggleMarkedFilter),
             "save_markers" => Some(Action::SaveMarkers),
             "toggle_bank" => Some(Action::ToggleBank),
+            "toggle_bank_sync" => Some(Action::ToggleBankSync),
             "set_marker_1" => Some(Action::SetMarker1),
             "set_marker_2" => Some(Action::SetMarker2),
             "set_marker_3" => Some(Action::SetMarker3),
@@ -141,8 +173,20 @@ impl Action {
             "clear_bank_markers" => Some(Action::ClearBankMarkers),
             "increment_rep" => Some(Action::IncrementRep),
             "decrement_rep" => Some(Action::DecrementRep),
-            "play_segment" => Some(Action::PlaySegment),
-            "play_program" => Some(Action::PlayProgram),
+            "select_next_marker" => Some(Action::SelectNextMarker),
+            "select_prev_marker" => Some(Action::SelectPrevMarker),
+            "toggle_infinite_loop" => Some(Action::ToggleInfiniteLoop),
+            "toggle_preview_loop" => Some(Action::TogglePreviewLoop),
+            "nudge_marker_forward_small" => Some(Action::NudgeMarkerForwardSmall),
+            "nudge_marker_backward_small" => Some(Action::NudgeMarkerBackwardSmall),
+            "nudge_marker_forward_large" => Some(Action::NudgeMarkerForwardLarge),
+            "nudge_marker_backward_large" => Some(Action::NudgeMarkerBackwardLarge),
+            "snap_zero_crossing_forward" => Some(Action::SnapZeroCrossingForward),
+            "snap_zero_crossing_backward" => Some(Action::SnapZeroCrossingBackward),
+            "marker_reset" => Some(Action::MarkerReset),
+            "export_markers_csv" => Some(Action::ExportMarkersCsv),
+            "import_markers_csv" => Some(Action::ImportMarkersCsv),
+            "toggle_markers_enabled" => Some(Action::ToggleMarkersEnabled),
             "enter_insert_mode" => Some(Action::EnterInsertMode),
             "enter_normal_mode" => Some(Action::EnterNormalMode),
             "search_submit" => Some(Action::SearchSubmit),
@@ -174,11 +218,14 @@ impl Action {
             Action::SeekBackwardLarge => "seek_backward_large",
             Action::ToggleAutoAdvance => "toggle_auto_advance",
             Action::ToggleTimeDisplay => "toggle_time_display",
+            Action::ToggleGlobalLoop => "toggle_global_loop",
+            Action::ReversePlayback => "reverse_playback",
             Action::ToggleMark => "toggle_mark",
             Action::ClearMarks => "clear_marks",
             Action::ToggleMarkedFilter => "toggle_marked_filter",
             Action::SaveMarkers => "save_markers",
             Action::ToggleBank => "toggle_bank",
+            Action::ToggleBankSync => "toggle_bank_sync",
             Action::SetMarker1 => "set_marker_1",
             Action::SetMarker2 => "set_marker_2",
             Action::SetMarker3 => "set_marker_3",
@@ -186,8 +233,20 @@ impl Action {
             Action::ClearBankMarkers => "clear_bank_markers",
             Action::IncrementRep => "increment_rep",
             Action::DecrementRep => "decrement_rep",
-            Action::PlaySegment => "play_segment",
-            Action::PlayProgram => "play_program",
+            Action::SelectNextMarker => "select_next_marker",
+            Action::SelectPrevMarker => "select_prev_marker",
+            Action::ToggleInfiniteLoop => "toggle_infinite_loop",
+            Action::TogglePreviewLoop => "toggle_preview_loop",
+            Action::NudgeMarkerForwardSmall => "nudge_marker_forward_small",
+            Action::NudgeMarkerBackwardSmall => "nudge_marker_backward_small",
+            Action::NudgeMarkerForwardLarge => "nudge_marker_forward_large",
+            Action::NudgeMarkerBackwardLarge => "nudge_marker_backward_large",
+            Action::SnapZeroCrossingForward => "snap_zero_crossing_forward",
+            Action::SnapZeroCrossingBackward => "snap_zero_crossing_backward",
+            Action::MarkerReset => "marker_reset",
+            Action::ExportMarkersCsv => "export_markers_csv",
+            Action::ImportMarkersCsv => "import_markers_csv",
+            Action::ToggleMarkersEnabled => "toggle_markers_enabled",
             Action::EnterInsertMode => "enter_insert_mode",
             Action::EnterNormalMode => "enter_normal_mode",
             Action::SearchSubmit => "search_submit",
@@ -226,11 +285,14 @@ impl Action {
             Action::SeekBackwardLarge => "Seek backward (large)",
             Action::ToggleAutoAdvance => "Toggle auto-advance",
             Action::ToggleTimeDisplay => "Toggle elapsed/remaining",
+            Action::ToggleGlobalLoop => "Toggle global loop",
+            Action::ReversePlayback => "Reverse playback",
             Action::ToggleMark => "Toggle mark on row",
             Action::ClearMarks => "Clear all marks",
             Action::ToggleMarkedFilter => "Filter to marked only",
             Action::SaveMarkers => "Save markers to file",
             Action::ToggleBank => "Toggle marker bank A/B",
+            Action::ToggleBankSync => "Toggle bank sync",
             Action::SetMarker1 => "Set marker 1 at cursor",
             Action::SetMarker2 => "Set marker 2 at cursor",
             Action::SetMarker3 => "Set marker 3 at cursor",
@@ -238,8 +300,20 @@ impl Action {
             Action::ClearBankMarkers => "Clear all bank markers",
             Action::IncrementRep => "Increment segment rep",
             Action::DecrementRep => "Decrement segment rep",
-            Action::PlaySegment => "Play current segment",
-            Action::PlayProgram => "Play bank program",
+            Action::SelectNextMarker => "Select next marker",
+            Action::SelectPrevMarker => "Select previous marker",
+            Action::ToggleInfiniteLoop => "Toggle infinite loop",
+            Action::TogglePreviewLoop => "Toggle preview loop",
+            Action::NudgeMarkerForwardSmall => "Nudge marker forward (small)",
+            Action::NudgeMarkerBackwardSmall => "Nudge marker backward (small)",
+            Action::NudgeMarkerForwardLarge => "Nudge marker forward (large)",
+            Action::NudgeMarkerBackwardLarge => "Nudge marker backward (large)",
+            Action::SnapZeroCrossingForward => "Snap to zero-crossing forward",
+            Action::SnapZeroCrossingBackward => "Snap to zero-crossing backward",
+            Action::MarkerReset => "Reset markers to preset",
+            Action::ExportMarkersCsv => "Export markers to CSV",
+            Action::ImportMarkersCsv => "Import markers from CSV",
+            Action::ToggleMarkersEnabled => "Toggle markers display",
             Action::EnterInsertMode => "Enter search mode",
             Action::EnterNormalMode => "Exit search mode",
             Action::SearchSubmit => "Submit search",
@@ -268,20 +342,36 @@ impl Action {
             | Action::SeekBackwardSmall
             | Action::SeekBackwardLarge
             | Action::ToggleAutoAdvance
-            | Action::ToggleTimeDisplay => "Playback",
+            | Action::ToggleTimeDisplay
+            | Action::ToggleGlobalLoop
+            | Action::ReversePlayback => "Playback",
             Action::ToggleMark
             | Action::ClearMarks
             | Action::ToggleMarkedFilter
             | Action::SaveMarkers => "Marks",
             Action::ToggleBank
+            | Action::ToggleBankSync
             | Action::SetMarker1
             | Action::SetMarker2
             | Action::SetMarker3
             | Action::ClearNearestMarker
             | Action::ClearBankMarkers
             | Action::IncrementRep
-            | Action::DecrementRep => "Markers",
-            Action::PlaySegment | Action::PlayProgram => "Playback",
+            | Action::DecrementRep
+            | Action::SelectNextMarker
+            | Action::SelectPrevMarker
+            | Action::ToggleInfiniteLoop
+            | Action::TogglePreviewLoop
+            | Action::NudgeMarkerForwardSmall
+            | Action::NudgeMarkerBackwardSmall
+            | Action::NudgeMarkerForwardLarge
+            | Action::NudgeMarkerBackwardLarge
+            | Action::SnapZeroCrossingForward
+            | Action::SnapZeroCrossingBackward
+            | Action::MarkerReset
+            | Action::ExportMarkersCsv
+            | Action::ImportMarkersCsv
+            | Action::ToggleMarkersEnabled => "Markers",
             Action::EnterInsertMode
             | Action::EnterNormalMode
             | Action::SearchSubmit
@@ -290,16 +380,68 @@ impl Action {
             Action::ShowHelp | Action::Quit => "App",
         }
     }
+
+    /// Returns true if this action edits markers and should be guarded
+    /// against execution during playback.
+    pub fn is_marker_edit(&self) -> bool {
+        matches!(
+            self,
+            Action::SetMarker1
+                | Action::SetMarker2
+                | Action::SetMarker3
+                | Action::ClearNearestMarker
+                | Action::ClearBankMarkers
+                | Action::IncrementRep
+                | Action::DecrementRep
+                | Action::SaveMarkers
+                | Action::ToggleInfiniteLoop
+                | Action::TogglePreviewLoop
+                | Action::NudgeMarkerForwardSmall
+                | Action::NudgeMarkerBackwardSmall
+                | Action::NudgeMarkerForwardLarge
+                | Action::NudgeMarkerBackwardLarge
+                | Action::SnapZeroCrossingForward
+                | Action::SnapZeroCrossingBackward
+                | Action::MarkerReset
+                | Action::ExportMarkersCsv
+                | Action::ImportMarkersCsv
+        )
+    }
 }
 
 /// Parse a key name string into a crossterm KeyEvent.
 ///
 /// Handles: single chars ("j", "G"), special keys ("Space", "Esc", "Enter",
-/// "Up", "Down", "Backspace", "Tab", "/", "?"), and modifier combos ("Ctrl-C",
-/// "Ctrl-D", "Ctrl-U").
+/// "Up", "Down", "Backspace", "Tab", "/", "?"), modifier combos ("Ctrl-C",
+/// "Ctrl-D", "Ctrl-U"), Ctrl+Shift ("Ctrl-S-Right"), and Ctrl+Alt ("Ctrl-Alt-m").
 pub fn parse_key(s: &str) -> Option<KeyEvent> {
+    // Modifier prefix: Ctrl-Alt-
+    if let Some(rest) = s.strip_prefix("Ctrl-Alt-") {
+        let ch = rest.chars().next()?;
+        if rest.len() != ch.len_utf8() {
+            return None;
+        }
+        return Some(KeyEvent::new(
+            KeyCode::Char(ch.to_ascii_lowercase()),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+    }
+
+    // Modifier prefix: Ctrl-S- (Ctrl+Shift + special key)
+    if let Some(rest) = s.strip_prefix("Ctrl-S-") {
+        let inner = match rest {
+            "Left" => KeyCode::Left,
+            "Right" => KeyCode::Right,
+            "Up" => KeyCode::Up,
+            "Down" => KeyCode::Down,
+            _ => return None,
+        };
+        return Some(KeyEvent::new(inner, KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+    }
+
     // Modifier prefix: Ctrl-
     if let Some(rest) = s.strip_prefix("Ctrl-") {
+        // Could be a single char or a bracket/special char.
         let ch = rest.chars().next()?;
         if rest.len() != ch.len_utf8() {
             return None;
@@ -317,6 +459,7 @@ pub fn parse_key(s: &str) -> Option<KeyEvent> {
             "Right" => KeyCode::Right,
             "Up" => KeyCode::Up,
             "Down" => KeyCode::Down,
+            "Tab" => KeyCode::BackTab,
             _ => return None,
         };
         return Some(KeyEvent::new(inner, KeyModifiers::SHIFT));
@@ -396,13 +539,14 @@ impl Keymap {
 
         // Playback
         bindings.insert((KeyCode::Char(' '), none), Action::TogglePlayback);
-
         bindings.insert((KeyCode::Right, none), Action::SeekForwardSmall);
         bindings.insert((KeyCode::Left, none), Action::SeekBackwardSmall);
         bindings.insert((KeyCode::Right, shift), Action::SeekForwardLarge);
         bindings.insert((KeyCode::Left, shift), Action::SeekBackwardLarge);
         bindings.insert((KeyCode::Char('a'), none), Action::ToggleAutoAdvance);
         bindings.insert((KeyCode::Char('t'), none), Action::ToggleTimeDisplay);
+        bindings.insert((KeyCode::Char('p'), none), Action::ToggleGlobalLoop);
+        bindings.insert((KeyCode::Char('r'), none), Action::ReversePlayback);
 
         // Marks
         bindings.insert((KeyCode::Char('m'), none), Action::ToggleMark);
@@ -412,6 +556,7 @@ impl Keymap {
 
         // Markers
         bindings.insert((KeyCode::Char('b'), none), Action::ToggleBank);
+        bindings.insert((KeyCode::Char('B'), shift), Action::ToggleBankSync);
         bindings.insert((KeyCode::Char('1'), none), Action::SetMarker1);
         bindings.insert((KeyCode::Char('2'), none), Action::SetMarker2);
         bindings.insert((KeyCode::Char('3'), none), Action::SetMarker3);
@@ -420,8 +565,29 @@ impl Keymap {
         bindings.insert((KeyCode::Char('+'), none), Action::IncrementRep);
         bindings.insert((KeyCode::Char('='), none), Action::IncrementRep);
         bindings.insert((KeyCode::Char('-'), none), Action::DecrementRep);
-        bindings.insert((KeyCode::Char('p'), none), Action::PlaySegment);
-        bindings.insert((KeyCode::Char('P'), shift), Action::PlayProgram);
+        bindings.insert((KeyCode::Tab, none), Action::SelectNextMarker);
+        bindings.insert((KeyCode::BackTab, shift), Action::SelectPrevMarker);
+        bindings.insert((KeyCode::Char('l'), ctrl), Action::ToggleInfiniteLoop);
+        bindings.insert((KeyCode::Char('p'), ctrl), Action::TogglePreviewLoop);
+        bindings.insert((KeyCode::Right, ctrl), Action::NudgeMarkerForwardSmall);
+        bindings.insert((KeyCode::Left, ctrl), Action::NudgeMarkerBackwardSmall);
+        bindings.insert(
+            (KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            Action::NudgeMarkerForwardLarge,
+        );
+        bindings.insert(
+            (KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            Action::NudgeMarkerBackwardLarge,
+        );
+        bindings.insert((KeyCode::Char(']'), ctrl), Action::SnapZeroCrossingForward);
+        bindings.insert((KeyCode::Char('['), ctrl), Action::SnapZeroCrossingBackward);
+        bindings.insert((KeyCode::Char('r'), ctrl), Action::MarkerReset);
+        bindings.insert((KeyCode::Char('e'), ctrl), Action::ExportMarkersCsv);
+        bindings.insert((KeyCode::Char('i'), ctrl), Action::ImportMarkersCsv);
+        bindings.insert(
+            (KeyCode::Char('m'), KeyModifiers::CONTROL | KeyModifiers::ALT),
+            Action::ToggleMarkersEnabled,
+        );
 
         // Mode
         bindings.insert((KeyCode::Char('i'), none), Action::EnterInsertMode);
@@ -470,12 +636,24 @@ impl Keymap {
 /// Format a KeyCode + modifiers as a human-readable string for help display.
 pub fn key_display(code: &KeyCode, modifiers: &KeyModifiers) -> String {
     let mut s = String::new();
-    if modifiers.contains(KeyModifiers::CONTROL) {
+    if modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::ALT) {
+        s.push_str("Ctrl-Alt-");
+    } else if modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::SHIFT) {
+        match code {
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                s.push_str("Ctrl-S-");
+            }
+            _ => s.push_str("Ctrl-"),
+        }
+    } else if modifiers.contains(KeyModifiers::CONTROL) {
         s.push_str("Ctrl-");
     } else if modifiers.contains(KeyModifiers::SHIFT) {
         // Shift prefix for non-char keys (arrows, etc).
         match code {
             KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                s.push_str("S-");
+            }
+            KeyCode::BackTab => {
                 s.push_str("S-");
             }
             _ => {}
@@ -488,6 +666,7 @@ pub fn key_display(code: &KeyCode, modifiers: &KeyModifiers) -> String {
         KeyCode::Esc => s.push_str("Esc"),
         KeyCode::Backspace => s.push_str("Bksp"),
         KeyCode::Tab => s.push_str("Tab"),
+        KeyCode::BackTab => s.push_str("Tab"),
         KeyCode::Up => s.push_str("Up"),
         KeyCode::Down => s.push_str("Down"),
         KeyCode::Left => s.push_str("Left"),
@@ -554,7 +733,7 @@ mod tests {
 
     #[test]
     fn test_all_count_matches_variants() {
-        assert_eq!(Action::ALL.len(), 38);
+        assert_eq!(Action::ALL.len(), 53);
     }
 
     #[test]
@@ -691,8 +870,6 @@ mod tests {
     fn test_parse_key_question_mark() {
         let key = parse_key("?").unwrap();
         assert_eq!(key.code, KeyCode::Char('?'));
-        // '?' is not uppercase alpha, so no SHIFT added by parse_key for symbol chars.
-        // But in terminal events, ? comes with SHIFT. Let's verify our keymap handles it.
     }
 
     // --- S8-T4 tests: Scrub actions ---
@@ -741,14 +918,12 @@ mod tests {
         assert_eq!(s_right.modifiers, KeyModifiers::SHIFT);
     }
 
-    // --- S8-T6 tests: Action count ---
+    // --- Sprint 11 tests ---
 
     #[test]
     fn test_action_all_count_final() {
-        assert_eq!(Action::ALL.len(), 38, "Sprint 10 final count should be 39");
+        assert_eq!(Action::ALL.len(), 53, "Sprint 11 final count should be 53");
     }
-
-    // --- S9-T9 tests: SaveMarkers action ---
 
     #[test]
     fn test_save_markers_action_roundtrip() {
@@ -767,5 +942,95 @@ mod tests {
         let km = Keymap::default_keymap();
         let w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
         assert_eq!(km.resolve(w), Some(Action::SaveMarkers));
+    }
+
+    #[test]
+    fn test_new_actions_roundtrip() {
+        let new_actions = [
+            Action::ToggleGlobalLoop,
+            Action::ToggleBankSync,
+            Action::SelectNextMarker,
+            Action::SelectPrevMarker,
+            Action::ToggleInfiniteLoop,
+            Action::TogglePreviewLoop,
+            Action::NudgeMarkerForwardSmall,
+            Action::NudgeMarkerBackwardSmall,
+            Action::NudgeMarkerForwardLarge,
+            Action::NudgeMarkerBackwardLarge,
+            Action::SnapZeroCrossingForward,
+            Action::SnapZeroCrossingBackward,
+            Action::MarkerReset,
+            Action::ExportMarkersCsv,
+            Action::ImportMarkersCsv,
+            Action::ToggleMarkersEnabled,
+            Action::ReversePlayback,
+        ];
+        for action in new_actions {
+            let name = action.name();
+            assert_eq!(
+                Action::from_name(name),
+                Some(action),
+                "round-trip failed for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_key_ctrl_alt() {
+        let key = parse_key("Ctrl-Alt-m").unwrap();
+        assert_eq!(key.code, KeyCode::Char('m'));
+        assert_eq!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::ALT);
+    }
+
+    #[test]
+    fn test_parse_key_ctrl_shift_arrow() {
+        let key = parse_key("Ctrl-S-Right").unwrap();
+        assert_eq!(key.code, KeyCode::Right);
+        assert_eq!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    }
+
+    #[test]
+    fn test_parse_key_shift_tab() {
+        let key = parse_key("S-Tab").unwrap();
+        assert_eq!(key.code, KeyCode::BackTab);
+        assert_eq!(key.modifiers, KeyModifiers::SHIFT);
+    }
+
+    #[test]
+    fn test_keymap_has_new_sprint11_bindings() {
+        let km = Keymap::default_keymap();
+
+        // p → ToggleGlobalLoop
+        let p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(km.resolve(p), Some(Action::ToggleGlobalLoop));
+
+        // B → ToggleBankSync
+        let big_b = KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT);
+        assert_eq!(km.resolve(big_b), Some(Action::ToggleBankSync));
+
+        // Tab → SelectNextMarker
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(km.resolve(tab), Some(Action::SelectNextMarker));
+
+        // Ctrl-r → MarkerReset
+        let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(km.resolve(ctrl_r), Some(Action::MarkerReset));
+    }
+
+    #[test]
+    fn test_is_marker_edit() {
+        assert!(Action::SetMarker1.is_marker_edit());
+        assert!(Action::ClearNearestMarker.is_marker_edit());
+        assert!(Action::MarkerReset.is_marker_edit());
+        assert!(!Action::TogglePlayback.is_marker_edit());
+        assert!(!Action::ToggleGlobalLoop.is_marker_edit());
+        assert!(!Action::SelectNextMarker.is_marker_edit());
+    }
+
+    #[test]
+    fn test_removed_play_segment_play_program() {
+        // These actions were removed in Sprint 11.
+        assert_eq!(Action::from_name("play_segment"), None);
+        assert_eq!(Action::from_name("play_program"), None);
     }
 }

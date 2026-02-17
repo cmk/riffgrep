@@ -514,6 +514,221 @@ impl AudioInfo {
     }
 }
 
+// --- Zero-Crossing Detection ---
+
+/// Default amplitude threshold for zero-crossing detection (~-54dB for 16-bit).
+///
+/// A crossing requires both a sign change AND at least one sample with
+/// absolute amplitude above this threshold. This prevents false crossings
+/// in silence or DC offset regions.
+pub const ZC_THRESHOLD: i32 = 64;
+
+/// A zero-crossing point in mono PCM sample data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZeroCrossing {
+    /// Index of the sample just before the sign change.
+    pub index: usize,
+}
+
+/// Find all zero-crossings in a slice of mono i32 samples.
+///
+/// A zero-crossing occurs between `samples[i]` and `samples[i+1]` when
+/// their signs differ and at least one has absolute value >= `threshold`.
+/// Returns indices where the crossing occurs (the index of the sample
+/// just before the sign change).
+pub fn find_zero_crossings(samples: &[i32], threshold: i32) -> Vec<ZeroCrossing> {
+    if samples.len() < 2 {
+        return Vec::new();
+    }
+    let mut crossings = Vec::new();
+    for i in 0..samples.len() - 1 {
+        let a = samples[i];
+        let b = samples[i + 1];
+        // Sign change: one positive (or zero) and one negative.
+        let sign_change = (a >= 0 && b < 0) || (a < 0 && b >= 0);
+        if sign_change && (a.abs() >= threshold || b.abs() >= threshold) {
+            crossings.push(ZeroCrossing { index: i });
+        }
+    }
+    crossings
+}
+
+/// Find the nearest zero-crossing at or after `start` in the sample buffer.
+///
+/// Searches forward from `start`. Returns `None` if no crossing is found
+/// within the buffer.
+pub fn nearest_zero_crossing_forward(
+    samples: &[i32],
+    start: usize,
+    threshold: i32,
+) -> Option<usize> {
+    if samples.len() < 2 || start >= samples.len() - 1 {
+        return None;
+    }
+    for i in start..samples.len() - 1 {
+        let a = samples[i];
+        let b = samples[i + 1];
+        let sign_change = (a >= 0 && b < 0) || (a < 0 && b >= 0);
+        if sign_change && (a.abs() >= threshold || b.abs() >= threshold) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Find the nearest zero-crossing at or before `start` in the sample buffer.
+///
+/// Searches backward from `start`. Returns `None` if no crossing is found
+/// within the buffer.
+pub fn nearest_zero_crossing_backward(
+    samples: &[i32],
+    start: usize,
+    threshold: i32,
+) -> Option<usize> {
+    if samples.len() < 2 {
+        return None;
+    }
+    let end = start.min(samples.len() - 2);
+    for i in (0..=end).rev() {
+        let a = samples[i];
+        let b = samples[i + 1];
+        let sign_change = (a >= 0 && b < 0) || (a < 0 && b >= 0);
+        if sign_change && (a.abs() >= threshold || b.abs() >= threshold) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Find the Nth zero-crossing forward from `start`.
+///
+/// Returns the index of the Nth crossing, or `None` if fewer than N crossings
+/// exist after `start`.
+pub fn nth_zero_crossing_forward(
+    samples: &[i32],
+    start: usize,
+    n: u32,
+    threshold: i32,
+) -> Option<usize> {
+    if n == 0 || samples.len() < 2 || start >= samples.len() - 1 {
+        return None;
+    }
+    let mut count = 0u32;
+    let mut last = None;
+    for i in start..samples.len() - 1 {
+        let a = samples[i];
+        let b = samples[i + 1];
+        let sign_change = (a >= 0 && b < 0) || (a < 0 && b >= 0);
+        if sign_change && (a.abs() >= threshold || b.abs() >= threshold) {
+            count += 1;
+            last = Some(i);
+            if count == n {
+                return Some(i);
+            }
+        }
+    }
+    last // Return the last found if we ran out of crossings
+}
+
+/// Find the Nth zero-crossing backward from `start`.
+///
+/// Returns the index of the Nth crossing, or `None` if fewer than N crossings
+/// exist before `start`.
+pub fn nth_zero_crossing_backward(
+    samples: &[i32],
+    start: usize,
+    n: u32,
+    threshold: i32,
+) -> Option<usize> {
+    if n == 0 || samples.len() < 2 {
+        return None;
+    }
+    let end = start.min(samples.len() - 2);
+    let mut count = 0u32;
+    let mut last = None;
+    for i in (0..=end).rev() {
+        let a = samples[i];
+        let b = samples[i + 1];
+        let sign_change = (a >= 0 && b < 0) || (a < 0 && b >= 0);
+        if sign_change && (a.abs() >= threshold || b.abs() >= threshold) {
+            count += 1;
+            last = Some(i);
+            if count == n {
+                return Some(i);
+            }
+        }
+    }
+    last
+}
+
+/// Read a window of mono i32 samples from a WAV file around a given frame offset.
+///
+/// Returns (samples, base_frame) where `base_frame` is the absolute frame index
+/// of `samples[0]`. The window extends `radius` frames on each side of `center`.
+pub fn read_sample_window<R: Read + Seek>(
+    reader: &mut R,
+    map: &ChunkMap,
+    fmt: &FmtChunk,
+    center: u32,
+    radius: u32,
+) -> Result<(Vec<i32>, u32), RiffError> {
+    let data_offset = map.data_offset.ok_or(RiffError::NotRiffWave)?;
+    let bytes_per_sample = (fmt.bits_per_sample / 8) as u32;
+    let channels = fmt.channels as u32;
+    let frame_size = bytes_per_sample * channels;
+    if frame_size == 0 {
+        return Ok((Vec::new(), 0));
+    }
+    let total_frames = map.data_size / frame_size;
+    if total_frames == 0 {
+        return Ok((Vec::new(), 0));
+    }
+
+    let start_frame = center.saturating_sub(radius);
+    let end_frame = (center + radius + 1).min(total_frames);
+    let num_frames = end_frame - start_frame;
+
+    let byte_offset = data_offset + (start_frame as u64 * frame_size as u64);
+    reader.seek(SeekFrom::Start(byte_offset))?;
+
+    let mut samples = Vec::with_capacity(num_frames as usize);
+    let mut frame_buf = vec![0u8; frame_size as usize];
+
+    for _ in 0..num_frames {
+        match reader.read_exact(&mut frame_buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(RiffError::Io(e)),
+        }
+        // Decode channel 0 (left/mono) to i32.
+        let sample_i32 = match fmt.format {
+            AudioFormat::Pcm => match fmt.bits_per_sample {
+                16 => i16::from_le_bytes([frame_buf[0], frame_buf[1]]) as i32,
+                24 => {
+                    frame_buf[0] as i32
+                        | (frame_buf[1] as i32) << 8
+                        | ((frame_buf[2] as i8) as i32) << 16
+                }
+                8 => (frame_buf[0] as i32) - 128,
+                32 => i32::from_le_bytes([frame_buf[0], frame_buf[1], frame_buf[2], frame_buf[3]]),
+                _ => 0,
+            },
+            AudioFormat::IeeeFloat => {
+                if fmt.bits_per_sample == 32 && frame_buf.len() >= 4 {
+                    let f = f32::from_le_bytes([frame_buf[0], frame_buf[1], frame_buf[2], frame_buf[3]]);
+                    (f * 32768.0) as i32
+                } else {
+                    0
+                }
+            }
+            AudioFormat::Other(_) => 0,
+        };
+        samples.push(sample_i32);
+    }
+
+    Ok((samples, start_frame))
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -1309,5 +1524,78 @@ mod tests {
                 prop_assert_eq!(peaks.len(), PEAK_COUNT);
             }
         }
+    }
+
+    // --- Zero-Crossing Detection Tests ---
+
+    #[test]
+    fn test_zc_sine_wave() {
+        // Simple sine wave: positive → negative → positive.
+        let samples: Vec<i32> = vec![0, 1000, 2000, 1000, 0, -1000, -2000, -1000, 0, 1000];
+        let crossings = find_zero_crossings(&samples, ZC_THRESHOLD);
+        // Crossings: between indices 3→4 (1000 → 0, but 0 is non-negative, no sign change)
+        // Actually: 0→-1000 at index 4, and -1000→0 at index 7→8
+        // Let's trace: (0,1000)=no, (1000,2000)=no, (2000,1000)=no, (1000,0)=no,
+        // (0,-1000)=yes at 4, (-1000,-2000)=no, (-2000,-1000)=no, (-1000,0)=yes at 7,
+        // (0,1000)=no.
+        assert_eq!(crossings.len(), 2);
+        assert_eq!(crossings[0].index, 4);
+        assert_eq!(crossings[1].index, 7);
+    }
+
+    #[test]
+    fn test_zc_silence_below_threshold() {
+        // Low-amplitude sign changes should not count as zero-crossings.
+        let samples: Vec<i32> = vec![10, -10, 10, -10, 10];
+        let crossings = find_zero_crossings(&samples, ZC_THRESHOLD);
+        assert!(crossings.is_empty(), "sub-threshold crossings should be ignored");
+    }
+
+    #[test]
+    fn test_zc_dc_offset() {
+        // All positive: no crossings even with large values.
+        let samples: Vec<i32> = vec![100, 200, 300, 200, 100];
+        let crossings = find_zero_crossings(&samples, ZC_THRESHOLD);
+        assert!(crossings.is_empty());
+    }
+
+    #[test]
+    fn test_zc_forward_nearest() {
+        let samples: Vec<i32> = vec![100, 200, -300, 400, -500];
+        // Crossings at: 1 (200→-300), 2 (-300→400), 3 (400→-500)
+        assert_eq!(nearest_zero_crossing_forward(&samples, 0, ZC_THRESHOLD), Some(1));
+        assert_eq!(nearest_zero_crossing_forward(&samples, 2, ZC_THRESHOLD), Some(2));
+        assert_eq!(nearest_zero_crossing_forward(&samples, 4, ZC_THRESHOLD), None);
+    }
+
+    #[test]
+    fn test_zc_backward_nearest() {
+        let samples: Vec<i32> = vec![100, 200, -300, 400, -500];
+        assert_eq!(nearest_zero_crossing_backward(&samples, 3, ZC_THRESHOLD), Some(3));
+        assert_eq!(nearest_zero_crossing_backward(&samples, 1, ZC_THRESHOLD), Some(1));
+    }
+
+    #[test]
+    fn test_zc_nth_forward() {
+        let samples: Vec<i32> = vec![100, -200, 300, -400, 500, -600];
+        // Every adjacent pair crosses zero.
+        assert_eq!(nth_zero_crossing_forward(&samples, 0, 1, ZC_THRESHOLD), Some(0));
+        assert_eq!(nth_zero_crossing_forward(&samples, 0, 3, ZC_THRESHOLD), Some(2));
+        assert_eq!(nth_zero_crossing_forward(&samples, 0, 5, ZC_THRESHOLD), Some(4));
+    }
+
+    #[test]
+    fn test_zc_nth_backward() {
+        let samples: Vec<i32> = vec![100, -200, 300, -400, 500, -600];
+        assert_eq!(nth_zero_crossing_backward(&samples, 4, 1, ZC_THRESHOLD), Some(4));
+        assert_eq!(nth_zero_crossing_backward(&samples, 4, 3, ZC_THRESHOLD), Some(2));
+    }
+
+    #[test]
+    fn test_zc_empty_and_single() {
+        assert!(find_zero_crossings(&[], ZC_THRESHOLD).is_empty());
+        assert!(find_zero_crossings(&[100], ZC_THRESHOLD).is_empty());
+        assert_eq!(nearest_zero_crossing_forward(&[], 0, ZC_THRESHOLD), None);
+        assert_eq!(nearest_zero_crossing_backward(&[], 0, ZC_THRESHOLD), None);
     }
 }

@@ -269,14 +269,25 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
             };
 
             let auto = if app.auto_advance { " [AUTO]" } else { "" };
-            format!(" {icon} {name} {time}{auto}")
+            let looping = if app.global_loop { " [LOOP]" } else { "" };
+            let bank_label = match app.active_bank {
+                super::Bank::A => " [A]",
+                super::Bank::B => " [B]",
+            };
+            let bank = if app.bank_sync { " [A+B]" } else { bank_label };
+            format!(" {icon} {name} {time}{auto}{looping}{bank}")
         }
         PlaybackState::Stopped => {
-            if app.auto_advance {
-                " [AUTO]".to_string()
-            } else {
-                String::new()
-            }
+            let mut s = String::new();
+            if app.auto_advance { s.push_str(" [AUTO]"); }
+            if app.global_loop { s.push_str(" [LOOP]"); }
+            let bank_label = match app.active_bank {
+                super::Bank::A => " [A]",
+                super::Bank::B => " [B]",
+            };
+            let bank = if app.bank_sync { " [A+B]" } else { bank_label };
+            s.push_str(bank);
+            s
         }
     };
 
@@ -613,7 +624,8 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
         buf.set_string(area.x, area.y + i as u16, line, style);
     }
 
-    // Marker lines and segment labels overlay.
+    // Marker lines and segment labels overlay (gated by markers_enabled).
+    if app.markers_enabled {
     if let Some(markers) = &preview.markers {
         if !markers.is_empty() {
             // Compute total samples from audio_info if available.
@@ -649,6 +661,7 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
             }
         }
     }
+    } // markers_enabled
 
     // Playback cursor overlay.
     if app.playback_position() > 0.0 && wave_width > 0 {
