@@ -102,13 +102,42 @@ fn render_playback_cursor(
     }
 }
 
+/// Map a sample position to a terminal column within the viewport.
+///
+/// Returns `None` if the sample falls outside the visible window.
+/// At full view: `viewport_start = 0`, `viewport_samples = total_file_samples`.
+/// At zoom: `viewport_start = offset * k_current`, `viewport_samples = NUM_ZOOM_COLS * k_current`.
+fn sample_to_viewport_col(
+    sample: u32,
+    viewport_start: u64,
+    viewport_samples: u64,
+    wave_width: u16,
+) -> Option<u16> {
+    if viewport_samples == 0 || wave_width == 0 {
+        return None;
+    }
+    let s = sample as u64;
+    if s < viewport_start || s >= viewport_start + viewport_samples {
+        return None;
+    }
+    let rel = s - viewport_start;
+    let col = ((rel * wave_width as u64) / viewport_samples) as u16;
+    Some(col.min(wave_width.saturating_sub(1)))
+}
+
 /// Render vertical marker lines on the waveform for both banks.
 ///
 /// Bank A markers appear in the top half, Bank B in the bottom half (matching
 /// the stereo left/right split of the asymmetric waveform).
+///
+/// `viewport_start` and `viewport_samples` control the visible window; at full
+/// view these are `(0, total_file_samples)`. At zoom, they are the sample range
+/// of the zoomed window.
+#[allow(clippy::too_many_arguments)]
 fn render_marker_lines(
     markers: &crate::engine::bext::MarkerConfig,
-    total_samples: u32,
+    viewport_start: u64,
+    viewport_samples: u64,
     x_start: u16,
     y_start: u16,
     wave_width: u16,
@@ -116,7 +145,7 @@ fn render_marker_lines(
     buf: &mut Buffer,
     theme: &Theme,
 ) {
-    if total_samples == 0 || wave_width == 0 {
+    if viewport_samples == 0 || wave_width == 0 {
         return;
     }
 
@@ -124,26 +153,26 @@ fn render_marker_lines(
 
     // Bank A: top half rows.
     for sample in markers.bank_a.defined_markers() {
-        let col = ((sample as u64 * wave_width as u64) / total_samples as u64) as u16;
-        let col = col.min(wave_width.saturating_sub(1));
-        let cx = x_start + col;
-        for row in 0..half {
-            let cy = y_start + row;
-            if let Some(cell) = buf.cell_mut((cx, cy)) {
-                cell.set_bg(theme.marker_a);
+        if let Some(col) = sample_to_viewport_col(sample, viewport_start, viewport_samples, wave_width) {
+            let cx = x_start + col;
+            for row in 0..half {
+                let cy = y_start + row;
+                if let Some(cell) = buf.cell_mut((cx, cy)) {
+                    cell.set_bg(theme.marker_a);
+                }
             }
         }
     }
 
     // Bank B: bottom half rows.
     for sample in markers.bank_b.defined_markers() {
-        let col = ((sample as u64 * wave_width as u64) / total_samples as u64) as u16;
-        let col = col.min(wave_width.saturating_sub(1));
-        let cx = x_start + col;
-        for row in half..wave_rows {
-            let cy = y_start + row;
-            if let Some(cell) = buf.cell_mut((cx, cy)) {
-                cell.set_bg(theme.marker_b);
+        if let Some(col) = sample_to_viewport_col(sample, viewport_start, viewport_samples, wave_width) {
+            let cx = x_start + col;
+            for row in half..wave_rows {
+                let cy = y_start + row;
+                if let Some(cell) = buf.cell_mut((cx, cy)) {
+                    cell.set_bg(theme.marker_b);
+                }
             }
         }
     }
@@ -154,16 +183,22 @@ fn render_marker_lines(
 /// Always renders exactly 4 segments from the bank's markers. Each segment gets
 /// a label like "1×2" (segment 1, 2 reps, forward) or "1<2" (reverse).
 /// Uses the spec-compliant `segment_bounds()` function.
+///
+/// `viewport_start` and `viewport_samples` mirror the parameters of
+/// `render_marker_lines`; at full view use `(0, total_file_samples)`.
+#[allow(clippy::too_many_arguments)]
 fn render_segment_labels(
     bank: &crate::engine::bext::MarkerBank,
     total_samples: u32,
+    viewport_start: u64,
+    viewport_samples: u64,
     x_start: u16,
     y_start: u16,
     wave_width: u16,
     buf: &mut Buffer,
     style: Style,
 ) {
-    if total_samples == 0 || wave_width == 0 {
+    if viewport_samples == 0 || wave_width == 0 || total_samples == 0 {
         return;
     }
 
@@ -179,8 +214,25 @@ fn render_segment_labels(
         let lo = seg.start.min(seg.end);
         let hi = seg.start.max(seg.end);
 
-        let col_start = ((lo as u64 * wave_width as u64) / total_samples as u64) as u16;
-        let col_end = ((hi as u64 * wave_width as u64) / total_samples as u64) as u16;
+        // Map lo and hi into the viewport; skip if midpoint outside window.
+        let col_start = sample_to_viewport_col(lo, viewport_start, viewport_samples, wave_width)
+            .unwrap_or(0);
+        let col_end = sample_to_viewport_col(hi, viewport_start, viewport_samples, wave_width)
+            .unwrap_or_else(|| {
+                // hi may be clipped at viewport end.
+                if (hi as u64) >= viewport_start + viewport_samples {
+                    wave_width.saturating_sub(1)
+                } else {
+                    0
+                }
+            });
+
+        // Skip if the entire segment is outside the viewport.
+        let mid_sample = (lo / 2).saturating_add(hi / 2);
+        if sample_to_viewport_col(mid_sample, viewport_start, viewport_samples, wave_width).is_none() {
+            continue;
+        }
+
         let span = col_end.saturating_sub(col_start);
 
         // Direction indicator: × for forward, < for reverse.
@@ -608,11 +660,47 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
         }
     };
 
-    let lines = if preview.peaks.is_empty() {
+    // --- Zoom peak selection. ---
+    // app.zoom_peaks is pre-computed by zoom_in/zoom_out (requires &mut App).
+    // When non-empty, substitute them for the waveform render; otherwise fall through
+    // to the full-file preview.peaks.
+    let peaks_for_render: &[u8] = if !app.zoom_peaks.is_empty() {
+        &app.zoom_peaks
+    } else {
+        &preview.peaks
+    };
+
+    // Zoom mapping parameters for marker overlay and transport indicator.
+    // viewport_start_samples: first sample of the visible window (0 at full view).
+    // effective_total_samples: number of samples spanned by the visible window.
+    let (effective_total_samples, viewport_start_samples): (u64, u64) =
+        if app.zoom_level > 0 {
+            if let Some(pcm) = preview.pcm.as_ref() {
+                use crate::engine::wav::NUM_ZOOM_COLS;
+                let total = pcm.samples.len();
+                let k_lvl0 = if total < NUM_ZOOM_COLS { 1 } else { total / NUM_ZOOM_COLS };
+                let k_current = (k_lvl0 >> app.zoom_level).max(1);
+                let viewport_s = (NUM_ZOOM_COLS * k_current) as u64;
+                let start_s = (app.zoom_offset * k_current) as u64;
+                (viewport_s, start_s)
+            } else {
+                let total = preview.audio_info.as_ref().map_or(0u32, |ai| {
+                    (ai.duration_secs * ai.sample_rate as f64) as u32
+                });
+                (total as u64, 0)
+            }
+        } else {
+            let total = preview.audio_info.as_ref().map_or(0u32, |ai| {
+                (ai.duration_secs * ai.sample_rate as f64) as u32
+            });
+            (total as u64, 0)
+        };
+
+    let lines = if peaks_for_render.is_empty() {
         let blank = "\u{2800}".repeat(wave_width);
         vec![blank; wave_rows]
     } else {
-        render_braille_waveform_height(&preview.peaks, wave_width, wave_rows)
+        render_braille_waveform_height(peaks_for_render, wave_width, wave_rows)
     };
 
     let positive_style = Style::default().fg(theme.waveform_positive);
@@ -624,18 +712,18 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
         buf.set_string(area.x, area.y + i as u16, line, style);
     }
 
-    // Marker lines and segment labels overlay (gated by markers_enabled).
-    if app.markers_enabled {
+    // Marker lines and segment labels overlay (gated by markers_visible).
+    if app.markers_visible {
     if let Some(markers) = &preview.markers {
         if !markers.is_empty() {
-            // Compute total samples from audio_info if available.
             let total_samples = preview.audio_info.as_ref().map_or(0u32, |ai| {
                 (ai.duration_secs * ai.sample_rate as f64) as u32
             });
-            if total_samples > 0 {
+            if total_samples > 0 && effective_total_samples > 0 {
                 render_marker_lines(
                     markers,
-                    total_samples,
+                    viewport_start_samples,
+                    effective_total_samples,
                     area.x,
                     area.y,
                     wave_width as u16,
@@ -652,6 +740,8 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
                 render_segment_labels(
                     bank,
                     total_samples,
+                    viewport_start_samples,
+                    effective_total_samples,
                     area.x,
                     area.y,
                     wave_width as u16,
@@ -661,7 +751,7 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
             }
         }
     }
-    } // markers_enabled
+    } // markers_visible
 
     // Playback cursor overlay.
     if app.playback_position() > 0.0 && wave_width > 0 {
@@ -679,17 +769,22 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     // Transport info line below waveform.
     let info_y = area.y + wave_rows as u16;
     if info_y < area.y + area.height {
+        let zoom_suffix = if app.zoom_level > 0 {
+            format!("  [{}×]", 1usize << app.zoom_level)
+        } else {
+            String::new()
+        };
         let info = match &preview.audio_info {
             Some(ai) => {
                 let name = preview.metadata.path.display();
                 let dur = format_duration(ai.duration_secs);
                 let rate = format!("{}Hz", ai.sample_rate);
                 let fmt = ai.format_display();
-                format!(" {name}  {dur}  {rate}  {fmt}")
+                format!(" {name}  {dur}  {rate}  {fmt}{zoom_suffix}")
             }
             None => {
                 let name = preview.metadata.path.display();
-                format!(" {name}")
+                format!(" {name}{zoom_suffix}")
             }
         };
         let truncated: String = info.chars().take(area.width as usize).collect();
@@ -1276,6 +1371,7 @@ mod tests {
             peaks: vec![128u8; 180],
             audio_info: None,
             markers: None,
+            pcm: None,
         });
         app.results = vec![default_table_row()];
 
@@ -1318,6 +1414,7 @@ mod tests {
                 channels: 2,
             }),
             markers: None,
+            pcm: None,
         });
         app.results = vec![default_table_row()];
 
@@ -1344,6 +1441,7 @@ mod tests {
             peaks: vec![128u8; 180],
             audio_info: None,
             markers: None,
+            pcm: None,
         });
         app.results = vec![default_table_row()];
 
@@ -1540,6 +1638,7 @@ mod tests {
             peaks: vec![128u8; 180],
             audio_info: None,
             markers: None,
+            pcm: None,
         });
         app.results = vec![default_table_row()];
 
@@ -1875,7 +1974,7 @@ mod tests {
                     },
                     bank_b: crate::engine::bext::MarkerBank::empty(),
                 };
-                render_marker_lines(&markers, 48000, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(&markers, 0, 48000 as u64, area.x, area.y, area.width, 8, buf, &theme);
 
                 // m1=0 should be at column 0.
                 let cell_0 = buf.cell((0, 0)).unwrap();
@@ -1904,7 +2003,7 @@ mod tests {
                     },
                     bank_b: crate::engine::bext::MarkerBank::empty(),
                 };
-                render_marker_lines(&markers, 48000, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(&markers, 0, 48000 as u64, area.x, area.y, area.width, 8, buf, &theme);
 
                 // m1=24000 → col 10 (midpoint of 20-wide).
                 // Top half (rows 0-3) should have marker_a bg.
@@ -1937,7 +2036,7 @@ mod tests {
                         m3: crate::engine::bext::MARKER_EMPTY, reps: [1, 0, 0, 1],
                     },
                 };
-                render_marker_lines(&markers, 48000, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(&markers, 0, 48000 as u64, area.x, area.y, area.width, 8, buf, &theme);
 
                 // m1=24000 → col 10.
                 // Top half (rows 0-3) should NOT have marker_b bg.
@@ -1969,7 +2068,7 @@ mod tests {
                     .flat_map(|x| (0..8u16).map(move |y| (x, y)))
                     .map(|(x, y)| buf.cell((x, y)).unwrap().bg)
                     .collect();
-                render_marker_lines(&markers, 48000, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(&markers, 0, 48000 as u64, area.x, area.y, area.width, 8, buf, &theme);
                 // Snapshot buffer state after — should be unchanged.
                 let after: Vec<_> = (0..20u16)
                     .flat_map(|x| (0..8u16).map(move |y| (x, y)))
@@ -1991,7 +2090,7 @@ mod tests {
                 let theme = Theme::default();
                 let markers = crate::engine::bext::MarkerConfig::preset_shot();
                 // Should not panic with total_samples=0.
-                render_marker_lines(&markers, 0, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(&markers, 0, 0 as u64, area.x, area.y, area.width, 8, buf, &theme);
             })
             .unwrap();
     }
@@ -2012,7 +2111,7 @@ mod tests {
                 bank.m2 = 24000;
                 bank.m3 = 36000;
                 bank.reps = [2, 3, 1, 1];
-                render_segment_labels(&bank, 48000, area.x, area.y, 80, buf, style);
+                render_segment_labels(&bank, 48000, 0, 48000 as u64, area.x, area.y, 80, buf, style);
 
                 // Check that content was rendered in the top row.
                 let top_row: String = (0..80).map(|x| {
@@ -2039,7 +2138,7 @@ mod tests {
                 let mut bank = crate::engine::bext::MarkerBank::empty();
                 bank.m1 = 24000;
                 bank.reps = [0, 1, 0, 0]; // Segment 1 is skipped (rep=0).
-                render_segment_labels(&bank, 48000, area.x, area.y, 80, buf, style);
+                render_segment_labels(&bank, 48000, 0, 48000 as u64, area.x, area.y, 80, buf, style);
 
                 let top_row: String = (0..80).map(|x| {
                     buf.cell((x, 0)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
@@ -2061,7 +2160,7 @@ mod tests {
                 let mut bank = crate::engine::bext::MarkerBank::empty();
                 bank.m1 = 24000;
                 bank.reps = [15, 1, 0, 0]; // Segment 1 is infinite (rep=15).
-                render_segment_labels(&bank, 48000, area.x, area.y, 80, buf, style);
+                render_segment_labels(&bank, 48000, 0, 48000 as u64, area.x, area.y, 80, buf, style);
 
                 let top_row: String = (0..80).map(|x| {
                     buf.cell((x, 0)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
@@ -2089,7 +2188,7 @@ mod tests {
                 bank.m3 = 36000;
                 bank.reps = [1, 1, 1, 1];
                 // Should not panic, labels just skipped.
-                render_segment_labels(&bank, 48000, area.x, area.y, 10, buf, style);
+                render_segment_labels(&bank, 48000, 0, 48000 as u64, area.x, area.y, 10, buf, style);
             })
             .unwrap();
     }
@@ -2104,7 +2203,7 @@ mod tests {
                 let style = Style::default();
                 let bank = crate::engine::bext::MarkerBank::empty();
                 // Should not panic.
-                render_segment_labels(&bank, 0, 0, 0, 40, buf, style);
+                render_segment_labels(&bank, 0, 0, 0 as u64, 0, 0, 40, buf, style);
             })
             .unwrap();
     }

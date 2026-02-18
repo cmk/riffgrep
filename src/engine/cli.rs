@@ -126,18 +126,20 @@ TUI KEYS (Normal mode):
   o/O     Sort ascending/desc     Space        Play/pause
   Left/Right   Seek +/-0.1s       S-Left/Right  Seek +/-1.0s
   a       Toggle auto-advance     t            Toggle time display
-  p       Toggle global loop      r            Reverse playback
-  m       Toggle mark             M            Clear all marks
-  f       Filter to marked        w            Save markers
-  b       Toggle bank A/B         B            Toggle bank sync
-  1/2/3   Set marker 1/2/3        x            Clear nearest marker
-  X       Clear bank markers      +/-          Inc/dec segment rep
-  Tab/S-Tab  Select next/prev marker
-  Ctrl-l  Toggle infinite loop    Ctrl-p       Toggle preview loop
+  p       Play segment            P            Play program
+  r       Reverse playback        m            Toggle mark
+  M       Clear all marks         f            Filter to marked
+  w       Save markers            b            Toggle bank A/B
+  B       Toggle bank sync        1/2/3        Set marker 1/2/3
+  x       Clear nearest marker    X            Clear bank markers
+  Ctrl-K/Ctrl-J  Inc/dec segment rep
+  Ctrl-L/Ctrl-H  Select next/prev marker
+  Ctrl-o  Toggle infinite loop    Ctrl-p       Toggle preview loop
   Ctrl-Right/Left  Nudge marker   Ctrl-S-Right/Left  Nudge large
   Ctrl-]/[  Snap to zero-crossing Ctrl-r       Reset markers
   Ctrl-e  Export markers CSV      Ctrl-i       Import markers CSV
-  Ctrl-Alt-m  Toggle markers display
+  Ctrl-Alt-M  Toggle markers display
+  =/−     Zoom in/out             0            Zoom reset
   g/G     Jump to top/bottom      q            Quit
   ?       Show keybinding help
  .

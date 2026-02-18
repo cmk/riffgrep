@@ -61,7 +61,12 @@ pub enum Action {
     MarkerReset,
     ExportMarkersCsv,
     ImportMarkersCsv,
-    ToggleMarkersEnabled,
+    ToggleMarkerDisplay,
+
+    // Waveform
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
 
     // Mode
     EnterInsertMode,
@@ -128,7 +133,10 @@ impl Action {
         Action::MarkerReset,
         Action::ExportMarkersCsv,
         Action::ImportMarkersCsv,
-        Action::ToggleMarkersEnabled,
+        Action::ToggleMarkerDisplay,
+        Action::ZoomIn,
+        Action::ZoomOut,
+        Action::ZoomReset,
         Action::EnterInsertMode,
         Action::EnterNormalMode,
         Action::SearchSubmit,
@@ -186,7 +194,10 @@ impl Action {
             "marker_reset" => Some(Action::MarkerReset),
             "export_markers_csv" => Some(Action::ExportMarkersCsv),
             "import_markers_csv" => Some(Action::ImportMarkersCsv),
-            "toggle_markers_enabled" => Some(Action::ToggleMarkersEnabled),
+            "toggle_marker_display" => Some(Action::ToggleMarkerDisplay),
+            "zoom_in" => Some(Action::ZoomIn),
+            "zoom_out" => Some(Action::ZoomOut),
+            "zoom_reset" => Some(Action::ZoomReset),
             "enter_insert_mode" => Some(Action::EnterInsertMode),
             "enter_normal_mode" => Some(Action::EnterNormalMode),
             "search_submit" => Some(Action::SearchSubmit),
@@ -246,7 +257,10 @@ impl Action {
             Action::MarkerReset => "marker_reset",
             Action::ExportMarkersCsv => "export_markers_csv",
             Action::ImportMarkersCsv => "import_markers_csv",
-            Action::ToggleMarkersEnabled => "toggle_markers_enabled",
+            Action::ToggleMarkerDisplay => "toggle_marker_display",
+            Action::ZoomIn => "zoom_in",
+            Action::ZoomOut => "zoom_out",
+            Action::ZoomReset => "zoom_reset",
             Action::EnterInsertMode => "enter_insert_mode",
             Action::EnterNormalMode => "enter_normal_mode",
             Action::SearchSubmit => "search_submit",
@@ -313,7 +327,10 @@ impl Action {
             Action::MarkerReset => "Reset markers to preset",
             Action::ExportMarkersCsv => "Export markers to CSV",
             Action::ImportMarkersCsv => "Import markers from CSV",
-            Action::ToggleMarkersEnabled => "Toggle markers display",
+            Action::ToggleMarkerDisplay => "Toggle marker lines on/off",
+            Action::ZoomIn => "Zoom waveform in",
+            Action::ZoomOut => "Zoom waveform out",
+            Action::ZoomReset => "Reset waveform zoom",
             Action::EnterInsertMode => "Enter search mode",
             Action::EnterNormalMode => "Exit search mode",
             Action::SearchSubmit => "Submit search",
@@ -371,7 +388,8 @@ impl Action {
             | Action::MarkerReset
             | Action::ExportMarkersCsv
             | Action::ImportMarkersCsv
-            | Action::ToggleMarkersEnabled => "Markers",
+            | Action::ToggleMarkerDisplay => "Markers",
+            Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => "Waveform",
             Action::EnterInsertMode
             | Action::EnterNormalMode
             | Action::SearchSubmit
@@ -562,13 +580,22 @@ impl Keymap {
         bindings.insert((KeyCode::Char('3'), none), Action::SetMarker3);
         bindings.insert((KeyCode::Char('x'), none), Action::ClearNearestMarker);
         bindings.insert((KeyCode::Char('X'), shift), Action::ClearBankMarkers);
-        bindings.insert((KeyCode::Char('+'), none), Action::IncrementRep);
-        bindings.insert((KeyCode::Char('='), none), Action::IncrementRep);
-        bindings.insert((KeyCode::Char('-'), none), Action::DecrementRep);
-        bindings.insert((KeyCode::Tab, none), Action::SelectNextMarker);
-        bindings.insert((KeyCode::BackTab, shift), Action::SelectPrevMarker);
-        bindings.insert((KeyCode::Char('l'), ctrl), Action::ToggleInfiniteLoop);
+        // IncrementRep → Ctrl-K  (freed = from ZoomIn)
+        bindings.insert((KeyCode::Char('k'), ctrl), Action::IncrementRep);
+        // DecrementRep → Ctrl-J  (freed - from ZoomOut)
+        bindings.insert((KeyCode::Char('j'), ctrl), Action::DecrementRep);
+        // SelectNextMarker → Ctrl-L  (freed from ToggleInfiniteLoop Ctrl-l conflict)
+        bindings.insert((KeyCode::Char('l'), ctrl), Action::SelectNextMarker);
+        // SelectPrevMarker → Ctrl-H
+        bindings.insert((KeyCode::Char('h'), ctrl), Action::SelectPrevMarker);
+        // ToggleInfiniteLoop → Ctrl-o  (freed Ctrl-l for SelectNextMarker)
+        bindings.insert((KeyCode::Char('o'), ctrl), Action::ToggleInfiniteLoop);
         bindings.insert((KeyCode::Char('p'), ctrl), Action::TogglePreviewLoop);
+
+        // Waveform zoom  (= freed from IncrementRep, - freed from DecrementRep)
+        bindings.insert((KeyCode::Char('='), none), Action::ZoomIn);
+        bindings.insert((KeyCode::Char('-'), none), Action::ZoomOut);
+        bindings.insert((KeyCode::Char('0'), none), Action::ZoomReset);
         bindings.insert((KeyCode::Right, ctrl), Action::NudgeMarkerForwardSmall);
         bindings.insert((KeyCode::Left, ctrl), Action::NudgeMarkerBackwardSmall);
         bindings.insert(
@@ -586,7 +613,7 @@ impl Keymap {
         bindings.insert((KeyCode::Char('i'), ctrl), Action::ImportMarkersCsv);
         bindings.insert(
             (KeyCode::Char('m'), KeyModifiers::CONTROL | KeyModifiers::ALT),
-            Action::ToggleMarkersEnabled,
+            Action::ToggleMarkerDisplay,
         );
 
         // Mode
@@ -697,7 +724,7 @@ impl Keymap {
         }
 
         // Return in a stable category order.
-        let order = ["Navigation", "Sort", "Playback", "Marks", "Markers", "Mode", "Selection", "App"];
+        let order = ["Navigation", "Sort", "Playback", "Marks", "Markers", "Waveform", "Mode", "Selection", "App"];
         let mut result = Vec::new();
         for &cat in &order {
             if let Some(entries) = groups.remove(cat) {
@@ -733,7 +760,9 @@ mod tests {
 
     #[test]
     fn test_all_count_matches_variants() {
-        assert_eq!(Action::ALL.len(), 53);
+        // 53 Sprint 11 + 3 zoom (ZoomIn/ZoomOut/ZoomReset) = 56.
+        // ToggleMarkersEnabled was renamed to ToggleMarkerDisplay (no net change).
+        assert_eq!(Action::ALL.len(), 56);
     }
 
     #[test]
@@ -922,7 +951,7 @@ mod tests {
 
     #[test]
     fn test_action_all_count_final() {
-        assert_eq!(Action::ALL.len(), 53, "Sprint 11 final count should be 53");
+        assert_eq!(Action::ALL.len(), 56, "Sprint 12 final count should be 56 (53+3 zoom)");
     }
 
     #[test]
@@ -962,7 +991,7 @@ mod tests {
             Action::MarkerReset,
             Action::ExportMarkersCsv,
             Action::ImportMarkersCsv,
-            Action::ToggleMarkersEnabled,
+            Action::ToggleMarkerDisplay,
             Action::ReversePlayback,
         ];
         for action in new_actions {
@@ -973,6 +1002,93 @@ mod tests {
                 "round-trip failed for {name}"
             );
         }
+    }
+
+    // --- Sprint 12 tests ---
+
+    #[test]
+    fn test_zoom_actions_roundtrip() {
+        for action in [Action::ZoomIn, Action::ZoomOut, Action::ZoomReset] {
+            let name = action.name();
+            assert_eq!(Action::from_name(name), Some(action), "round-trip failed for {name}");
+        }
+    }
+
+    #[test]
+    fn test_zoom_actions_category() {
+        assert_eq!(Action::ZoomIn.category(), "Waveform");
+        assert_eq!(Action::ZoomOut.category(), "Waveform");
+        assert_eq!(Action::ZoomReset.category(), "Waveform");
+    }
+
+    #[test]
+    fn test_select_next_marker_bound_to_ctrl_l() {
+        let km = Keymap::default_keymap();
+        let ctrl_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(km.resolve(ctrl_l), Some(Action::SelectNextMarker));
+    }
+
+    #[test]
+    fn test_select_prev_marker_bound_to_ctrl_h() {
+        let km = Keymap::default_keymap();
+        let ctrl_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(km.resolve(ctrl_h), Some(Action::SelectPrevMarker));
+    }
+
+    #[test]
+    fn test_toggle_infinite_loop_bound_to_ctrl_o() {
+        let km = Keymap::default_keymap();
+        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(km.resolve(ctrl_o), Some(Action::ToggleInfiniteLoop));
+    }
+
+    #[test]
+    fn test_old_tab_binding_unbound() {
+        let km = Keymap::default_keymap();
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(km.resolve(tab), None, "TAB should no longer fire SelectNextMarker");
+    }
+
+    #[test]
+    fn test_increment_rep_bound_to_ctrl_k() {
+        let km = Keymap::default_keymap();
+        let ctrl_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(km.resolve(ctrl_k), Some(Action::IncrementRep));
+    }
+
+    #[test]
+    fn test_decrement_rep_bound_to_ctrl_j() {
+        let km = Keymap::default_keymap();
+        let ctrl_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(km.resolve(ctrl_j), Some(Action::DecrementRep));
+    }
+
+    #[test]
+    fn test_zoom_in_bound_to_equals() {
+        let km = Keymap::default_keymap();
+        let eq = KeyEvent::new(KeyCode::Char('='), KeyModifiers::NONE);
+        assert_eq!(km.resolve(eq), Some(Action::ZoomIn));
+    }
+
+    #[test]
+    fn test_zoom_out_bound_to_minus() {
+        let km = Keymap::default_keymap();
+        let minus = KeyEvent::new(KeyCode::Char('-'), KeyModifiers::NONE);
+        assert_eq!(km.resolve(minus), Some(Action::ZoomOut));
+    }
+
+    #[test]
+    fn test_zoom_reset_bound_to_zero() {
+        let km = Keymap::default_keymap();
+        let zero = KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE);
+        assert_eq!(km.resolve(zero), Some(Action::ZoomReset));
+    }
+
+    #[test]
+    fn test_toggle_marker_display_roundtrip() {
+        let name = Action::ToggleMarkerDisplay.name();
+        assert_eq!(name, "toggle_marker_display");
+        assert_eq!(Action::from_name(name), Some(Action::ToggleMarkerDisplay));
     }
 
     #[test]
@@ -1008,9 +1124,9 @@ mod tests {
         let big_b = KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT);
         assert_eq!(km.resolve(big_b), Some(Action::ToggleBankSync));
 
-        // Tab → SelectNextMarker
-        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(km.resolve(tab), Some(Action::SelectNextMarker));
+        // Ctrl-L → SelectNextMarker (Tab was rebound in Sprint 12)
+        let ctrl_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(km.resolve(ctrl_l), Some(Action::SelectNextMarker));
 
         // Ctrl-r → MarkerReset
         let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);

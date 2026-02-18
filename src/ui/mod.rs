@@ -25,6 +25,20 @@ pub struct PreviewData {
     pub audio_info: Option<crate::engine::wav::AudioInfo>,
     /// Marker configuration from BEXT v2, if available.
     pub markers: Option<crate::engine::bext::MarkerConfig>,
+    /// Raw 16-bit PCM samples for waveform zoom (None for non-16-bit files).
+    pub pcm: Option<crate::engine::wav::PcmData>,
+}
+
+impl Default for PreviewData {
+    fn default() -> Self {
+        Self {
+            metadata: UnifiedMetadata::default(),
+            peaks: Vec::new(),
+            audio_info: None,
+            markers: None,
+            pcm: None,
+        }
+    }
 }
 
 /// Events that drive the TUI state machine.
@@ -209,12 +223,27 @@ pub struct App {
     pub preview_loop: bool,
     /// Stashed marker config for preview loop restore.
     pub preview_loop_stash: Option<crate::engine::bext::MarkerConfig>,
-    /// Whether marker lines are visible on the waveform.
-    pub markers_enabled: bool,
+    /// Whether marker lines and segment labels are visible on the waveform.
+    ///
+    /// When false, marker-editing actions are no-ops (status shows how to re-enable).
+    pub markers_visible: bool,
     /// Nudge small: number of zero-crossings for small nudge.
     pub marker_nudge_small: u32,
     /// Nudge large: number of zero-crossings for large nudge.
     pub marker_nudge_large: u32,
+    /// Current waveform zoom level (0 = full view, 1 = 2×, 2 = 4×, … 4 = 16×).
+    pub zoom_level: usize,
+    /// First column of the zoom viewport in the current zoom level's resolution.
+    pub zoom_offset: usize,
+    /// Sample position used as zoom center on the last ZoomIn.
+    pub zoom_center: Option<u32>,
+    /// JIT peak cache for zoom; recreated on file change or ZoomReset.
+    pub zoom_cache: Option<crate::engine::wav::ZoomCache>,
+    /// Pre-computed visible zoom peaks (180 values); empty when zoom_level == 0.
+    ///
+    /// Updated eagerly by `zoom_in()` / `zoom_out()` / `zoom_reset()` so that
+    /// `render_waveform_panel` can read them via `&App` without needing `&mut App`.
+    pub zoom_peaks: Vec<u8>,
 }
 
 impl App {
@@ -268,9 +297,14 @@ impl App {
             selected_marker: None,
             preview_loop: false,
             preview_loop_stash: None,
-            markers_enabled: true,
+            markers_visible: true,
             marker_nudge_small: 1,
             marker_nudge_large: 10,
+            zoom_level: 0,
+            zoom_offset: 0,
+            zoom_center: None,
+            zoom_cache: None,
+            zoom_peaks: Vec::new(),
         }
     }
 
@@ -284,9 +318,11 @@ impl App {
             return;
         }
 
-        // T14: When markers are disabled, marker-editing actions are no-ops.
-        if !self.markers_enabled && action.is_marker_edit() {
-            self.set_status("Markers disabled".to_string());
+        // When markers are hidden, marker-editing actions are no-ops.
+        // ToggleBank and ToggleBankSync are also suppressed when markers are hidden.
+        let is_bank_toggle = matches!(action, Action::ToggleBank | Action::ToggleBankSync);
+        if !self.markers_visible && (action.is_marker_edit() || is_bank_toggle) {
+            self.set_status("Enable markers with Ctrl-Alt-M".to_string());
             return;
         }
 
@@ -336,11 +372,10 @@ impl App {
             Action::MarkerReset => self.marker_reset(),
             Action::ExportMarkersCsv => self.export_markers_csv(),
             Action::ImportMarkersCsv => self.import_markers_csv(),
-            Action::ToggleMarkersEnabled => {
-                self.markers_enabled = !self.markers_enabled;
-                let state = if self.markers_enabled { "on" } else { "off" };
-                self.set_status(format!("Markers {state}"));
-            }
+            Action::ToggleMarkerDisplay => self.toggle_marker_display(),
+            Action::ZoomIn => self.zoom_in(),
+            Action::ZoomOut => self.zoom_out(),
+            Action::ZoomReset => self.zoom_reset(),
             Action::EnterInsertMode => self.enter_insert_mode(),
             Action::EnterNormalMode => self.enter_normal_mode(),
             Action::SearchSubmit => {
@@ -515,12 +550,17 @@ impl App {
             self.adjust_scroll();
             // Stop playback when selection changes.
             self.stop_playback();
-            // Reset marker selection and preview loop on file change.
+            // Reset marker selection, preview loop, and zoom on file change.
             self.selected_marker = None;
             if self.preview_loop {
                 self.preview_loop = false;
                 self.preview_loop_stash = None;
             }
+            self.zoom_level = 0;
+            self.zoom_offset = 0;
+            self.zoom_center = None;
+            self.zoom_cache = None;
+            self.zoom_peaks.clear();
         }
     }
 
@@ -1025,22 +1065,27 @@ impl App {
         Some(3)
     }
 
-    /// Adjust repetition count for the segment containing the playback cursor.
-    /// When stopped, defaults to segment 0.
+    /// Adjust repetition count for the selected segment.
+    ///
+    /// Uses `selected_marker` when set (same pattern as `toggle_infinite_loop`),
+    /// falling back to the playback cursor position or segment 0 when stopped.
     fn adjust_rep(&mut self, delta: i8) {
-        let seg = match self.current_segment_index() {
-            Some(s) if s < 4 => s,
-            None => {
-                if self.segments().is_empty() {
-                    self.set_status("No segments".to_string());
+        let seg = match self.selected_marker {
+            Some(idx) => idx, // selected_marker: 0=SOF→seg0, 1=m1→seg1, etc.
+            None => match self.current_segment_index() {
+                Some(s) if s < 4 => s,
+                None => {
+                    if self.segments().is_empty() {
+                        self.set_status("No segments".to_string());
+                        return;
+                    }
+                    0
+                }
+                _ => {
+                    self.set_status("No active segment".to_string());
                     return;
                 }
-                0
-            }
-            _ => {
-                self.set_status("No active segment".to_string());
-                return;
-            }
+            },
         };
 
         self.ensure_markers();
@@ -1656,6 +1701,229 @@ impl App {
         self.set_status("Reverse playback not yet implemented".to_string());
     }
 
+    // --- Sprint 12: ToggleMarkerDisplay ---
+
+    /// Toggle marker line display on/off.
+    ///
+    /// When turned off, marker overlays are hidden and marker-editing actions
+    /// become no-ops. In-memory marker data is preserved so toggling back on
+    /// restores the full marker state without a disk read.
+    fn toggle_marker_display(&mut self) {
+        self.markers_visible = !self.markers_visible;
+        if !self.markers_visible {
+            self.selected_marker = None;
+            self.set_status("Markers hidden — Ctrl-Alt-M to restore".to_string());
+        } else {
+            self.set_status("Markers visible".to_string());
+        }
+    }
+
+    // --- Sprint 12: Zoom Actions ---
+
+    /// Zoom in one level (2× per level, up to 16×).
+    ///
+    /// Centers the viewport on the selected marker (if any) or on the current
+    /// playback fraction. Requires PCM data; silently returns "No audio data"
+    /// if pcm is None.
+    fn zoom_in(&mut self) {
+        use crate::engine::wav::{MAX_ZOOM_LEVEL, NUM_ZOOM_COLS, ZoomCache};
+
+        if self.playback_state() == PlaybackState::Playing {
+            self.set_status("Stop playback before zooming".to_string());
+            return;
+        }
+
+        let pcm_len = self
+            .preview
+            .as_ref()
+            .and_then(|p| p.pcm.as_ref())
+            .map(|p| p.samples.len());
+
+        if pcm_len.is_none() {
+            self.set_status("No audio data for zoom".to_string());
+            return;
+        }
+        let total_samples = pcm_len.unwrap();
+
+        if self.zoom_level >= MAX_ZOOM_LEVEL {
+            self.set_status(format!("Maximum zoom ({}×)", 1usize << MAX_ZOOM_LEVEL));
+            return;
+        }
+
+        // Determine zoom center (in samples).
+        let pos_fraction = self.playback_position() as f64;
+        let zoom_center: u32 = if self.markers_visible {
+            // Use selected_marker position if a real marker (idx 1-3) is chosen.
+            self.selected_marker
+                .filter(|&i| i > 0)
+                .and_then(|i| {
+                    self.preview
+                        .as_ref()
+                        .and_then(|p| p.markers.as_ref())
+                        .map(|mc| {
+                            let bank = if self.active_bank == Bank::A {
+                                mc.bank_a
+                            } else {
+                                mc.bank_b
+                            };
+                            match i {
+                                1 => bank.m1,
+                                2 => bank.m2,
+                                _ => bank.m3,
+                            }
+                        })
+                        .filter(|&m| m != crate::engine::bext::MARKER_EMPTY)
+                })
+                .unwrap_or_else(|| (pos_fraction * total_samples as f64) as u32)
+        } else {
+            (pos_fraction * total_samples as f64) as u32
+        };
+
+        self.zoom_center = Some(zoom_center);
+        self.zoom_level += 1;
+
+        // Initialise ZoomCache lazily.
+        if self.zoom_cache.is_none() {
+            if let Some(preview) = &self.preview {
+                // Use first PEAK_COUNT elements (left-channel peaks from stereo BEXT peaks).
+                let peaks: Vec<u8> = preview
+                    .peaks
+                    .iter()
+                    .copied()
+                    .take(NUM_ZOOM_COLS)
+                    .collect();
+                self.zoom_cache = Some(ZoomCache::new(&peaks));
+            }
+        }
+
+        // Recompute viewport offset to keep zoom_center centred.
+        let k_lvl0 = if total_samples < NUM_ZOOM_COLS {
+            1usize
+        } else {
+            total_samples / NUM_ZOOM_COLS
+        };
+        let k_current = (k_lvl0 >> self.zoom_level).max(1);
+        let total_cols = NUM_ZOOM_COLS << self.zoom_level;
+        let center_col = (zoom_center as usize / k_current).min(total_cols.saturating_sub(1));
+        self.zoom_offset = center_col
+            .saturating_sub(NUM_ZOOM_COLS / 2)
+            .min(total_cols.saturating_sub(NUM_ZOOM_COLS));
+
+        self.update_zoom_peaks();
+        let mag = 1usize << self.zoom_level;
+        self.set_status(format!("Zoom {mag}×"));
+    }
+
+    /// Zoom out one level. Returns to full view at level 0.
+    fn zoom_out(&mut self) {
+        use crate::engine::wav::NUM_ZOOM_COLS;
+
+        if self.zoom_level == 0 {
+            self.set_status("Already at full view".to_string());
+            return;
+        }
+
+        self.zoom_level -= 1;
+
+        if self.zoom_level == 0 {
+            self.zoom_offset = 0;
+            self.zoom_peaks.clear();
+            self.set_status("Full view".to_string());
+            return;
+        }
+
+        // Re-centre on zoom_center.
+        if let Some(center) = self.zoom_center {
+            if let Some(preview) = &self.preview {
+                let total_samples = preview
+                    .pcm
+                    .as_ref()
+                    .map(|p| p.samples.len())
+                    .unwrap_or(1);
+                let k_lvl0 = if total_samples < NUM_ZOOM_COLS {
+                    1usize
+                } else {
+                    total_samples / NUM_ZOOM_COLS
+                };
+                let k_current = (k_lvl0 >> self.zoom_level).max(1);
+                let total_cols = NUM_ZOOM_COLS << self.zoom_level;
+                let center_col =
+                    (center as usize / k_current).min(total_cols.saturating_sub(1));
+                self.zoom_offset = center_col
+                    .saturating_sub(NUM_ZOOM_COLS / 2)
+                    .min(total_cols.saturating_sub(NUM_ZOOM_COLS));
+            }
+        }
+
+        self.update_zoom_peaks();
+        let mag = 1usize << self.zoom_level;
+        self.set_status(format!("Zoom {mag}×"));
+    }
+
+    /// Reset zoom to full view (level 0, offset 0, cache freed).
+    fn zoom_reset(&mut self) {
+        self.zoom_level = 0;
+        self.zoom_offset = 0;
+        self.zoom_center = None;
+        self.zoom_cache = None;
+        self.zoom_peaks.clear();
+        self.set_status("Full view".to_string());
+    }
+
+    /// Recompute `zoom_peaks` from the ZoomCache at the current level and offset.
+    ///
+    /// Must be called after any change to `zoom_level`, `zoom_offset`, or `zoom_cache`.
+    /// When `zoom_level == 0`, clears `zoom_peaks` so the renderer falls back to
+    /// the full-file overview peaks.
+    fn update_zoom_peaks(&mut self) {
+        use crate::engine::wav::NUM_ZOOM_COLS;
+
+        if self.zoom_level == 0 {
+            self.zoom_peaks.clear();
+            return;
+        }
+
+        let pcm_samples: Option<Vec<i16>> = self
+            .preview
+            .as_ref()
+            .and_then(|p| p.pcm.as_ref())
+            .map(|p| p.samples.clone());
+
+        let pcm_len = match &pcm_samples {
+            Some(s) => s.len(),
+            None => {
+                self.zoom_peaks.clear();
+                return;
+            }
+        };
+
+        let k_lvl0 = if pcm_len < NUM_ZOOM_COLS { 1 } else { pcm_len / NUM_ZOOM_COLS };
+
+        // Ensure the cache is initialised.
+        if self.zoom_cache.is_none() {
+            if let Some(preview) = &self.preview {
+                let peaks: Vec<u8> = preview
+                    .peaks
+                    .iter()
+                    .copied()
+                    .take(NUM_ZOOM_COLS)
+                    .collect();
+                self.zoom_cache = Some(crate::engine::wav::ZoomCache::new(&peaks));
+            }
+        }
+
+        if let (Some(cache), Some(samples)) = (&mut self.zoom_cache, pcm_samples) {
+            self.zoom_peaks = cache.get_visible_peaks(
+                self.zoom_level,
+                self.zoom_offset,
+                &samples,
+                k_lvl0,
+            );
+        } else {
+            self.zoom_peaks.clear();
+        }
+    }
+
 }
 
 /// Sort key for column-based sorting.
@@ -2051,11 +2319,21 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
                     } else {
                         search::load_audio_info(&row.meta.path).await
                     };
+                    // Load raw PCM samples for zoom support (16-bit files only).
+                    // Runs on blocking thread to avoid stalling the async executor.
+                    let pcm_path = row.meta.path.clone();
+                    let pcm = tokio::task::spawn_blocking(move || {
+                        crate::engine::wav::load_pcm_data(&pcm_path).ok()
+                    })
+                    .await
+                    .unwrap_or(None);
+
                     app.on_preview_ready(PreviewData {
                         metadata: row.meta,
                         peaks: peaks.unwrap_or_default(),
                         audio_info,
                         markers: row.markers,
+                        pcm,
                     });
                 }
             }
@@ -2399,6 +2677,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: None,
+            pcm: None,
         });
         assert!(!app.played.contains(&path), "preview should not add to played set");
     }
@@ -3158,6 +3437,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(markers),
+            pcm: None,
         };
         assert!(preview.markers.is_some());
         assert_eq!(preview.markers.unwrap(), markers);
@@ -3170,6 +3450,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: None,
+            pcm: None,
         };
         assert!(preview.markers.is_none());
     }
@@ -3199,6 +3480,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(markers),
+            pcm: None,
         });
         assert!(app.preview.is_some());
         assert_eq!(app.preview.unwrap().markers, Some(markers));
@@ -3217,6 +3499,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(markers),
+            pcm: None,
         });
         assert!(app.preview.as_ref().unwrap().markers.is_some());
 
@@ -3229,6 +3512,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: None,
+            pcm: None,
         });
         assert!(app.preview.as_ref().unwrap().markers.is_none());
     }
@@ -3255,6 +3539,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(custom),
+            pcm: None,
         });
         assert_eq!(app.current_markers_or_default(), custom);
     }
@@ -3309,6 +3594,7 @@ mod tests {
                 channels: 1,
             }),
             markers: None,
+            pcm: None,
         });
         let markers = app.current_markers_or_default();
         let expected = crate::engine::bext::MarkerConfig::preset_loop(240000);
@@ -3329,6 +3615,7 @@ mod tests {
                 channels: 1,
             }),
             markers: None,
+            pcm: None,
         });
         let markers = app.current_markers_or_default();
         assert_eq!(
@@ -3367,6 +3654,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(markers),
+            pcm: None,
         });
         // Bank A is default.
         let bank_a = app.active_bank_mut().unwrap();
@@ -3392,6 +3680,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: None,
+            pcm: None,
         });
         assert!(app.active_bank_mut().is_none());
     }
@@ -3411,6 +3700,7 @@ mod tests {
                 channels: 1,
             }),
             markers: None,
+            pcm: None,
         });
         assert_eq!(app.total_samples(), Some(48000));
     }
@@ -3430,6 +3720,7 @@ mod tests {
                 channels: 1,
             }),
             markers: None,
+            pcm: None,
         });
         assert!(app.preview.as_ref().unwrap().markers.is_none());
         app.ensure_markers();
@@ -3448,6 +3739,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(custom),
+            pcm: None,
         });
         app.ensure_markers();
         assert_eq!(app.preview.as_ref().unwrap().markers, Some(custom));
@@ -3464,6 +3756,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(markers),
+            pcm: None,
         });
         // With bank_sync=true (default), clears both banks.
         app.clear_bank_markers();
@@ -3482,6 +3775,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(markers),
+            pcm: None,
         });
         app.clear_bank_markers();
         let bank_a = app.active_bank_ref().unwrap();
@@ -3516,6 +3810,7 @@ mod tests {
                 channels: 1,
             }),
             markers: Some(markers),
+            pcm: None,
         });
         let segs = app.segments();
         assert_eq!(segs.len(), 4);
@@ -3548,6 +3843,7 @@ mod tests {
                 bank_a: crate::engine::bext::MarkerBank::empty(),
                 bank_b: crate::engine::bext::MarkerBank::empty(),
             }),
+            pcm: None,
         });
         let segs = app.segments();
         // Always exactly 4 segments. EMPTY markers collapse to zero-length.
@@ -3903,6 +4199,7 @@ mod tests {
                 channels: 1,
             }),
             markers: Some(markers),
+            pcm: None,
         });
         // Dispatch a marker edit when stopped — should not be guarded.
         app.dispatch(Action::ClearBankMarkers);
@@ -3911,23 +4208,23 @@ mod tests {
     }
 
     #[test]
-    fn test_markers_enabled_toggle() {
+    fn test_markers_visible_toggle() {
         let mut app = App::new(Theme::default());
-        assert!(app.markers_enabled);
-        app.dispatch(actions::Action::ToggleMarkersEnabled);
-        assert!(!app.markers_enabled);
-        assert_eq!(app.status_message.as_deref(), Some("Markers off"));
-        app.dispatch(actions::Action::ToggleMarkersEnabled);
-        assert!(app.markers_enabled);
-        assert_eq!(app.status_message.as_deref(), Some("Markers on"));
+        assert!(app.markers_visible);
+        app.dispatch(actions::Action::ToggleMarkerDisplay);
+        assert!(!app.markers_visible);
+        assert_eq!(app.status_message.as_deref(), Some("Markers hidden — Ctrl-Alt-M to restore"));
+        app.dispatch(actions::Action::ToggleMarkerDisplay);
+        assert!(app.markers_visible);
+        assert_eq!(app.status_message.as_deref(), Some("Markers visible"));
     }
 
     #[test]
-    fn test_markers_disabled_blocks_edits() {
+    fn test_markers_hidden_blocks_edits() {
         let mut app = App::new(Theme::default());
-        app.markers_enabled = false;
+        app.markers_visible = false;
         app.dispatch(actions::Action::ClearBankMarkers);
-        assert_eq!(app.status_message.as_deref(), Some("Markers disabled"));
+        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-M"));
     }
 
     #[test]
@@ -3965,6 +4262,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(markers),
+            pcm: None,
         });
         // Should have SOF + m1 + m2 + m3 = 4 markers.
         app.select_next_marker(); // 0 → 0 (starts from beginning)
@@ -3995,6 +4293,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(markers),
+            pcm: None,
         });
         app.selected_marker = Some(0);
         app.toggle_infinite_loop();
@@ -4021,6 +4320,7 @@ mod tests {
                 channels: 1,
             }),
             markers: Some(markers),
+            pcm: None,
         });
         let original = app.current_markers_or_default();
         app.toggle_preview_loop();
@@ -4047,6 +4347,7 @@ mod tests {
                 channels: 1,
             }),
             markers: None,
+            pcm: None,
         });
         app.marker_reset();
         assert_eq!(app.status_message.as_deref(), Some("Markers reset to preset"));
@@ -4083,6 +4384,7 @@ mod tests {
             peaks: vec![],
             audio_info: None,
             markers: Some(markers),
+            pcm: None,
         });
 
         app.export_markers_csv();
@@ -4124,5 +4426,355 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.snap_zero_crossing(true);
         assert_eq!(app.status_message.as_deref(), Some("Select a marker first (Tab)"));
+    }
+
+    // --- Sprint 12: Zoom state-machine tests ---
+
+    /// Helper: build a PreviewData with a real PcmData payload (1-second 48kHz mono sine).
+    fn preview_with_pcm(sample_rate: u32, duration_secs: f64) -> PreviewData {
+        use crate::engine::wav::{AudioInfo, PcmData, PEAK_COUNT};
+        let total_samples = (sample_rate as f64 * duration_secs) as usize;
+        // Simple non-zero waveform so peaks are non-trivial.
+        let samples: Vec<i16> = (0..total_samples)
+            .map(|i| ((i as f64 * 0.01).sin() * 16000.0) as i16)
+            .collect();
+        // Fake peaks: downsample to PEAK_COUNT amplitude values.
+        let k = (total_samples / PEAK_COUNT).max(1);
+        let peaks: Vec<u8> = (0..PEAK_COUNT)
+            .map(|col| {
+                let start = col * k;
+                let end = (start + k).min(samples.len());
+                samples[start..end]
+                    .iter()
+                    .map(|&s| (s.saturating_abs() as u16 / 128) as u8)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        PreviewData {
+            metadata: UnifiedMetadata {
+                path: std::path::PathBuf::from("/test/zoom.wav"),
+                ..Default::default()
+            },
+            peaks: peaks.into_iter().chain(std::iter::repeat(0).take(PEAK_COUNT)).collect(),
+            audio_info: Some(AudioInfo {
+                duration_secs,
+                sample_rate,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: None,
+            pcm: Some(PcmData { samples }),
+        }
+    }
+
+    #[test]
+    fn test_zoom_in_requires_pcm() {
+        // Without PCM, zoom_in must refuse.
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![128u8; 360],
+            audio_info: None,
+            markers: None,
+            pcm: None,
+        });
+        app.zoom_in();
+        assert_eq!(app.zoom_level, 0, "level unchanged when pcm is None");
+        assert_eq!(app.status_message.as_deref(), Some("No audio data for zoom"));
+    }
+
+    #[test]
+    fn test_zoom_in_increments_level() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.zoom_in();
+        assert_eq!(app.zoom_level, 1);
+        assert_eq!(app.status_message.as_deref(), Some("Zoom 2×"));
+    }
+
+    #[test]
+    fn test_zoom_in_populates_zoom_peaks() {
+        use crate::engine::wav::NUM_ZOOM_COLS;
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        assert!(app.zoom_peaks.is_empty(), "zoom_peaks should be empty before first zoom");
+        app.zoom_in();
+        assert_eq!(app.zoom_peaks.len(), NUM_ZOOM_COLS,
+            "zoom_peaks should have {} values after zoom_in", NUM_ZOOM_COLS);
+    }
+
+    #[test]
+    fn test_zoom_out_decrements_level() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.zoom_in();
+        assert_eq!(app.zoom_level, 1);
+        app.zoom_out();
+        assert_eq!(app.zoom_level, 0);
+        assert_eq!(app.status_message.as_deref(), Some("Full view"));
+    }
+
+    #[test]
+    fn test_zoom_out_clears_zoom_peaks_at_level_0() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.zoom_in();
+        assert!(!app.zoom_peaks.is_empty());
+        app.zoom_out();
+        assert_eq!(app.zoom_level, 0);
+        assert!(app.zoom_peaks.is_empty(), "zoom_peaks cleared when returning to full view");
+    }
+
+    #[test]
+    fn test_zoom_out_at_level_0_noop() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.zoom_out();
+        assert_eq!(app.zoom_level, 0);
+        assert_eq!(app.status_message.as_deref(), Some("Already at full view"));
+    }
+
+    #[test]
+    fn test_zoom_reset_returns_to_zero() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.zoom_in();
+        app.zoom_in();
+        assert_eq!(app.zoom_level, 2);
+        app.zoom_reset();
+        assert_eq!(app.zoom_level, 0);
+        assert_eq!(app.zoom_offset, 0);
+        assert!(app.zoom_center.is_none());
+        assert!(app.zoom_cache.is_none());
+        assert!(app.zoom_peaks.is_empty());
+        assert_eq!(app.status_message.as_deref(), Some("Full view"));
+    }
+
+    #[test]
+    fn test_zoom_blocked_at_max_level() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        for _ in 0..crate::engine::wav::MAX_ZOOM_LEVEL {
+            app.zoom_in();
+        }
+        assert_eq!(app.zoom_level, crate::engine::wav::MAX_ZOOM_LEVEL);
+        app.zoom_in();
+        assert_eq!(app.zoom_level, crate::engine::wav::MAX_ZOOM_LEVEL, "must not exceed MAX");
+        let max_zoom_str = format!("Maximum zoom ({}×)", 1usize << crate::engine::wav::MAX_ZOOM_LEVEL);
+        assert_eq!(app.status_message.as_deref(), Some(max_zoom_str.as_str()));
+    }
+
+    #[test]
+    fn test_zoom_resets_on_file_change() {
+        let mut app = make_app_with_results(3);
+        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.zoom_in();
+        assert_eq!(app.zoom_level, 1);
+        app.move_selection(1);
+        assert_eq!(app.zoom_level, 0, "zoom resets on file change");
+        assert!(app.zoom_peaks.is_empty());
+        assert!(app.zoom_cache.is_none());
+    }
+
+    #[test]
+    fn test_zoom_in_multiple_steps_increase_level() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(preview_with_pcm(48000, 2.0));
+        app.zoom_in();
+        app.zoom_in();
+        assert_eq!(app.zoom_level, 2);
+        assert_eq!(app.status_message.as_deref(), Some("Zoom 4×"));
+        assert_eq!(app.zoom_peaks.len(), crate::engine::wav::NUM_ZOOM_COLS);
+    }
+
+    #[test]
+    fn test_zoom_in_centers_on_selected_marker() {
+        use crate::engine::bext::{MarkerBank, MarkerConfig, MARKER_EMPTY};
+        let mut app = App::new(Theme::default());
+        let p = preview_with_pcm(48000, 1.0);
+        let total = p.pcm.as_ref().unwrap().samples.len() as u32;
+        // Put marker 2 at the 75% point.
+        let m2_pos = (total as f64 * 0.75) as u32;
+        let mut preview = p;
+        preview.markers = Some(MarkerConfig {
+            bank_a: MarkerBank {
+                m1: total / 4,
+                m2: m2_pos,
+                m3: MARKER_EMPTY,
+                reps: [1, 1, 0, 1],
+            },
+            bank_b: MarkerBank::empty(),
+        });
+        app.on_preview_ready(preview);
+        app.selected_marker = Some(2); // select marker 2
+        app.zoom_in();
+        // zoom_center should be at marker 2's position.
+        assert_eq!(app.zoom_center, Some(m2_pos),
+            "zoom should centre on selected marker 2 at sample {m2_pos}");
+    }
+
+    #[test]
+    fn test_zoom_in_falls_back_to_playhead_when_no_marker_selected() {
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.selected_marker = None;
+        // No playback active, so position_fraction() == 0.0.
+        app.zoom_in();
+        // zoom_center should be at sample 0 (0% of file).
+        assert_eq!(app.zoom_center, Some(0));
+    }
+
+    // --- Sprint 12: Rep-fix tests ---
+
+    /// Give an app a fully-set-up preview with markers so adjust_rep has real segments.
+    fn app_with_preview_and_markers() -> App {
+        use crate::engine::bext::{MarkerBank, MarkerConfig};
+        let mut app = App::new(Theme::default());
+        let markers = MarkerConfig {
+            bank_a: MarkerBank {
+                m1: 12000,
+                m2: 24000,
+                m3: 36000,
+                reps: [1, 1, 1, 1],
+            },
+            bank_b: MarkerBank::empty(),
+        };
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata {
+                path: std::path::PathBuf::from("/test/reps.wav"),
+                ..Default::default()
+            },
+            peaks: vec![0u8; 360],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 1.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: Some(markers),
+            pcm: None,
+        });
+        app
+    }
+
+    #[test]
+    fn test_increment_rep_uses_selected_marker_0() {
+        let mut app = app_with_preview_and_markers();
+        // selected_marker = Some(0) means SOF (segment 0).
+        app.selected_marker = Some(0);
+        let initial = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
+            .bank_a.reps[0];
+        app.dispatch(actions::Action::IncrementRep);
+        let after = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
+            .bank_a.reps[0];
+        assert_eq!(after, (initial + 1).min(15),
+            "IncrementRep with selected_marker=0 should affect segment 0 reps");
+    }
+
+    #[test]
+    fn test_increment_rep_uses_selected_marker_2() {
+        let mut app = app_with_preview_and_markers();
+        // selected_marker = Some(2) means marker 2 → segment 2.
+        app.selected_marker = Some(2);
+        let initial = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
+            .bank_a.reps[2];
+        app.dispatch(actions::Action::IncrementRep);
+        let after = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
+            .bank_a.reps[2];
+        assert_eq!(after, (initial + 1).min(15),
+            "IncrementRep with selected_marker=2 should affect segment 2 reps");
+    }
+
+    #[test]
+    fn test_decrement_rep_uses_selected_marker_1() {
+        let mut app = app_with_preview_and_markers();
+        // Bump rep[1] to 3 so decrement is clearly visible.
+        if let Some(ref mut p) = app.preview {
+            if let Some(ref mut mc) = p.markers {
+                mc.bank_a.reps[1] = 3;
+            }
+        }
+        app.selected_marker = Some(1);
+        let initial = 3u8;
+        app.dispatch(actions::Action::DecrementRep);
+        let after = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
+            .bank_a.reps[1];
+        assert_eq!(after, initial - 1,
+            "DecrementRep with selected_marker=1 should affect segment 1 reps");
+    }
+
+    #[test]
+    fn test_rep_does_not_affect_wrong_segment_when_marker_selected() {
+        // The old bug: reps always modified segment 3 regardless of selected_marker.
+        let mut app = app_with_preview_and_markers();
+        // Set all reps to 2.
+        if let Some(ref mut p) = app.preview {
+            if let Some(ref mut mc) = p.markers {
+                mc.bank_a.reps = [2, 2, 2, 2];
+            }
+        }
+        app.selected_marker = Some(0); // target segment 0
+        app.dispatch(actions::Action::IncrementRep);
+        let reps = app.preview.as_ref().unwrap().markers.as_ref().unwrap().bank_a.reps;
+        assert_eq!(reps[0], 3, "segment 0 should have increased");
+        assert_eq!(reps[1], 2, "segment 1 should be unchanged");
+        assert_eq!(reps[2], 2, "segment 2 should be unchanged");
+        assert_eq!(reps[3], 2, "segment 3 should be unchanged (old bug: this was 3)");
+    }
+
+    // --- Sprint 12: ToggleMarkerDisplay tests ---
+
+    #[test]
+    fn test_toggle_marker_display_preserves_marker_data() {
+        use crate::engine::bext::MarkerConfig;
+        let mut app = App::new(Theme::default());
+        let markers = MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: Some(markers),
+            pcm: None,
+        });
+        app.dispatch(actions::Action::ToggleMarkerDisplay);
+        assert!(!app.markers_visible);
+        // Marker data must survive the toggle.
+        let still_has_markers = app.preview.as_ref()
+            .and_then(|p| p.markers.as_ref())
+            .is_some();
+        assert!(still_has_markers, "marker data preserved when display is toggled off");
+        // Toggle back on — data still present.
+        app.dispatch(actions::Action::ToggleMarkerDisplay);
+        assert!(app.markers_visible);
+        let still_has_markers2 = app.preview.as_ref()
+            .and_then(|p| p.markers.as_ref())
+            .is_some();
+        assert!(still_has_markers2, "marker data preserved after toggle back on");
+    }
+
+    #[test]
+    fn test_toggle_marker_display_clears_selected_marker() {
+        let mut app = App::new(Theme::default());
+        app.selected_marker = Some(2);
+        app.dispatch(actions::Action::ToggleMarkerDisplay);
+        assert_eq!(app.selected_marker, None,
+            "selected_marker must be cleared when markers hidden");
+    }
+
+    #[test]
+    fn test_markers_hidden_set_marker_noop() {
+        let mut app = App::new(Theme::default());
+        app.markers_visible = false;
+        app.dispatch(actions::Action::SetMarker1);
+        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-M"));
+    }
+
+    #[test]
+    fn test_markers_hidden_save_markers_noop() {
+        let mut app = App::new(Theme::default());
+        app.markers_visible = false;
+        app.dispatch(actions::Action::SaveMarkers);
+        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-M"));
     }
 }
