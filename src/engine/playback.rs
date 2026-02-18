@@ -4,7 +4,7 @@
 //! by [`SegmentSource`], eliminating pops from rodio's mixer buffering.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -59,6 +59,9 @@ pub struct SourceControl {
     pub frame: AtomicU32,
     /// Pending seek target frame (written by UI, consumed by source).
     pub pending_seek: AtomicU32,
+    /// Whether looping is enabled: gates both per-segment infinite reps and
+    /// global playlist restart. Written by UI toggle, read by source per frame.
+    pub loop_enabled: AtomicBool,
 }
 
 impl SourceControl {
@@ -66,6 +69,7 @@ impl SourceControl {
         Self {
             frame: AtomicU32::new(0),
             pending_seek: AtomicU32::new(NO_SEEK),
+            loop_enabled: AtomicBool::new(true),
         }
     }
 }
@@ -104,8 +108,6 @@ struct SegmentSource {
     seg_idx: usize,
     /// Remaining reps for current segment (255 = infinite).
     reps_left: u8,
-    /// Restart playlist from beginning when all segments complete.
-    global_loop: bool,
 
     /// Fade-out frames remaining before a boundary (counts down to 0).
     fade_out: u32,
@@ -131,9 +133,14 @@ impl SegmentSource {
         self.control.frame.store(frame, Ordering::Relaxed);
     }
 
-    /// Whether the current segment will loop (infinite or reps > 1).
+    /// Whether the current segment will loop (infinite or finite reps > 1).
+    /// Infinite reps (255) are additionally gated on `control.loop_enabled`.
     fn will_loop(&self) -> bool {
-        self.reps_left == 255 || self.reps_left > 1
+        if self.reps_left == 255 {
+            self.control.loop_enabled.load(Ordering::Relaxed)
+        } else {
+            self.reps_left > 1
+        }
     }
 
     /// Process frame-boundary logic. Returns `false` if the source should end.
@@ -164,22 +171,24 @@ impl SegmentSource {
             // 2b. At segment end: handle loop or advance.
             if frame >= seg.end {
                 self.fade_out = 0;
+                let loop_en = self.control.loop_enabled.load(Ordering::Relaxed);
 
-                if self.reps_left == 255 {
+                if self.reps_left == 255 && loop_en {
                     // Infinite loop: jump to segment start with fade-in.
                     self.pos = seg.start as usize * self.channels as usize;
                     self.channel = 0;
                     self.fade_in = fade_len;
-                } else if self.reps_left > 1 {
+                } else if self.reps_left > 1 && self.reps_left != 255 {
+                    // Finite reps: always honored regardless of loop_enabled.
                     self.reps_left -= 1;
                     self.pos = seg.start as usize * self.channels as usize;
                     self.channel = 0;
                     self.fade_in = fade_len;
                 } else {
-                    // Reps exhausted: advance to next segment.
+                    // Reps exhausted (or infinite with loop disabled): advance.
                     self.seg_idx += 1;
                     if self.seg_idx >= self.playlist.len() {
-                        if self.global_loop {
+                        if loop_en {
                             self.seg_idx = 0;
                         } else {
                             self.control.frame.store(self.frame(), Ordering::Relaxed);
@@ -348,6 +357,7 @@ impl PlaybackEngine {
         let total_frames = samples.len() as u32 / channels as u32;
 
         let control = Arc::new(SourceControl::new());
+        control.loop_enabled.store(false, Ordering::Relaxed); // play() is always single-shot
         let source = SegmentSource {
             buffer: samples,
             channels,
@@ -362,7 +372,6 @@ impl PlaybackEngine {
             }],
             seg_idx: 0,
             reps_left: 1,
-            global_loop: false,
             fade_out: 0,
             fade_in: 0,
             control: Arc::clone(&control),
@@ -421,6 +430,7 @@ impl PlaybackEngine {
 
         let control = Arc::new(SourceControl::new());
         control.frame.store(first_start, Ordering::Relaxed);
+        control.loop_enabled.store(global_loop, Ordering::Relaxed);
 
         let source = SegmentSource {
             buffer: samples,
@@ -432,7 +442,6 @@ impl PlaybackEngine {
             playlist: segments,
             seg_idx: 0,
             reps_left: first_reps,
-            global_loop,
             fade_out: 0,
             fade_in: 0,
             control: Arc::clone(&control),
@@ -603,6 +612,17 @@ impl PlaybackEngine {
         *self.drain_start.lock().unwrap() = None;
 
         Ok(())
+    }
+
+    /// Enable or disable looping on the currently active source.
+    ///
+    /// Writes to [`SourceControl::loop_enabled`] which is read by the mixer
+    /// thread on every frame boundary. Gates both infinite per-segment reps
+    /// (`reps == 255`) and global playlist restart. No-op when stopped.
+    pub fn set_loop_enabled(&self, enabled: bool) {
+        if let Some(ref ctl) = *self.source_control.lock().unwrap() {
+            ctl.loop_enabled.store(enabled, Ordering::Relaxed);
+        }
     }
 
     /// Seek relative to current position in seconds.
@@ -1105,7 +1125,6 @@ mod tests {
             playlist: vec![PlaySegment { start: 0, end: 100, reps: 1 }],
             seg_idx: 0,
             reps_left: 1,
-            global_loop: false,
             fade_out: 0,
             fade_in: 0,
             control: Arc::clone(&control),
@@ -1135,7 +1154,6 @@ mod tests {
             playlist: vec![PlaySegment { start: 0, end: 100, reps: 2 }],
             seg_idx: 0,
             reps_left: 2,
-            global_loop: false,
             fade_out: 0,
             fade_in: 0,
             control: Arc::clone(&control),
@@ -1165,7 +1183,6 @@ mod tests {
             playlist: vec![PlaySegment { start: 0, end: 100, reps: 1 }],
             seg_idx: 0,
             reps_left: 1,
-            global_loop: false,
             fade_out: 0,
             fade_in: 0,
             control: Arc::clone(&control),
@@ -1205,7 +1222,6 @@ mod tests {
             ],
             seg_idx: 0,
             reps_left: 1,
-            global_loop: false,
             fade_out: 0,
             fade_in: 0,
             control: Arc::clone(&control),
@@ -1239,7 +1255,6 @@ mod tests {
             playlist: vec![PlaySegment { start: 0, end: 50, reps: 2 }],
             seg_idx: 0,
             reps_left: 2,
-            global_loop: false,
             fade_out: 0,
             fade_in: 0,
             control: Arc::clone(&control),

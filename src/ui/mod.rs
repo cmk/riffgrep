@@ -219,10 +219,6 @@ pub struct App {
     pub bank_sync: bool,
     /// Currently selected marker for nudge/snap (0=SOF, 1=m1, 2=m2, 3=m3).
     pub selected_marker: Option<usize>,
-    /// Preview loop mode: stashed markers for restore on toggle-off.
-    pub preview_loop: bool,
-    /// Stashed marker config for preview loop restore.
-    pub preview_loop_stash: Option<crate::engine::bext::MarkerConfig>,
     /// Whether marker lines and segment labels are visible on the waveform.
     ///
     /// When false, marker-editing actions are no-ops (status shows how to re-enable).
@@ -295,8 +291,6 @@ impl App {
             global_loop: false,
             bank_sync: true,
             selected_marker: None,
-            preview_loop: false,
-            preview_loop_stash: None,
             markers_visible: true,
             marker_nudge_small: 1,
             marker_nudge_large: 10,
@@ -342,6 +336,7 @@ impl App {
             Action::SeekForwardLarge => self.seek_relative(self.scrub_large),
             Action::SeekBackwardSmall => self.seek_relative(-self.scrub_small),
             Action::SeekBackwardLarge => self.seek_relative(-self.scrub_large),
+            Action::RewindToStart => self.rewind_to_start(),
             Action::ToggleAutoAdvance => self.auto_advance = !self.auto_advance,
             Action::ToggleTimeDisplay => self.show_remaining = !self.show_remaining,
             Action::ToggleGlobalLoop => self.toggle_global_loop(),
@@ -550,12 +545,8 @@ impl App {
             self.adjust_scroll();
             // Stop playback when selection changes.
             self.stop_playback();
-            // Reset marker selection, preview loop, and zoom on file change.
+            // Reset marker selection and zoom on file change.
             self.selected_marker = None;
-            if self.preview_loop {
-                self.preview_loop = false;
-                self.preview_loop_stash = None;
-            }
             self.zoom_level = 0;
             self.zoom_offset = 0;
             self.zoom_center = None;
@@ -692,6 +683,13 @@ impl App {
     fn seek_relative(&self, delta: f64) {
         if let Some(ref engine) = self.playback {
             let _ = engine.seek_relative(delta);
+        }
+    }
+
+    /// Rewind playback to sample 0. No-op when stopped.
+    fn rewind_to_start(&self) {
+        if let Some(ref engine) = self.playback {
+            let _ = engine.seek_to_sample(0);
         }
     }
 
@@ -838,6 +836,9 @@ impl App {
     /// Toggle global loop (auto-restart when program finishes).
     fn toggle_global_loop(&mut self) {
         self.global_loop = !self.global_loop;
+        if let Some(ref engine) = self.playback {
+            engine.set_loop_enabled(self.global_loop);
+        }
         let state = if self.global_loop { "on" } else { "off" };
         self.set_status(format!("Global loop {state}"));
     }
@@ -1380,32 +1381,17 @@ impl App {
 
     // --- T8: Preview Loop Toggle ---
 
-    /// Toggle preview loop: stash current markers and apply preset, or restore.
+    /// Toggle preview loop: Ctrl-p toggles global loop on/off and propagates
+    /// the new state to the active SegmentSource immediately.
     fn toggle_preview_loop(&mut self) {
-        if self.preview_loop {
-            // Restore stashed markers.
-            if let Some(stash) = self.preview_loop_stash.take() {
-                if let Some(ref mut preview) = self.preview {
-                    preview.markers = Some(stash);
-                }
-            }
-            self.preview_loop = false;
-            self.set_status("Preview loop off".to_string());
+        self.global_loop = !self.global_loop;
+        if let Some(ref engine) = self.playback {
+            engine.set_loop_enabled(self.global_loop);
+        }
+        if self.global_loop {
+            self.set_status("Loop: on".to_string());
         } else {
-            // Stash current markers and apply preset.
-            let current = self.current_markers_or_default();
-            self.preview_loop_stash = Some(current);
-
-            let total_samples = self.total_samples();
-            let preset = match total_samples {
-                Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
-                _ => crate::engine::bext::MarkerConfig::preset_shot(),
-            };
-            if let Some(ref mut preview) = self.preview {
-                preview.markers = Some(preset);
-            }
-            self.preview_loop = true;
-            self.set_status("Preview loop on".to_string());
+            self.set_status("Loop: off".to_string());
         }
     }
 
@@ -1731,6 +1717,31 @@ impl App {
         if self.playback_state() == PlaybackState::Playing {
             self.set_status("Stop playback before zooming".to_string());
             return;
+        }
+
+        // For FS-mode files, pcm may not be loaded yet (only peaks were computed).
+        // Attempt a synchronous load so zoom can proceed.
+        if self.preview.as_ref().and_then(|p| p.pcm.as_ref()).is_none() {
+            let path = self
+                .results
+                .get(self.selected)
+                .map(|r| r.meta.path.clone());
+            if let Some(ref p) = path {
+                match crate::engine::wav::load_pcm_data(p) {
+                    Ok(pcm) => {
+                        if let Some(ref mut preview) = self.preview {
+                            preview.pcm = Some(pcm);
+                        }
+                    }
+                    Err(_) => {
+                        self.set_status("No audio data for zoom".to_string());
+                        return;
+                    }
+                }
+            } else {
+                self.set_status("No audio data for zoom".to_string());
+                return;
+            }
         }
 
         let pcm_len = self
@@ -2546,23 +2557,26 @@ mod tests {
     }
 
     #[test]
-    fn test_app_gg_jumps_to_top() {
+    fn test_app_g_dispatches_rewind_to_start() {
+        // 'g' is now bound to RewindToStart (gg sequence disabled).
         let mut app = make_app_with_results(100);
         app.selected = 50;
-        // Two g presses.
+        // Single g press dispatches RewindToStart (no-op when stopped, no panic).
         app.on_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
-        assert!(!app.should_quit);
-        app.on_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
-        assert_eq!(app.selected, 0);
+        assert!(!app.should_quit, "g should not quit");
+        // selection unchanged (RewindToStart only seeks audio, not the list).
+        assert_eq!(app.selected, 50);
     }
 
     #[test]
-    fn test_app_g_then_other_cancels() {
+    fn test_app_g_then_other_does_not_cancel_pending() {
+        // With 'g' explicitly bound, pending_g is never set, so any subsequent key
+        // just operates normally.
         let mut app = make_app_with_results(100);
         app.selected = 50;
         app.on_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        // g was cancelled, down moved selection.
+        // g dispatched RewindToStart, down moves selection to 51.
         assert_eq!(app.selected, 51);
     }
 
@@ -4236,13 +4250,12 @@ mod tests {
     }
 
     #[test]
-    fn test_preview_loop_resets_on_file_change() {
+    fn test_global_loop_persists_on_file_change() {
+        // global_loop state should NOT reset when the file selection changes.
         let mut app = make_app_with_results(5);
-        app.preview_loop = true;
-        app.preview_loop_stash = Some(crate::engine::bext::MarkerConfig::preset_shot());
+        app.global_loop = true;
         app.move_selection(1);
-        assert!(!app.preview_loop);
-        assert!(app.preview_loop_stash.is_none());
+        assert!(app.global_loop, "global_loop should persist across file changes");
     }
 
     #[test]
@@ -4307,31 +4320,15 @@ mod tests {
     }
 
     #[test]
-    fn test_preview_loop_stash_restore() {
+    fn test_toggle_preview_loop_sets_global_loop() {
         let mut app = App::new(Theme::default());
-        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                duration_secs: 1.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: Some(markers),
-            pcm: None,
-        });
-        let original = app.current_markers_or_default();
+        assert!(!app.global_loop);
         app.toggle_preview_loop();
-        assert!(app.preview_loop);
-        // Should have stashed the original.
-        assert!(app.preview_loop_stash.is_some());
-        // Toggle off restores.
+        assert!(app.global_loop, "toggle_preview_loop should set global_loop = true");
+        assert_eq!(app.status_message.as_deref(), Some("Loop: on"));
         app.toggle_preview_loop();
-        assert!(!app.preview_loop);
-        let restored = app.current_markers_or_default();
-        assert_eq!(original, restored);
+        assert!(!app.global_loop, "second toggle should set global_loop = false");
+        assert_eq!(app.status_message.as_deref(), Some("Loop: off"));
     }
 
     #[test]
@@ -4776,5 +4773,56 @@ mod tests {
         app.markers_visible = false;
         app.dispatch(actions::Action::SaveMarkers);
         assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-M"));
+    }
+
+    // --- Sprint 12 fixes: F1, F2, F3, F5 ---
+
+    #[test]
+    fn test_adjust_rep_all_segments() {
+        // Cycle selected_marker through 0→1→2→3 and increment at each step.
+        // Assert each reps[i] changes exactly once.
+        let mut app = app_with_preview_and_markers();
+        // Initialize all reps to 1.
+        if let Some(ref mut p) = app.preview {
+            if let Some(ref mut mc) = p.markers {
+                mc.bank_a.reps = [1, 1, 1, 1];
+                mc.bank_b.reps = [1, 1, 1, 1];
+            }
+        }
+
+        for idx in 0..4 {
+            app.selected_marker = Some(idx);
+            app.adjust_rep(1);
+        }
+
+        let reps = app.preview.as_ref().unwrap().markers.as_ref().unwrap().bank_a.reps;
+        assert_eq!(reps[0], 2, "segment 0 rep should be 2 after increment at idx 0");
+        assert_eq!(reps[1], 2, "segment 1 rep should be 2 after increment at idx 1");
+        assert_eq!(reps[2], 2, "segment 2 rep should be 2 after increment at idx 2");
+        assert_eq!(reps[3], 2, "segment 3 rep should be 2 after increment at idx 3");
+    }
+
+    #[test]
+    fn test_rewind_to_start_while_stopped_is_noop() {
+        // When playback is stopped, rewind_to_start should not panic.
+        let app = App::new(Theme::default());
+        app.rewind_to_start(); // no engine playing — should be a silent no-op
+    }
+
+    #[test]
+    fn test_zoom_in_no_path_shows_error() {
+        // Without a selected result (no path), zoom_in should show "No audio data for zoom".
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![128u8; 360],
+            audio_info: None,
+            markers: None,
+            pcm: None,
+        });
+        // app.results is empty → no path to load PCM from.
+        app.zoom_in();
+        assert_eq!(app.zoom_level, 0, "zoom_level unchanged when no path available");
+        assert_eq!(app.status_message.as_deref(), Some("No audio data for zoom"));
     }
 }

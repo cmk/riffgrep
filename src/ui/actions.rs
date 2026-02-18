@@ -27,6 +27,7 @@ pub enum Action {
     SeekForwardLarge,
     SeekBackwardSmall,
     SeekBackwardLarge,
+    RewindToStart,
     ToggleAutoAdvance,
     ToggleTimeDisplay,
     ToggleGlobalLoop,
@@ -103,6 +104,7 @@ impl Action {
         Action::SeekForwardLarge,
         Action::SeekBackwardSmall,
         Action::SeekBackwardLarge,
+        Action::RewindToStart,
         Action::ToggleAutoAdvance,
         Action::ToggleTimeDisplay,
         Action::ToggleGlobalLoop,
@@ -164,6 +166,7 @@ impl Action {
             "seek_forward_large" => Some(Action::SeekForwardLarge),
             "seek_backward_small" => Some(Action::SeekBackwardSmall),
             "seek_backward_large" => Some(Action::SeekBackwardLarge),
+            "rewind_to_start" => Some(Action::RewindToStart),
             "toggle_auto_advance" => Some(Action::ToggleAutoAdvance),
             "toggle_time_display" => Some(Action::ToggleTimeDisplay),
             "toggle_global_loop" => Some(Action::ToggleGlobalLoop),
@@ -227,6 +230,7 @@ impl Action {
             Action::SeekForwardLarge => "seek_forward_large",
             Action::SeekBackwardSmall => "seek_backward_small",
             Action::SeekBackwardLarge => "seek_backward_large",
+            Action::RewindToStart => "rewind_to_start",
             Action::ToggleAutoAdvance => "toggle_auto_advance",
             Action::ToggleTimeDisplay => "toggle_time_display",
             Action::ToggleGlobalLoop => "toggle_global_loop",
@@ -297,6 +301,7 @@ impl Action {
             Action::SeekForwardLarge => "Seek forward (large)",
             Action::SeekBackwardSmall => "Seek backward (small)",
             Action::SeekBackwardLarge => "Seek backward (large)",
+            Action::RewindToStart => "Rewind to start",
             Action::ToggleAutoAdvance => "Toggle auto-advance",
             Action::ToggleTimeDisplay => "Toggle elapsed/remaining",
             Action::ToggleGlobalLoop => "Toggle global loop",
@@ -358,6 +363,7 @@ impl Action {
             | Action::SeekForwardLarge
             | Action::SeekBackwardSmall
             | Action::SeekBackwardLarge
+            | Action::RewindToStart
             | Action::ToggleAutoAdvance
             | Action::ToggleTimeDisplay
             | Action::ToggleGlobalLoop
@@ -561,10 +567,10 @@ impl Keymap {
         bindings.insert((KeyCode::Left, none), Action::SeekBackwardSmall);
         bindings.insert((KeyCode::Right, shift), Action::SeekForwardLarge);
         bindings.insert((KeyCode::Left, shift), Action::SeekBackwardLarge);
+        bindings.insert((KeyCode::Char('g'), none), Action::RewindToStart);
         bindings.insert((KeyCode::Char('a'), none), Action::ToggleAutoAdvance);
         bindings.insert((KeyCode::Char('t'), none), Action::ToggleTimeDisplay);
         bindings.insert((KeyCode::Char('p'), none), Action::ToggleGlobalLoop);
-        bindings.insert((KeyCode::Char('r'), none), Action::ReversePlayback);
 
         // Marks
         bindings.insert((KeyCode::Char('m'), none), Action::ToggleMark);
@@ -596,6 +602,7 @@ impl Keymap {
         bindings.insert((KeyCode::Char('='), none), Action::ZoomIn);
         bindings.insert((KeyCode::Char('-'), none), Action::ZoomOut);
         bindings.insert((KeyCode::Char('0'), none), Action::ZoomReset);
+        // Nudge: Ctrl-Arrow (small), Ctrl-Shift-Arrow (large).
         bindings.insert((KeyCode::Right, ctrl), Action::NudgeMarkerForwardSmall);
         bindings.insert((KeyCode::Left, ctrl), Action::NudgeMarkerBackwardSmall);
         bindings.insert(
@@ -760,9 +767,9 @@ mod tests {
 
     #[test]
     fn test_all_count_matches_variants() {
-        // 53 Sprint 11 + 3 zoom (ZoomIn/ZoomOut/ZoomReset) = 56.
+        // 53 Sprint 11 + 3 zoom (ZoomIn/ZoomOut/ZoomReset) + 1 RewindToStart = 57.
         // ToggleMarkersEnabled was renamed to ToggleMarkerDisplay (no net change).
-        assert_eq!(Action::ALL.len(), 56);
+        assert_eq!(Action::ALL.len(), 57);
     }
 
     #[test]
@@ -951,7 +958,7 @@ mod tests {
 
     #[test]
     fn test_action_all_count_final() {
-        assert_eq!(Action::ALL.len(), 56, "Sprint 12 final count should be 56 (53+3 zoom)");
+        assert_eq!(Action::ALL.len(), 57, "Sprint 12 fixes: 57 = 56 + RewindToStart");
     }
 
     #[test]
@@ -1148,5 +1155,47 @@ mod tests {
         // These actions were removed in Sprint 11.
         assert_eq!(Action::from_name("play_segment"), None);
         assert_eq!(Action::from_name("play_program"), None);
+    }
+
+    // --- Sprint 12 fixes tests ---
+
+    #[test]
+    fn test_rewind_to_start_bound_to_g() {
+        let km = Keymap::default_keymap();
+        let g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(km.resolve(g), Some(Action::RewindToStart));
+    }
+
+    #[test]
+    fn test_rewind_to_start_roundtrip() {
+        let name = Action::RewindToStart.name();
+        assert_eq!(name, "rewind_to_start");
+        assert_eq!(Action::from_name(name), Some(Action::RewindToStart));
+    }
+
+    #[test]
+    fn test_reverse_playback_unbound() {
+        let km = Keymap::default_keymap();
+        let r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert_eq!(km.resolve(r), None, "'r' should be unbound (ReversePlayback removed from keymap)");
+    }
+
+    #[test]
+    fn test_nudge_bindings_ctrl_arrow() {
+        let km = Keymap::default_keymap();
+        let ctrl = KeyModifiers::CONTROL;
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+
+        let right = KeyEvent::new(KeyCode::Right, ctrl);
+        assert_eq!(km.resolve(right), Some(Action::NudgeMarkerForwardSmall));
+
+        let left = KeyEvent::new(KeyCode::Left, ctrl);
+        assert_eq!(km.resolve(left), Some(Action::NudgeMarkerBackwardSmall));
+
+        let shift_right = KeyEvent::new(KeyCode::Right, ctrl_shift);
+        assert_eq!(km.resolve(shift_right), Some(Action::NudgeMarkerForwardLarge));
+
+        let shift_left = KeyEvent::new(KeyCode::Left, ctrl_shift);
+        assert_eq!(km.resolve(shift_left), Some(Action::NudgeMarkerBackwardLarge));
     }
 }

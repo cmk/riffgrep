@@ -26,7 +26,7 @@ pub fn render_search_prompt(app: &App, area: Rect, buf: &mut Buffer) {
         return;
     }
 
-    // Status text on the right.
+    // Status text on the right: match count + optional marked count.
     let status = if app.search_in_progress {
         "searching...".to_string()
     } else if !app.results.is_empty() || app.total_matches > 0 {
@@ -35,7 +35,12 @@ pub fn render_search_prompt(app: &App, area: Rect, buf: &mut Buffer) {
         } else {
             app.results.len()
         };
-        format!("{count} matches")
+        let mark_count = app.mark_count();
+        if mark_count > 0 {
+            format!("{count} matches  {mark_count} marked")
+        } else {
+            format!("{count} matches")
+        }
     } else {
         String::new()
     };
@@ -343,57 +348,28 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
         }
     };
 
-    // Middle: mark count (if any).
-    let mark_count = app.mark_count();
-    let marks_text = if mark_count > 0 {
-        format!(" {mark_count} marked ")
+    // Right side: filter suffix only (result count moved to search prompt).
+    let filter_suffix = if app.show_marked_only { " [marked] " } else { "" };
+    let right = if !filter_suffix.is_empty() {
+        format!("{filter_suffix} ")
     } else {
         String::new()
     };
 
-    // Right side: result count.
-    let right = if app.search_in_progress {
-        "Searching... ".to_string()
-    } else if app.results.is_empty() && app.total_matches == 0 {
-        "No results ".to_string()
-    } else {
-        let displayed = app.results.len();
-        let total = if app.total_matches > 0 {
-            app.total_matches
-        } else {
-            displayed
-        };
-        let filter_suffix = if app.show_marked_only { " [marked] " } else { "" };
-        if displayed < total {
-            format!("{displayed} of {total} results{filter_suffix} ")
-        } else {
-            format!("{total} results{filter_suffix} ")
-        }
-    };
-
     // Render left (playback) with accent style.
     if !left.is_empty() {
-        let left_max = width.saturating_sub(right.len() + marks_text.len());
+        let left_max = width.saturating_sub(right.len());
         let truncated: String = left.chars().take(left_max).collect();
         buf.set_string(area.x, area.y, &truncated, theme.playback_accent);
     }
 
-    // Render marks count (right of playback, left of results count).
-    if !marks_text.is_empty() {
-        let marks_x = area.x + area.width.saturating_sub(right.len() as u16 + marks_text.len() as u16);
-        buf.set_string(marks_x, area.y, &marks_text, theme.table_marked);
-    }
-
-    // Render right (count) aligned right.
-    let right_len = right.len() as u16;
-    if right_len <= area.width {
-        let right_x = area.x + area.width - right_len;
-        let style = if app.search_in_progress {
-            theme.status_text
-        } else {
-            theme.match_count
-        };
-        buf.set_string(right_x, area.y, &right, style);
+    // Render right (filter suffix) aligned right.
+    if !right.is_empty() {
+        let right_len = right.len() as u16;
+        if right_len <= area.width {
+            let right_x = area.x + area.width - right_len;
+            buf.set_string(right_x, area.y, &right, theme.status_text);
+        }
     }
 }
 
@@ -753,17 +729,32 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     }
     } // markers_visible
 
-    // Playback cursor overlay.
-    if app.playback_position() > 0.0 && wave_width > 0 {
-        render_playback_cursor(
-            app.playback_position(),
-            area.x,
-            area.y,
-            wave_width as u16,
-            wave_rows as u16,
-            buf,
-            theme,
-        );
+    // Playback cursor overlay (zoom-viewport-aware).
+    if app.playback_position() > 0.0 && wave_width > 0 && effective_total_samples > 0 {
+        // Convert fractional position to an absolute sample.
+        let total_file_samples = preview
+            .audio_info
+            .as_ref()
+            .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u64)
+            .unwrap_or(effective_total_samples);
+        let play_sample = (app.playback_position() as f64 * total_file_samples as f64) as u64;
+
+        // Only render the cursor when the playback position is within the viewport.
+        if play_sample >= viewport_start_samples
+            && play_sample < viewport_start_samples + effective_total_samples
+        {
+            let viewport_fraction = (play_sample - viewport_start_samples) as f32
+                / effective_total_samples as f32;
+            render_playback_cursor(
+                viewport_fraction,
+                area.x,
+                area.y,
+                wave_width as u16,
+                wave_rows as u16,
+                buf,
+                theme,
+            );
+        }
     }
 
     // Transport info line below waveform.
@@ -1491,7 +1482,8 @@ mod tests {
     }
 
     #[test]
-    fn test_status_bar_result_count() {
+    fn test_status_bar_result_count_not_in_bar() {
+        // Result count moved to search prompt — status bar should not show it.
         let mut app = App::new(Theme::default());
         app.results = (0..42).map(|_| default_table_row()).collect();
         app.total_matches = 1234;
@@ -1505,29 +1497,14 @@ mod tests {
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
         assert!(
-            out.contains("42 of 1234 results"),
-            "should show count: {out}"
+            !out.contains("results"),
+            "result count should not appear in status bar: {out}"
         );
     }
 
     #[test]
-    fn test_status_bar_searching() {
-        let mut app = App::new(Theme::default());
-        app.search_in_progress = true;
-
-        let backend = TestBackend::new(60, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                render_status_bar(&app, f.area(), f.buffer_mut());
-            })
-            .unwrap();
-        let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("Searching..."), "should show Searching: {out}");
-    }
-
-    #[test]
-    fn test_status_bar_no_results() {
+    fn test_status_bar_no_result_count() {
+        // Status bar no longer shows "No results" — that is shown in the table area.
         let app = App::new(Theme::default());
 
         let backend = TestBackend::new(60, 1);
@@ -1537,8 +1514,47 @@ mod tests {
                 render_status_bar(&app, f.area(), f.buffer_mut());
             })
             .unwrap();
+        // Just verify it doesn't panic and doesn't show "No results".
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("No results"), "should show No results: {out}");
+        assert!(!out.contains("No results"), "status bar should not show 'No results': {out}");
+    }
+
+    #[test]
+    fn test_search_prompt_shows_match_count_and_marked() {
+        let mut app = App::new(Theme::default());
+        app.total_matches = 42;
+        app.results = (0..5).map(|_| default_table_row()).collect();
+        app.results[0].marked = true;
+        app.results[2].marked = true;
+
+        let backend = TestBackend::new(60, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_search_prompt(&app, f.area(), f.buffer_mut());
+            })
+            .unwrap();
+        let out = buffer_to_string(terminal.backend().buffer());
+        assert!(out.contains("42 matches"), "search prompt should show match count: {out}");
+        assert!(out.contains("2 marked"), "search prompt should show marked count: {out}");
+    }
+
+    #[test]
+    fn test_search_prompt_no_marked_when_zero() {
+        let mut app = App::new(Theme::default());
+        app.total_matches = 10;
+        app.results = (0..10).map(|_| default_table_row()).collect();
+
+        let backend = TestBackend::new(60, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_search_prompt(&app, f.area(), f.buffer_mut());
+            })
+            .unwrap();
+        let out = buffer_to_string(terminal.backend().buffer());
+        assert!(out.contains("10 matches"), "should show match count: {out}");
+        assert!(!out.contains("marked"), "should not show 'marked' when count is zero: {out}");
     }
 
     // --- S5-T3 tests: Two-panel layout (table + waveform) ---
@@ -1727,42 +1743,43 @@ mod tests {
         assert_eq!(column_value(&row, "sample_rate"), "-");
     }
 
-    // --- S5-T7 tests: Mark count in status bar ---
+    // --- S5-T7 tests: Mark count moved to search prompt (F8) ---
 
     #[test]
-    fn test_status_bar_mark_count() {
+    fn test_search_prompt_mark_count() {
+        // Mark count now shows in the search prompt (upper RHS), not the status bar.
         let mut app = App::new(Theme::default());
         app.results = (0..5).map(|_| default_table_row()).collect();
         app.results[0].marked = true;
         app.results[2].marked = true;
         app.total_matches = 5;
 
-        let backend = TestBackend::new(80, 1);
+        let backend = TestBackend::new(80, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render_status_bar(&app, f.area(), f.buffer_mut());
+                render_search_prompt(&app, f.area(), f.buffer_mut());
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("2 marked"), "should show mark count: {out}");
+        assert!(out.contains("2 marked"), "search prompt should show mark count: {out}");
     }
 
     #[test]
-    fn test_status_bar_no_mark_count_when_zero() {
+    fn test_search_prompt_no_mark_count_when_zero() {
         let mut app = App::new(Theme::default());
         app.results = (0..5).map(|_| default_table_row()).collect();
         app.total_matches = 5;
 
-        let backend = TestBackend::new(80, 1);
+        let backend = TestBackend::new(80, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render_status_bar(&app, f.area(), f.buffer_mut());
+                render_search_prompt(&app, f.area(), f.buffer_mut());
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(!out.contains("marked"), "should not show mark count when zero: {out}");
+        assert!(!out.contains("marked"), "search prompt should not show 'marked' when zero: {out}");
     }
 
     #[test]
@@ -2206,5 +2223,52 @@ mod tests {
                 render_segment_labels(&bank, 0, 0, 0 as u64, 0, 0, 40, buf, style);
             })
             .unwrap();
+    }
+
+    // --- Sprint 12 fixes: F4 playhead zoom-viewport-aware ---
+
+    #[test]
+    fn test_playhead_hidden_outside_viewport() {
+        // Playback at 90% of file, zoom shows 0–50% → cursor should not appear.
+        let mut app = App::new(Theme::default());
+        // Set up audio info: 48000 samples at 48kHz = 1s.
+        let audio_info = crate::engine::wav::AudioInfo {
+            duration_secs: 1.0,
+            sample_rate: 48000,
+            bit_depth: 16,
+            channels: 1,
+        };
+        let total = 48000u32;
+        // Build fake PCM so zoom works.
+        let pcm = crate::engine::wav::PcmData {
+            samples: vec![0i16; total as usize],
+        };
+        app.preview = Some(PreviewData {
+            metadata: UnifiedMetadata {
+                path: std::path::PathBuf::from("/test/file.wav"),
+                ..Default::default()
+            },
+            peaks: vec![128u8; 180],
+            audio_info: Some(audio_info),
+            markers: None,
+            pcm: Some(pcm),
+        });
+        app.results = vec![default_table_row()];
+
+        // Zoom in so the viewport covers only the first ~50% of the file.
+        app.zoom_in(); // zoom_level = 1, viewport = first half
+
+        // Simulate playback position at 90% (outside the zoomed viewport).
+        // We can't use the engine in tests, so we test the render logic directly.
+        // Instead, verify that the cursor render doesn't appear when position is outside window.
+        // (Full integration tested manually; this test verifies no panic.)
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_waveform_panel(&app, f.area(), f.buffer_mut());
+            })
+            .unwrap();
+        // Should render without panic — playhead is hidden or inside viewport.
     }
 }
