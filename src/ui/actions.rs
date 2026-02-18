@@ -437,8 +437,41 @@ impl Action {
 ///
 /// Handles: single chars ("j", "G"), special keys ("Space", "Esc", "Enter",
 /// "Up", "Down", "Backspace", "Tab", "/", "?"), modifier combos ("Ctrl-C",
-/// "Ctrl-D", "Ctrl-U"), Ctrl+Shift ("Ctrl-S-Right"), and Ctrl+Alt ("Ctrl-Alt-m").
+/// "Ctrl-D", "Ctrl-U"), Ctrl+Shift ("Ctrl-S-Right"), Ctrl+Alt ("Ctrl-Alt-m"),
+/// Ctrl+Arrow ("Ctrl-Left", "Ctrl-Right"), Cmd+Ctrl ("Cmd-Ctrl-h",
+/// "Cmd-Ctrl-H" — uppercase implies Shift), and standalone Alt/Option
+/// ("Alt-x", "Opt-X" — uppercase implies Shift).
 pub fn parse_key(s: &str) -> Option<KeyEvent> {
+    // Modifier prefix: Cmd-Ctrl- (Super+Control; uppercase char → adds SHIFT)
+    if let Some(rest) = s.strip_prefix("Cmd-Ctrl-") {
+        let ch = rest.chars().next()?;
+        if rest.len() != ch.len_utf8() {
+            return None;
+        }
+        let mods = if ch.is_ascii_uppercase() {
+            KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::SUPER | KeyModifiers::CONTROL
+        };
+        return Some(KeyEvent::new(KeyCode::Char(ch), mods));
+    }
+
+    // Modifier prefix: Alt- / Opt- (standalone; uppercase char → adds SHIFT)
+    for prefix in &["Alt-", "Opt-"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            let ch = rest.chars().next()?;
+            if rest.len() != ch.len_utf8() {
+                return None;
+            }
+            let mods = if ch.is_ascii_uppercase() {
+                KeyModifiers::ALT | KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::ALT
+            };
+            return Some(KeyEvent::new(KeyCode::Char(ch), mods));
+        }
+    }
+
     // Modifier prefix: Ctrl-Alt-
     if let Some(rest) = s.strip_prefix("Ctrl-Alt-") {
         let ch = rest.chars().next()?;
@@ -465,7 +498,15 @@ pub fn parse_key(s: &str) -> Option<KeyEvent> {
 
     // Modifier prefix: Ctrl-
     if let Some(rest) = s.strip_prefix("Ctrl-") {
-        // Could be a single char or a bracket/special char.
+        // Arrow keys with Ctrl (must check before single-char fallback).
+        match rest {
+            "Left" => return Some(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)),
+            "Right" => return Some(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL)),
+            "Up" => return Some(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL)),
+            "Down" => return Some(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL)),
+            _ => {}
+        }
+        // Single char (bracket chars like ] and [ are supported).
         let ch = rest.chars().next()?;
         if rest.len() != ch.len_utf8() {
             return None;
@@ -602,17 +643,13 @@ impl Keymap {
         bindings.insert((KeyCode::Char('='), none), Action::ZoomIn);
         bindings.insert((KeyCode::Char('-'), none), Action::ZoomOut);
         bindings.insert((KeyCode::Char('0'), none), Action::ZoomReset);
-        // Nudge: Ctrl-Arrow (small), Ctrl-Shift-Arrow (large).
-        bindings.insert((KeyCode::Right, ctrl), Action::NudgeMarkerForwardSmall);
-        bindings.insert((KeyCode::Left, ctrl), Action::NudgeMarkerBackwardSmall);
-        bindings.insert(
-            (KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-            Action::NudgeMarkerForwardLarge,
-        );
-        bindings.insert(
-            (KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-            Action::NudgeMarkerBackwardLarge,
-        );
+        // Nudge: Cmd-Ctrl-h/l (small), Cmd-Ctrl-H/L (large).
+        let cmd_ctrl = KeyModifiers::SUPER | KeyModifiers::CONTROL;
+        let cmd_ctrl_shift = KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        bindings.insert((KeyCode::Char('l'), cmd_ctrl), Action::NudgeMarkerForwardSmall);
+        bindings.insert((KeyCode::Char('h'), cmd_ctrl), Action::NudgeMarkerBackwardSmall);
+        bindings.insert((KeyCode::Char('L'), cmd_ctrl_shift), Action::NudgeMarkerForwardLarge);
+        bindings.insert((KeyCode::Char('H'), cmd_ctrl_shift), Action::NudgeMarkerBackwardLarge);
         bindings.insert((KeyCode::Char(']'), ctrl), Action::SnapZeroCrossingForward);
         bindings.insert((KeyCode::Char('['), ctrl), Action::SnapZeroCrossingBackward);
         bindings.insert((KeyCode::Char('r'), ctrl), Action::MarkerReset);
@@ -670,7 +707,10 @@ impl Keymap {
 /// Format a KeyCode + modifiers as a human-readable string for help display.
 pub fn key_display(code: &KeyCode, modifiers: &KeyModifiers) -> String {
     let mut s = String::new();
-    if modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::ALT) {
+    if modifiers.contains(KeyModifiers::SUPER) && modifiers.contains(KeyModifiers::CONTROL) {
+        // Cmd-Ctrl-h (lowercase) or Cmd-Ctrl-H (uppercase = Shift implied).
+        s.push_str("Cmd-Ctrl-");
+    } else if modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::ALT) {
         s.push_str("Ctrl-Alt-");
     } else if modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::SHIFT) {
         match code {
@@ -681,6 +721,8 @@ pub fn key_display(code: &KeyCode, modifiers: &KeyModifiers) -> String {
         }
     } else if modifiers.contains(KeyModifiers::CONTROL) {
         s.push_str("Ctrl-");
+    } else if modifiers.contains(KeyModifiers::ALT) {
+        s.push_str("Alt-");
     } else if modifiers.contains(KeyModifiers::SHIFT) {
         // Shift prefix for non-char keys (arrows, etc).
         match code {
@@ -1181,21 +1223,87 @@ mod tests {
     }
 
     #[test]
-    fn test_nudge_bindings_ctrl_arrow() {
+    fn test_nudge_bindings_cmd_ctrl_hl() {
         let km = Keymap::default_keymap();
-        let ctrl = KeyModifiers::CONTROL;
-        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        let cmd_ctrl = KeyModifiers::SUPER | KeyModifiers::CONTROL;
+        let cmd_ctrl_shift = KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT;
 
-        let right = KeyEvent::new(KeyCode::Right, ctrl);
-        assert_eq!(km.resolve(right), Some(Action::NudgeMarkerForwardSmall));
+        let l = KeyEvent::new(KeyCode::Char('l'), cmd_ctrl);
+        assert_eq!(km.resolve(l), Some(Action::NudgeMarkerForwardSmall));
 
-        let left = KeyEvent::new(KeyCode::Left, ctrl);
-        assert_eq!(km.resolve(left), Some(Action::NudgeMarkerBackwardSmall));
+        let h = KeyEvent::new(KeyCode::Char('h'), cmd_ctrl);
+        assert_eq!(km.resolve(h), Some(Action::NudgeMarkerBackwardSmall));
 
-        let shift_right = KeyEvent::new(KeyCode::Right, ctrl_shift);
-        assert_eq!(km.resolve(shift_right), Some(Action::NudgeMarkerForwardLarge));
+        let big_l = KeyEvent::new(KeyCode::Char('L'), cmd_ctrl_shift);
+        assert_eq!(km.resolve(big_l), Some(Action::NudgeMarkerForwardLarge));
 
-        let shift_left = KeyEvent::new(KeyCode::Left, ctrl_shift);
-        assert_eq!(km.resolve(shift_left), Some(Action::NudgeMarkerBackwardLarge));
+        let big_h = KeyEvent::new(KeyCode::Char('H'), cmd_ctrl_shift);
+        assert_eq!(km.resolve(big_h), Some(Action::NudgeMarkerBackwardLarge));
+    }
+
+    #[test]
+    fn test_parse_key_ctrl_arrow() {
+        let left = parse_key("Ctrl-Left").unwrap();
+        assert_eq!(left.code, KeyCode::Left);
+        assert_eq!(left.modifiers, KeyModifiers::CONTROL);
+
+        let right = parse_key("Ctrl-Right").unwrap();
+        assert_eq!(right.code, KeyCode::Right);
+        assert_eq!(right.modifiers, KeyModifiers::CONTROL);
+
+        let up = parse_key("Ctrl-Up").unwrap();
+        assert_eq!(up.code, KeyCode::Up);
+        assert_eq!(up.modifiers, KeyModifiers::CONTROL);
+
+        let down = parse_key("Ctrl-Down").unwrap();
+        assert_eq!(down.code, KeyCode::Down);
+        assert_eq!(down.modifiers, KeyModifiers::CONTROL);
+    }
+
+    #[test]
+    fn test_parse_key_cmd_ctrl() {
+        // Lowercase → SUPER | CONTROL
+        let h = parse_key("Cmd-Ctrl-h").unwrap();
+        assert_eq!(h.code, KeyCode::Char('h'));
+        assert_eq!(h.modifiers, KeyModifiers::SUPER | KeyModifiers::CONTROL);
+
+        let l = parse_key("Cmd-Ctrl-l").unwrap();
+        assert_eq!(l.code, KeyCode::Char('l'));
+        assert_eq!(l.modifiers, KeyModifiers::SUPER | KeyModifiers::CONTROL);
+
+        // Uppercase → SUPER | CONTROL | SHIFT
+        let big_h = parse_key("Cmd-Ctrl-H").unwrap();
+        assert_eq!(big_h.code, KeyCode::Char('H'));
+        assert_eq!(big_h.modifiers, KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+
+        let big_l = parse_key("Cmd-Ctrl-L").unwrap();
+        assert_eq!(big_l.code, KeyCode::Char('L'));
+        assert_eq!(big_l.modifiers, KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    }
+
+    #[test]
+    fn test_config_keymap_all_action_names_valid() {
+        // Verify all canonical action names used in config round-trip through from_name().
+        let names = [
+            "move_down", "move_up", "move_to_bottom", "page_down", "page_up",
+            "move_column_left", "move_column_right", "sort_ascending", "sort_descending",
+            "toggle_playback", "seek_forward_small", "seek_backward_small",
+            "seek_forward_large", "seek_backward_large", "rewind_to_start",
+            "toggle_auto_advance", "toggle_time_display", "toggle_global_loop",
+            "toggle_preview_loop", "toggle_mark", "clear_marks", "toggle_marked_filter",
+            "toggle_bank", "toggle_bank_sync", "set_marker_1", "set_marker_2", "set_marker_3",
+            "clear_nearest_marker", "clear_bank_markers", "save_markers",
+            "increment_rep", "decrement_rep", "select_next_marker", "select_prev_marker",
+            "toggle_infinite_loop", "toggle_marker_display",
+            "nudge_marker_forward_small", "nudge_marker_backward_small",
+            "nudge_marker_forward_large", "nudge_marker_backward_large",
+            "snap_zero_crossing_forward", "snap_zero_crossing_backward",
+            "marker_reset", "export_markers_csv", "import_markers_csv",
+            "zoom_in", "zoom_out", "zoom_reset",
+            "enter_insert_mode", "open_selected", "show_help", "quit",
+        ];
+        for name in names {
+            assert!(Action::from_name(name).is_some(), "unknown action name in config: {name}");
+        }
     }
 }
