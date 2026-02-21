@@ -437,10 +437,11 @@ impl Action {
 ///
 /// Handles: single chars ("j", "G"), special keys ("Space", "Esc", "Enter",
 /// "Up", "Down", "Backspace", "Tab", "/", "?"), modifier combos ("Ctrl-C",
-/// "Ctrl-D", "Ctrl-U"), Ctrl+Shift ("Ctrl-S-Right"), Ctrl+Alt ("Ctrl-Alt-m"),
-/// Ctrl+Arrow ("Ctrl-Left", "Ctrl-Right"), Cmd+Ctrl ("Cmd-Ctrl-h",
-/// "Cmd-Ctrl-H" — uppercase implies Shift), and standalone Alt/Option
-/// ("Alt-x", "Opt-X" — uppercase implies Shift).
+/// "Ctrl-D", "Ctrl-U"), Ctrl+Shift ("Ctrl-S-Right"), Ctrl+Alt/Opt
+/// ("Ctrl-Alt-m", "Ctrl-Opt-m"), Ctrl+Arrow ("Ctrl-Left", "Ctrl-Right"),
+/// Cmd+Ctrl ("Cmd-Ctrl-h", "Cmd-Ctrl-H" — uppercase implies Shift),
+/// standalone Alt/Option ("Alt-x", "Opt-X" — uppercase implies Shift), and
+/// standalone Cmd ("Cmd-k" — macOS terminals typically intercept these).
 pub fn parse_key(s: &str) -> Option<KeyEvent> {
     // Modifier prefix: Cmd-Ctrl- (Super+Control; uppercase char → adds SHIFT)
     if let Some(rest) = s.strip_prefix("Cmd-Ctrl-") {
@@ -456,7 +457,22 @@ pub fn parse_key(s: &str) -> Option<KeyEvent> {
         return Some(KeyEvent::new(KeyCode::Char(ch), mods));
     }
 
+    // Modifier prefix: Ctrl-Alt- / Ctrl-Opt- (must check before standalone Alt-/Opt-)
+    for prefix in &["Ctrl-Alt-", "Ctrl-Opt-"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            let ch = rest.chars().next()?;
+            if rest.len() != ch.len_utf8() {
+                return None;
+            }
+            return Some(KeyEvent::new(
+                KeyCode::Char(ch.to_ascii_lowercase()),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ));
+        }
+    }
+
     // Modifier prefix: Alt- / Opt- (standalone; uppercase char → adds SHIFT)
+    // Note: on macOS these require the terminal to forward Option as Meta (escape prefix).
     for prefix in &["Alt-", "Opt-"] {
         if let Some(rest) = s.strip_prefix(prefix) {
             let ch = rest.chars().next()?;
@@ -472,16 +488,27 @@ pub fn parse_key(s: &str) -> Option<KeyEvent> {
         }
     }
 
-    // Modifier prefix: Ctrl-Alt-
-    if let Some(rest) = s.strip_prefix("Ctrl-Alt-") {
+    // Modifier prefix: Cmd- (SUPER alone; uppercase char → adds SHIFT).
+    // Note: macOS terminals typically intercept Command key combos at the OS level
+    // before they reach the application. These bindings will parse but may not fire.
+    if let Some(rest) = s.strip_prefix("Cmd-") {
+        match rest {
+            "Left" => return Some(KeyEvent::new(KeyCode::Left, KeyModifiers::SUPER)),
+            "Right" => return Some(KeyEvent::new(KeyCode::Right, KeyModifiers::SUPER)),
+            "Up" => return Some(KeyEvent::new(KeyCode::Up, KeyModifiers::SUPER)),
+            "Down" => return Some(KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER)),
+            _ => {}
+        }
         let ch = rest.chars().next()?;
         if rest.len() != ch.len_utf8() {
             return None;
         }
-        return Some(KeyEvent::new(
-            KeyCode::Char(ch.to_ascii_lowercase()),
-            KeyModifiers::CONTROL | KeyModifiers::ALT,
-        ));
+        let mods = if ch.is_ascii_uppercase() {
+            KeyModifiers::SUPER | KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::SUPER
+        };
+        return Some(KeyEvent::new(KeyCode::Char(ch), mods));
     }
 
     // Modifier prefix: Ctrl-S- (Ctrl+Shift + special key)
@@ -627,29 +654,30 @@ impl Keymap {
         bindings.insert((KeyCode::Char('3'), none), Action::SetMarker3);
         bindings.insert((KeyCode::Char('x'), none), Action::ClearNearestMarker);
         bindings.insert((KeyCode::Char('X'), shift), Action::ClearBankMarkers);
-        // IncrementRep → Ctrl-K  (freed = from ZoomIn)
+        // IncrementRep → Ctrl-K
         bindings.insert((KeyCode::Char('k'), ctrl), Action::IncrementRep);
-        // DecrementRep → Ctrl-J  (freed - from ZoomOut)
-        bindings.insert((KeyCode::Char('j'), ctrl), Action::DecrementRep);
-        // SelectNextMarker → Ctrl-L  (freed from ToggleInfiniteLoop Ctrl-l conflict)
+        // DecrementRep: Ctrl-J omitted (terminals send it as Enter/0x0A). Use Opt-j instead
+        // (requires terminal Option=Meta; pairs naturally with Ctrl-K for increment).
+        bindings.insert((KeyCode::Char('j'), KeyModifiers::ALT), Action::DecrementRep);
+        // SelectNextMarker → Ctrl-L
         bindings.insert((KeyCode::Char('l'), ctrl), Action::SelectNextMarker);
-        // SelectPrevMarker → Ctrl-H
-        bindings.insert((KeyCode::Char('h'), ctrl), Action::SelectPrevMarker);
-        // ToggleInfiniteLoop → Ctrl-o  (freed Ctrl-l for SelectNextMarker)
+        // SelectPrevMarker → Opt-H  (Ctrl-H = Backspace in terminals; Opt requires Option=Meta)
+        bindings.insert((KeyCode::Char('h'), KeyModifiers::ALT), Action::SelectPrevMarker);
+        // ToggleInfiniteLoop → Ctrl-o
         bindings.insert((KeyCode::Char('o'), ctrl), Action::ToggleInfiniteLoop);
         bindings.insert((KeyCode::Char('p'), ctrl), Action::TogglePreviewLoop);
 
-        // Waveform zoom  (= freed from IncrementRep, - freed from DecrementRep)
+        // Waveform zoom
         bindings.insert((KeyCode::Char('='), none), Action::ZoomIn);
         bindings.insert((KeyCode::Char('-'), none), Action::ZoomOut);
         bindings.insert((KeyCode::Char('0'), none), Action::ZoomReset);
-        // Nudge: Cmd-Ctrl-h/l (small), Cmd-Ctrl-H/L (large).
-        let cmd_ctrl = KeyModifiers::SUPER | KeyModifiers::CONTROL;
-        let cmd_ctrl_shift = KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-        bindings.insert((KeyCode::Char('l'), cmd_ctrl), Action::NudgeMarkerForwardSmall);
-        bindings.insert((KeyCode::Char('h'), cmd_ctrl), Action::NudgeMarkerBackwardSmall);
-        bindings.insert((KeyCode::Char('L'), cmd_ctrl_shift), Action::NudgeMarkerForwardLarge);
-        bindings.insert((KeyCode::Char('H'), cmd_ctrl_shift), Action::NudgeMarkerBackwardLarge);
+        // Nudge: Ctrl-Left/Right (small), Ctrl-Shift-Left/Right (large).
+        // Note: Cmd-Ctrl-* won't work in any standard macOS terminal (SUPER not forwarded).
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        bindings.insert((KeyCode::Right, ctrl), Action::NudgeMarkerForwardSmall);
+        bindings.insert((KeyCode::Left, ctrl), Action::NudgeMarkerBackwardSmall);
+        bindings.insert((KeyCode::Right, ctrl_shift), Action::NudgeMarkerForwardLarge);
+        bindings.insert((KeyCode::Left, ctrl_shift), Action::NudgeMarkerBackwardLarge);
         bindings.insert((KeyCode::Char(']'), ctrl), Action::SnapZeroCrossingForward);
         bindings.insert((KeyCode::Char('['), ctrl), Action::SnapZeroCrossingBackward);
         bindings.insert((KeyCode::Char('r'), ctrl), Action::MarkerReset);
@@ -721,8 +749,10 @@ pub fn key_display(code: &KeyCode, modifiers: &KeyModifiers) -> String {
         }
     } else if modifiers.contains(KeyModifiers::CONTROL) {
         s.push_str("Ctrl-");
+    } else if modifiers.contains(KeyModifiers::SUPER) {
+        s.push_str("Cmd-");
     } else if modifiers.contains(KeyModifiers::ALT) {
-        s.push_str("Alt-");
+        s.push_str("Opt-");
     } else if modifiers.contains(KeyModifiers::SHIFT) {
         // Shift prefix for non-char keys (arrows, etc).
         match code {
@@ -1078,10 +1108,12 @@ mod tests {
     }
 
     #[test]
-    fn test_select_prev_marker_bound_to_ctrl_h() {
+    fn test_select_prev_marker_unbound_ctrl_h() {
+        // Ctrl-H is omitted from default_keymap: terminals send it as Backspace (0x08).
+        // Default is Opt-H (ALT modifier); see test_select_prev_marker_default_opt_h.
         let km = Keymap::default_keymap();
         let ctrl_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
-        assert_eq!(km.resolve(ctrl_h), Some(Action::SelectPrevMarker));
+        assert_eq!(km.resolve(ctrl_h), None);
     }
 
     #[test]
@@ -1106,10 +1138,12 @@ mod tests {
     }
 
     #[test]
-    fn test_decrement_rep_bound_to_ctrl_j() {
+    fn test_decrement_rep_unbound_ctrl_j() {
+        // Ctrl-J is omitted from default_keymap: terminals send it as Enter (0x0A),
+        // which would fire OpenSelected instead of DecrementRep.
         let km = Keymap::default_keymap();
         let ctrl_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
-        assert_eq!(km.resolve(ctrl_j), Some(Action::DecrementRep));
+        assert_eq!(km.resolve(ctrl_j), None);
     }
 
     #[test]
@@ -1223,22 +1257,41 @@ mod tests {
     }
 
     #[test]
-    fn test_nudge_bindings_cmd_ctrl_hl() {
+    fn test_nudge_bindings_ctrl_arrow() {
         let km = Keymap::default_keymap();
+        let ctrl = KeyModifiers::CONTROL;
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+
+        let right = KeyEvent::new(KeyCode::Right, ctrl);
+        assert_eq!(km.resolve(right), Some(Action::NudgeMarkerForwardSmall));
+
+        let left = KeyEvent::new(KeyCode::Left, ctrl);
+        assert_eq!(km.resolve(left), Some(Action::NudgeMarkerBackwardSmall));
+
+        let big_right = KeyEvent::new(KeyCode::Right, ctrl_shift);
+        assert_eq!(km.resolve(big_right), Some(Action::NudgeMarkerForwardLarge));
+
+        let big_left = KeyEvent::new(KeyCode::Left, ctrl_shift);
+        assert_eq!(km.resolve(big_left), Some(Action::NudgeMarkerBackwardLarge));
+
+        // Old Cmd-Ctrl-h/l bindings no longer in default keymap.
         let cmd_ctrl = KeyModifiers::SUPER | KeyModifiers::CONTROL;
-        let cmd_ctrl_shift = KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        let old_l = KeyEvent::new(KeyCode::Char('l'), cmd_ctrl);
+        assert_eq!(km.resolve(old_l), None, "Cmd-Ctrl-l should no longer be nudge (SUPER not forwarded by terminals)");
+    }
 
-        let l = KeyEvent::new(KeyCode::Char('l'), cmd_ctrl);
-        assert_eq!(km.resolve(l), Some(Action::NudgeMarkerForwardSmall));
+    #[test]
+    fn test_decrement_rep_default_opt_j() {
+        let km = Keymap::default_keymap();
+        let opt_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT);
+        assert_eq!(km.resolve(opt_j), Some(Action::DecrementRep));
+    }
 
-        let h = KeyEvent::new(KeyCode::Char('h'), cmd_ctrl);
-        assert_eq!(km.resolve(h), Some(Action::NudgeMarkerBackwardSmall));
-
-        let big_l = KeyEvent::new(KeyCode::Char('L'), cmd_ctrl_shift);
-        assert_eq!(km.resolve(big_l), Some(Action::NudgeMarkerForwardLarge));
-
-        let big_h = KeyEvent::new(KeyCode::Char('H'), cmd_ctrl_shift);
-        assert_eq!(km.resolve(big_h), Some(Action::NudgeMarkerBackwardLarge));
+    #[test]
+    fn test_select_prev_marker_default_opt_h() {
+        let km = Keymap::default_keymap();
+        let opt_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT);
+        assert_eq!(km.resolve(opt_h), Some(Action::SelectPrevMarker));
     }
 
     #[test]

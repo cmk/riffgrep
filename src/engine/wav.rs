@@ -638,7 +638,7 @@ pub fn nth_zero_crossing_forward(
 pub const NUM_ZOOM_COLS: usize = PEAK_COUNT;
 
 /// Maximum zoom level (2^MAX_ZOOM_LEVEL × magnification).
-pub const MAX_ZOOM_LEVEL: usize = 10;
+pub const MAX_ZOOM_LEVEL: usize = 12;
 
 /// Left-channel PCM samples extracted from a WAV file for zoom peak computation.
 ///

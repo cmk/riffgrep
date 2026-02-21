@@ -972,9 +972,39 @@ pub fn render_help_overlay(app: &App, area: Rect, buf: &mut Buffer) {
 
     // Build help lines from keymap.
     let entries = app.keymap.help_entries();
+
+    // Pre-pass: dedup bindings per category and compute max key-column width.
+    // Width is the max length of grouped key strings (e.g. "Ctrl-l, Opt-l").
+    type ActionRow<'a> = (super::actions::Action, Vec<&'a str>);
+    let sections: Vec<(&str, Vec<ActionRow<'_>>)> = entries
+        .iter()
+        .map(|(category, bindings)| {
+            let mut action_keys: Vec<ActionRow<'_>> = Vec::new();
+            for (key_str, action) in bindings {
+                if let Some(entry) = action_keys.iter_mut().find(|(a, _)| a == action) {
+                    entry.1.push(key_str.as_str());
+                } else {
+                    action_keys.push((*action, vec![key_str.as_str()]));
+                }
+            }
+            (*category, action_keys)
+        })
+        .collect();
+
+    let key_col_width: usize = sections
+        .iter()
+        .flat_map(|(_, rows)| rows.iter().map(|(_, keys)| {
+            keys.iter().map(|k| k.len()).sum::<usize>()
+                + keys.len().saturating_sub(1) * 2 // ", " separators
+        }))
+        .max()
+        .unwrap_or(12)
+        .max(12)
+        .min(32); // safety cap against extreme overflow
+
     let mut lines: Vec<Line<'_>> = Vec::new();
 
-    for (category, bindings) in &entries {
+    for (category, action_keys) in &sections {
         // Category header.
         lines.push(Line::from(Span::styled(
             format!("  {category}"),
@@ -983,21 +1013,11 @@ pub fn render_help_overlay(app: &App, area: Rect, buf: &mut Buffer) {
                 .add_modifier(Modifier::BOLD),
         )));
 
-        // Deduplicate: group keys by action.
-        let mut action_keys: Vec<(super::actions::Action, Vec<&str>)> = Vec::new();
-        for (key_str, action) in bindings {
-            if let Some(entry) = action_keys.iter_mut().find(|(a, _)| a == action) {
-                entry.1.push(key_str);
-            } else {
-                action_keys.push((*action, vec![key_str]));
-            }
-        }
-
-        for (action, keys) in &action_keys {
+        for (action, keys) in action_keys {
             let keys_str = keys.join(", ");
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("    {keys_str:<16}"),
+                    format!("    {keys_str:<key_col_width$}  "),
                     theme.metadata_key,
                 ),
                 Span::styled(

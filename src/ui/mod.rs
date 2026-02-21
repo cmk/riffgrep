@@ -455,6 +455,11 @@ impl App {
         // Look up key in configurable keymap.
         if let Some(action) = self.keymap.resolve(key) {
             self.dispatch(action);
+        } else {
+            // Show the raw key event in the status bar so the user can diagnose
+            // whether the terminal is forwarding modifier keys as expected.
+            let display = actions::key_display(&key.code, &key.modifiers);
+            self.set_status(format!("Unbound: {display}"));
         }
     }
 
