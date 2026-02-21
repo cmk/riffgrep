@@ -438,7 +438,7 @@ impl Action {
 /// Handles: single chars ("j", "G"), special keys ("Space", "Esc", "Enter",
 /// "Up", "Down", "Backspace", "Tab", "/", "?"), modifier combos ("Ctrl-C",
 /// "Ctrl-D", "Ctrl-U"), Ctrl+Shift ("Ctrl-S-Right"), Ctrl+Alt/Opt
-/// ("Ctrl-Alt-m", "Ctrl-Opt-m"), Ctrl+Arrow ("Ctrl-Left", "Ctrl-Right"),
+/// ("Ctrl-Alt-d", "Ctrl-Opt-d"), Ctrl+Arrow ("Ctrl-Left", "Ctrl-Right"),
 /// Cmd+Ctrl ("Cmd-Ctrl-h", "Cmd-Ctrl-H" — uppercase implies Shift),
 /// standalone Alt/Option ("Alt-x", "Opt-X" — uppercase implies Shift), and
 /// standalone Cmd ("Cmd-k" — macOS terminals typically intercept these).
@@ -683,8 +683,11 @@ impl Keymap {
         bindings.insert((KeyCode::Char('r'), ctrl), Action::MarkerReset);
         bindings.insert((KeyCode::Char('e'), ctrl), Action::ExportMarkersCsv);
         bindings.insert((KeyCode::Char('i'), ctrl), Action::ImportMarkersCsv);
+        // ToggleMarkerDisplay → Ctrl-Alt-d.
+        // Note: Ctrl-m = 0x0D (carriage return) — terminals convert it to Enter,
+        // so Ctrl-Alt-m would arrive as Alt+Enter and never match.
         bindings.insert(
-            (KeyCode::Char('m'), KeyModifiers::CONTROL | KeyModifiers::ALT),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL | KeyModifiers::ALT),
             Action::ToggleMarkerDisplay,
         );
 
@@ -1172,6 +1175,20 @@ mod tests {
         let name = Action::ToggleMarkerDisplay.name();
         assert_eq!(name, "toggle_marker_display");
         assert_eq!(Action::from_name(name), Some(Action::ToggleMarkerDisplay));
+    }
+
+    #[test]
+    fn test_toggle_marker_display_bound_to_ctrl_alt_d() {
+        // Ctrl-Alt-d is the canonical binding. Ctrl-Alt-m is deliberately avoided:
+        // Ctrl-m = 0x0D (CR); terminals canonicalize it to Enter, so Ctrl-Alt-m
+        // arrives as Alt+Enter and never matches the (Char('m'), CTRL|ALT) entry.
+        let km = Keymap::default_keymap();
+        let ctrl_alt_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(km.resolve(ctrl_alt_d), Some(Action::ToggleMarkerDisplay));
+
+        // Ctrl-Alt-m must NOT be bound (would be unreachable anyway).
+        let ctrl_alt_m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(km.resolve(ctrl_alt_m), None);
     }
 
     #[test]

@@ -56,12 +56,20 @@ const CROSSFADE_FRAMES: u32 = 64;
 /// Shared state between the [`SegmentSource`] (mixer thread) and the UI.
 pub struct SourceControl {
     /// Current frame position (written by source, read by UI).
+    ///
+    /// Always in logical file-space (0..total_frames), even for reversed
+    /// segments whose buffer data lives in an appended scratch region.
     pub frame: AtomicU32,
     /// Pending seek target frame (written by UI, consumed by source).
     pub pending_seek: AtomicU32,
     /// Whether looping is enabled: gates both per-segment infinite reps and
     /// global playlist restart. Written by UI toggle, read by source per frame.
     pub loop_enabled: AtomicBool,
+    /// Restart the program from segment 0. Written by UI, consumed by source.
+    ///
+    /// Unlike `pending_seek`, this resets `seg_idx` so reversed segments
+    /// (whose data lives past `total_frames` in the buffer) play correctly.
+    pub pending_restart: AtomicBool,
 }
 
 impl SourceControl {
@@ -69,7 +77,10 @@ impl SourceControl {
         Self {
             frame: AtomicU32::new(0),
             pending_seek: AtomicU32::new(NO_SEEK),
-            loop_enabled: AtomicBool::new(true),
+            // Default false: callers (play / play_with_segments) set this explicitly.
+            // A true default causes reps=1 segments to restart the program forever.
+            loop_enabled: AtomicBool::new(false),
+            pending_restart: AtomicBool::new(false),
         }
     }
 }
@@ -77,12 +88,17 @@ impl SourceControl {
 /// A segment in the playback program.
 #[derive(Clone)]
 struct PlaySegment {
-    /// Start frame (inclusive).
+    /// Start frame (inclusive), in buffer space.
     start: u32,
-    /// End frame (exclusive).
+    /// End frame (exclusive), in buffer space.
     end: u32,
     /// Repetitions: 1 = play once, 2+ = repeat, 255 = infinite loop.
     reps: u8,
+    /// For reversed segments: the logical file-space frame at buffer position
+    /// `start` (i.e. the original high-boundary frame minus one).
+    ///
+    /// `None` for forward segments (buffer space == logical space).
+    logical_start: Option<u32>,
 }
 
 /// Pre-decoded audio buffer with segment-aware, pop-free playback.
@@ -145,6 +161,23 @@ impl SegmentSource {
 
     /// Process frame-boundary logic. Returns `false` if the source should end.
     fn on_frame_boundary(&mut self) -> bool {
+        // 0. Pending program restart: reset seg_idx and jump to playlist[0].
+        //
+        // Unlike pending_seek (which can't navigate into the appended scratch
+        // region used by reversed segments), pending_restart resets seg_idx
+        // so the first PlaySegment's buffer-space start is used directly.
+        if self.control.pending_restart.swap(false, Ordering::Relaxed) {
+            self.seg_idx = 0;
+            if let Some(first) = self.playlist.first().cloned() {
+                self.reps_left = first.reps;
+                self.jump_to(first.start);
+                // Overwrite with logical frame (jump_to stores buffer frame).
+                let logical = first.logical_start.unwrap_or(first.start);
+                self.control.frame.store(logical, Ordering::Relaxed);
+            }
+            return true;
+        }
+
         // 1. Pending seek from UI (user scrub / marker jump).
         let seek = self.control.pending_seek.swap(NO_SEEK, Ordering::Relaxed);
         if seek != NO_SEEK {
@@ -207,8 +240,19 @@ impl SegmentSource {
             }
         }
 
-        // 3. Update UI position.
-        self.control.frame.store(self.frame(), Ordering::Relaxed);
+        // 3. Update UI position (always in logical file-space).
+        //
+        // For reversed segments, the buffer frame is in the appended scratch
+        // region (> total_frames). Map it back to file space:
+        //   logical = logical_start - (buffer_frame - seg.start)
+        let logical = match self.playlist.get(self.seg_idx) {
+            Some(seg) if seg.logical_start.is_some() => {
+                let ls = seg.logical_start.unwrap();
+                ls.saturating_sub(self.frame().saturating_sub(seg.start))
+            }
+            _ => self.frame(),
+        };
+        self.control.frame.store(logical, Ordering::Relaxed);
         true
     }
 }
@@ -369,6 +413,7 @@ impl PlaybackEngine {
                 start: 0,
                 end: total_frames,
                 reps: 1,
+                logical_start: None,
             }],
             seg_idx: 0,
             reps_left: 1,
@@ -401,29 +446,64 @@ impl PlaybackEngine {
 
     /// Start segment-based playback with a program playlist.
     ///
-    /// Each entry is `(start_frame, end_frame, reps)` where reps: 1 = play once,
-    /// 2+ = repeat, 15 = infinite loop. `global_loop` restarts the entire
-    /// playlist when all segments complete. Boundaries, looping, and crossfades
-    /// are handled at the sample level — no pops.
+    /// Each entry is `(start_frame, end_frame, reps, reverse)` where:
+    /// - reps: 1 = play once, 2+ = repeat, 15 = infinite loop
+    /// - reverse: when true, start > end; playback runs end→start (frames reversed)
+    ///
+    /// Reversed segments are pre-reversed into a scratch region appended to the
+    /// decoded buffer, then played forward through that region. `global_loop`
+    /// restarts the entire playlist when all segments complete. Boundaries,
+    /// looping, and crossfades are handled at the sample level — no pops.
     pub fn play_with_segments(
         &self,
         path: &Path,
-        playlist: &[(u32, u32, u8)],
+        playlist: &[(u32, u32, u8, bool)],
         global_loop: bool,
     ) -> Result<(), anyhow::Error> {
         self.stop();
 
-        let (samples, channels, sample_rate) = pre_decode(path)?;
+        let (mut samples, channels, sample_rate) = pre_decode(path)?;
         let total_frames = samples.len() as u32 / channels as u32;
+        let ch = channels as usize;
 
-        let segments: Vec<PlaySegment> = playlist
-            .iter()
-            .map(|&(start, end, reps)| PlaySegment {
-                start,
-                end: end.min(total_frames),
-                reps: if reps == 15 { 255 } else { reps },
-            })
-            .collect();
+        let mut segments: Vec<PlaySegment> = Vec::with_capacity(playlist.len());
+        for &(start, end, reps, reverse) in playlist {
+            let reps = if reps == 15 { 255 } else { reps };
+            if reverse {
+                // start > end for a reversed segment: the buffer region is [end, start).
+                let lo = end as usize * ch;
+                let hi = (start as usize * ch).min(samples.len());
+                if lo >= hi {
+                    // Degenerate reversed segment — treat as skip.
+                    continue;
+                }
+                // Append frames in reverse order (preserving within-frame channel order).
+                let new_start = (samples.len() / ch) as u32;
+                let reversed: Vec<f32> = samples[lo..hi]
+                    .chunks(ch)
+                    .rev()
+                    .flat_map(|frame| frame.iter().copied())
+                    .collect();
+                samples.extend_from_slice(&reversed);
+                let new_end = (samples.len() / ch) as u32;
+                // logical_start: the file-space frame that maps to buffer position new_start.
+                // Frame new_start in buffer = original frame start-1 (the reversed segment
+                // begins at the highest original frame and descends toward end).
+                segments.push(PlaySegment {
+                    start: new_start,
+                    end: new_end,
+                    reps,
+                    logical_start: Some(start.saturating_sub(1)),
+                });
+            } else {
+                segments.push(PlaySegment {
+                    start,
+                    end: end.min(total_frames),
+                    reps,
+                    logical_start: None,
+                });
+            }
+        }
 
         let first_reps = segments.first().map(|s| s.reps).unwrap_or(1);
         let first_start = segments.first().map(|s| s.start).unwrap_or(0);
@@ -623,6 +703,27 @@ impl PlaybackEngine {
         if let Some(ref ctl) = *self.source_control.lock().unwrap() {
             ctl.loop_enabled.store(enabled, Ordering::Relaxed);
         }
+    }
+
+    /// Restart the active program from segment 0.
+    ///
+    /// Unlike `seek_to_sample(0)`, this resets `seg_idx` inside the source so
+    /// reversed segments (whose buffer data lives past `total_frames`) are
+    /// reached correctly. No-op when stopped.
+    pub fn restart_program(&self) {
+        let state = PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
+        if state == PlaybackState::Stopped {
+            return;
+        }
+        if let Some(ref ctl) = *self.source_control.lock().unwrap() {
+            ctl.pending_restart.store(true, Ordering::Relaxed);
+        }
+        *self.sample_offset.lock().unwrap() = 0;
+        *self.paused_elapsed.lock().unwrap() = Duration::ZERO;
+        if state == PlaybackState::Playing {
+            *self.play_start.lock().unwrap() = Some(Instant::now());
+        }
+        *self.drain_start.lock().unwrap() = None;
     }
 
     /// Seek relative to current position in seconds.
@@ -1109,12 +1210,8 @@ mod tests {
     }
 
     // --- SegmentSource unit tests ---
-    // These tests iterate the SegmentSource iterator directly and hang when
-    // the source loops infinitely (likely a crossfade/boundary bug). Ignored
-    // until the root cause is fixed.
 
     #[test]
-    #[ignore]
     fn test_segment_source_single_segment() {
         // Build a tiny mono buffer: 100 frames of ascending values.
         let buffer: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
@@ -1126,7 +1223,7 @@ mod tests {
             total_frames: 100,
             pos: 0,
             channel: 0,
-            playlist: vec![PlaySegment { start: 0, end: 100, reps: 1 }],
+            playlist: vec![PlaySegment { start: 0, end: 100, reps: 1, logical_start: None }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
@@ -1144,7 +1241,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_segment_source_loops_with_crossfade() {
         // 200-frame mono buffer, segment 0..100, reps=2 (play twice).
         let buffer: Vec<f32> = (0..200).map(|i| i as f32 / 200.0).collect();
@@ -1156,7 +1252,7 @@ mod tests {
             total_frames: 200,
             pos: 0,
             channel: 0,
-            playlist: vec![PlaySegment { start: 0, end: 100, reps: 2 }],
+            playlist: vec![PlaySegment { start: 0, end: 100, reps: 2, logical_start: None }],
             seg_idx: 0,
             reps_left: 2,
             fade_out: 0,
@@ -1175,7 +1271,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_segment_source_pending_seek() {
         let buffer: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
         let control = Arc::new(SourceControl::new());
@@ -1186,7 +1281,7 @@ mod tests {
             total_frames: 100,
             pos: 0,
             channel: 0,
-            playlist: vec![PlaySegment { start: 0, end: 100, reps: 1 }],
+            playlist: vec![PlaySegment { start: 0, end: 100, reps: 1, logical_start: None }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
@@ -1211,7 +1306,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_segment_source_sequential_advance() {
         // Two sequential segments: 0..50, 50..100 — continuous, no crossfade needed.
         let buffer: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
@@ -1224,8 +1318,8 @@ mod tests {
             pos: 0,
             channel: 0,
             playlist: vec![
-                PlaySegment { start: 0, end: 50, reps: 1 },
-                PlaySegment { start: 50, end: 100, reps: 1 },
+                PlaySegment { start: 0, end: 50, reps: 1, logical_start: None },
+                PlaySegment { start: 50, end: 100, reps: 1, logical_start: None },
             ],
             seg_idx: 0,
             reps_left: 1,
@@ -1245,7 +1339,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_segment_source_crossfade_no_pop() {
         // Segment 0..50 with 2 reps. On loop-back, crossfade should prevent
         // discontinuity. Use a ramp that ends at 1.0 and restarts at 0.0 —
@@ -1260,7 +1353,7 @@ mod tests {
             total_frames: 100,
             pos: 0,
             channel: 0,
-            playlist: vec![PlaySegment { start: 0, end: 50, reps: 2 }],
+            playlist: vec![PlaySegment { start: 0, end: 50, reps: 2, logical_start: None }],
             seg_idx: 0,
             reps_left: 2,
             fade_out: 0,
@@ -1284,6 +1377,155 @@ mod tests {
     }
 
     #[test]
+    fn test_segment_source_reverse_segment() {
+        // A reversed segment: play_with_segments pre-reverses the buffer region
+        // and creates a forward PlaySegment pointing to the reversed copy.
+        // Verify that the samples come out in reversed frame order.
+        //
+        // Buffer: 10 mono frames with values 0.0, 0.1, ..., 0.9.
+        // Reversed segment covers frames 2..8 (values 0.2..0.7).
+        // Expected output: 0.7, 0.6, 0.5, 0.4, 0.3, 0.2 (6 samples).
+        let buffer: Vec<f32> = (0..10).map(|i| i as f32 / 10.0).collect();
+        let control = Arc::new(SourceControl::new());
+        // pre_reverse: frames 2..8 reversed → frame order [7,6,5,4,3,2]
+        let ch = 1usize;
+        let reversed: Vec<f32> = buffer[2*ch..8*ch]
+            .chunks(ch).rev()
+            .flat_map(|f| f.iter().copied())
+            .collect();
+        let mut buf = buffer.clone();
+        let new_start = (buf.len() / ch) as u32; // = 10
+        buf.extend_from_slice(&reversed);
+        let new_end = (buf.len() / ch) as u32;   // = 16
+
+        let mut src = SegmentSource {
+            buffer: buf,
+            channels: 1,
+            rate: 48000,
+            total_frames: 10,
+            pos: new_start as usize * ch,
+            channel: 0,
+            playlist: vec![PlaySegment { start: new_start, end: new_end, reps: 1, logical_start: Some(7) }],
+            seg_idx: 0,
+            reps_left: 1,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
+
+        let samples: Vec<f32> = std::iter::from_fn(|| src.next()).collect();
+        assert_eq!(samples.len(), 6, "reversed segment should yield 6 samples");
+        // Values should be ~0.7, 0.6, 0.5, 0.4, 0.3, 0.2 (in reverse order of original).
+        for (i, &s) in samples.iter().enumerate() {
+            let expected = (7 - i) as f32 / 10.0;
+            assert!(
+                (s - expected).abs() < 1e-5,
+                "sample[{i}] = {s}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_segment_source_reversed_logical_frame() {
+        // Verify that control.frame reports file-space (logical) frames during
+        // reversed segment playback, not buffer-space frames.
+        //
+        // Setup: 10-frame mono buffer. Reversed segment: original frames 2..8.
+        // Pre-reversed copy appended at buffer frames 10..16.
+        // logical_start = 7 (original frame start-1 = 8-1).
+        //
+        // At buffer frame 10: logical = 7 - (10 - 10) = 7
+        // At buffer frame 11: logical = 7 - (11 - 10) = 6
+        // At buffer frame 15: logical = 7 - (15 - 10) = 2
+        let ch = 1usize;
+        let buffer: Vec<f32> = (0..10).map(|i| i as f32 / 10.0).collect();
+        let reversed: Vec<f32> = buffer[2*ch..8*ch]
+            .chunks(ch).rev()
+            .flat_map(|f| f.iter().copied())
+            .collect();
+        let mut buf = buffer;
+        let new_start = (buf.len() / ch) as u32; // = 10
+        buf.extend_from_slice(&reversed);
+        let new_end = (buf.len() / ch) as u32;   // = 16
+
+        let control = Arc::new(SourceControl::new());
+        let mut src = SegmentSource {
+            buffer: buf,
+            channels: 1,
+            rate: 48000,
+            total_frames: 10,
+            pos: new_start as usize * ch,
+            channel: 0,
+            playlist: vec![PlaySegment {
+                start: new_start, end: new_end, reps: 1, logical_start: Some(7),
+            }],
+            seg_idx: 0,
+            reps_left: 1,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
+
+        // Consume frames one at a time and check logical frame after each.
+        let mut logical_frames: Vec<u32> = Vec::new();
+        while src.next().is_some() {
+            logical_frames.push(control.frame.load(Ordering::Relaxed));
+        }
+        assert_eq!(logical_frames.len(), 6);
+        // Logical frames should count down: 7, 6, 5, 4, 3, 2.
+        for (i, &lf) in logical_frames.iter().enumerate() {
+            let expected = 7u32.saturating_sub(i as u32);
+            assert_eq!(lf, expected, "logical_frame[{i}] = {lf}, expected {expected}");
+        }
+    }
+
+    #[test]
+    fn test_segment_source_pending_restart() {
+        // Verify that pending_restart resets seg_idx and restarts from segment 0.
+        //
+        // Setup: two-segment playlist [0..50, 50..100].
+        // Consume all of segment 0 (50 samples) so the source is in segment 1.
+        // Then set pending_restart and verify the source replays from segment 0.
+        let buffer: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+        let control = Arc::new(SourceControl::new());
+        let mut src = SegmentSource {
+            buffer: buffer.clone(),
+            channels: 1,
+            rate: 48000,
+            total_frames: 100,
+            pos: 0,
+            channel: 0,
+            playlist: vec![
+                PlaySegment { start: 0, end: 50, reps: 1, logical_start: None },
+                PlaySegment { start: 50, end: 100, reps: 1, logical_start: None },
+            ],
+            seg_idx: 0,
+            reps_left: 1,
+            fade_out: 0,
+            fade_in: 0,
+            control: Arc::clone(&control),
+        };
+
+        // Consume segment 0 + a few frames of segment 1.
+        for _ in 0..55 {
+            src.next();
+        }
+        // Now in segment 1; frame should be around 55.
+        assert!(control.frame.load(Ordering::Relaxed) >= 50,
+            "should be in segment 1 by now");
+
+        // Signal restart and consume one frame to trigger step 0.
+        control.pending_restart.store(true, Ordering::Relaxed);
+        src.next();
+
+        // After restart: seg_idx=0, frame should be at start of segment 0 (=0).
+        assert_eq!(control.frame.load(Ordering::Relaxed), 0,
+            "pending_restart should rewind logical frame to segment 0 start");
+        // Source should continue yielding samples (not exhausted).
+        assert!(src.next().is_some(), "source should still yield samples after restart");
+    }
+
+    #[test]
     fn test_play_with_segments_basic() {
         let engine = match PlaybackEngine::try_new() {
             Ok(e) => e,
@@ -1299,7 +1541,7 @@ mod tests {
             engine.stop();
             t
         };
-        let playlist = vec![(0, total / 2, 1u8), (total / 2, total, 1u8)];
+        let playlist = vec![(0, total / 2, 1u8, false), (total / 2, total, 1u8, false)];
         engine.play_with_segments(path, &playlist, false).unwrap();
         assert_eq!(engine.state(), PlaybackState::Playing);
         assert_eq!(engine.sample_offset(), 0);

@@ -205,8 +205,8 @@ pub struct App {
     pub segment_start: Option<u32>,
     /// Segment playback: remaining repetitions for current segment.
     pub segment_reps_remaining: u8,
-    /// Program playback: ordered list of (start, end, reps) to play.
-    pub program_playlist: Vec<(u32, u32, u8)>,
+    /// Program playback: ordered list of (start, end, reps, reverse) to play.
+    pub program_playlist: Vec<(u32, u32, u8, bool)>,
     /// Program playback: index into program_playlist.
     pub program_index: usize,
     /// Transient status message shown in the status bar.
@@ -240,6 +240,11 @@ pub struct App {
     /// Updated eagerly by `zoom_in()` / `zoom_out()` / `zoom_reset()` so that
     /// `render_waveform_panel` can read them via `&App` without needing `&mut App`.
     pub zoom_peaks: Vec<u8>,
+    /// Cursor position in samples when playback is stopped.
+    ///
+    /// Scrub actions update this while stopped; cleared on selection change and
+    /// applied as the initial seek target when playback starts.
+    pub cursor_sample: u32,
 }
 
 impl App {
@@ -299,6 +304,7 @@ impl App {
             zoom_center: None,
             zoom_cache: None,
             zoom_peaks: Vec::new(),
+            cursor_sample: 0,
         }
     }
 
@@ -316,7 +322,7 @@ impl App {
         // ToggleBank and ToggleBankSync are also suppressed when markers are hidden.
         let is_bank_toggle = matches!(action, Action::ToggleBank | Action::ToggleBankSync);
         if !self.markers_visible && (action.is_marker_edit() || is_bank_toggle) {
-            self.set_status("Enable markers with Ctrl-Alt-M".to_string());
+            self.set_status("Enable markers with Ctrl-Alt-d".to_string());
             return;
         }
 
@@ -684,17 +690,47 @@ impl App {
         }
     }
 
-    /// Seek relative to current position (seconds). No-op when stopped or no engine.
-    fn seek_relative(&self, delta: f64) {
+    /// Seek relative to current position (seconds).
+    ///
+    /// When playing or paused, delegates to the engine immediately. When stopped,
+    /// updates `cursor_sample` so the next `play_program()` call starts from there.
+    fn seek_relative(&mut self, delta: f64) {
+        // Active playback: seek the engine directly.
         if let Some(ref engine) = self.playback {
-            let _ = engine.seek_relative(delta);
+            if engine.state() != PlaybackState::Stopped {
+                let _ = engine.seek_relative(delta);
+                return;
+            }
         }
+
+        // Stopped: update cursor_sample from preview audio info.
+        let Some(total) = self.total_samples() else { return };
+        let rate = self.preview.as_ref()
+            .and_then(|p| p.audio_info.as_ref())
+            .map(|ai| ai.sample_rate)
+            .unwrap_or(48000) as f64;
+        let delta_samples = (delta * rate) as i64;
+        self.cursor_sample = (self.cursor_sample as i64 + delta_samples)
+            .clamp(0, total as i64) as u32;
+        let secs = self.cursor_sample as f64 / rate;
+        self.set_status(format!("Position: {:.2}s", secs));
     }
 
-    /// Rewind playback to sample 0. No-op when stopped.
-    fn rewind_to_start(&self) {
-        if let Some(ref engine) = self.playback {
-            let _ = engine.seek_to_sample(0);
+    /// Rewind playback to sample 0. Also clears the stopped-cursor position.
+    ///
+    /// Rewind audio to the beginning of the current program.
+    ///
+    /// When not stopped, calls `play_program()` to create a fresh `SegmentSource`
+    /// so any in-memory edits (reps, marker positions) take effect immediately.
+    /// Simply signalling `restart_program()` would reuse the existing source whose
+    /// playlist was frozen at creation time and would not reflect the edits.
+    ///
+    /// When stopped, only the UI cursor is reset; the next Space press will call
+    /// `play_program()` naturally via `toggle_playback()`.
+    fn rewind_to_start(&mut self) {
+        self.cursor_sample = 0;
+        if self.playback_state() != PlaybackState::Stopped {
+            self.play_program();
         }
     }
 
@@ -875,13 +911,20 @@ impl App {
     }
 
     /// Get the current playback position as an absolute sample offset.
+    ///
+    /// Returns the engine's position when playing/paused, or `cursor_sample`
+    /// when stopped and the user has scrubbed to a non-zero position.
     fn playback_sample(&self) -> Option<u32> {
         let total = self.total_samples()?;
         let pos = self.playback_position();
-        if pos <= 0.0 {
-            return None;
+        if pos > 0.0 {
+            return Some(((pos as f64) * total as f64) as u32);
         }
-        Some(((pos as f64) * total as f64) as u32)
+        // Show stopped-cursor as waveform playhead.
+        if self.cursor_sample > 0 {
+            return Some(self.cursor_sample);
+        }
+        None
     }
 
     /// Ensure preview has markers (initialize from defaults if needed).
@@ -1145,10 +1188,10 @@ impl App {
             return;
         }
 
-        // Build playlist: (start, end, reps) for non-skipped, non-reverse segments.
-        let playlist: Vec<(u32, u32, u8)> = segs.iter()
-            .filter(|seg| seg.rep > 0 && !seg.reverse && seg.start != seg.end)
-            .map(|seg| (seg.start, seg.end, seg.rep))
+        // Build playlist: (start, end, reps, reverse) for all non-skipped segments.
+        let playlist: Vec<(u32, u32, u8, bool)> = segs.iter()
+            .filter(|seg| seg.rep > 0 && seg.start != seg.end)
+            .map(|seg| (seg.start, seg.end, seg.rep, seg.reverse))
             .collect();
 
         if playlist.is_empty() {
@@ -1161,6 +1204,11 @@ impl App {
             if let Some(ref engine) = self.playback {
                 match engine.play_with_segments(&path, &playlist, self.global_loop) {
                     Ok(()) => {
+                        // If the user scrubbed while stopped, jump to that position.
+                        if self.cursor_sample > 0 {
+                            let _ = engine.seek_to_sample(self.cursor_sample);
+                            self.cursor_sample = 0;
+                        }
                         self.played.insert(path);
                     }
                     Err(e) => {
@@ -1173,7 +1221,7 @@ impl App {
 
         self.program_playlist = playlist;
         self.program_index = 0;
-        if let Some(&(start, end, _)) = self.program_playlist.first() {
+        if let Some(&(start, end, _, _)) = self.program_playlist.first() {
             self.segment_start = Some(start);
             self.segment_end = Some(end);
         }
@@ -1196,7 +1244,7 @@ impl App {
             return;
         }
 
-        let (start, end, reps) = self.program_playlist[self.program_index];
+        let (start, end, reps, _reverse) = self.program_playlist[self.program_index];
 
         if let Some(row) = self.results.get(self.selected) {
             let path = row.meta.path.clone();
@@ -1275,7 +1323,11 @@ impl App {
     // --- T6: Marker Selection ---
 
     /// Select next defined marker (Tab). Cycles: SOF → m1 → m2 → m3 → SOF.
+    ///
+    /// Calls `ensure_markers()` so default markers are created when the file has
+    /// no BEXT markers yet — otherwise only SOF would be navigable.
     fn select_next_marker(&mut self) {
+        self.ensure_markers();
         let defined = self.defined_marker_indices();
         if defined.is_empty() {
             self.set_status("No markers".to_string());
@@ -1289,7 +1341,10 @@ impl App {
     }
 
     /// Select previous defined marker (Shift-Tab).
+    ///
+    /// Calls `ensure_markers()` for the same reason as `select_next_marker()`.
     fn select_prev_marker(&mut self) {
+        self.ensure_markers();
         let defined = self.defined_marker_indices();
         if defined.is_empty() {
             self.set_status("No markers".to_string());
@@ -1703,7 +1758,7 @@ impl App {
         self.markers_visible = !self.markers_visible;
         if !self.markers_visible {
             self.selected_marker = None;
-            self.set_status("Markers hidden — Ctrl-Alt-M to restore".to_string());
+            self.set_status("Markers hidden — Ctrl-Alt-d to restore".to_string());
         } else {
             self.set_status("Markers visible".to_string());
         }
@@ -2315,6 +2370,7 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
         // Check if selection changed for preview debounce.
         if app.selection_changed {
             app.selection_changed = false;
+            app.cursor_sample = 0; // Stopped-cursor position no longer valid for new file.
             preview_debounce = Some(Instant::now() + debounce_duration);
         }
 
@@ -3913,7 +3969,7 @@ mod tests {
         app.segment_start = Some(1000);
         app.segment_end = Some(2000);
         app.segment_reps_remaining = 3;
-        app.program_playlist = vec![(0, 1000, 2)];
+        app.program_playlist = vec![(0, 1000, 2, false)];
         app.program_index = 0;
         app.stop_playback();
         assert!(app.segment_start.is_none());
@@ -3934,7 +3990,7 @@ mod tests {
     #[test]
     fn test_start_program_segment_past_end() {
         let mut app = App::new(Theme::default());
-        app.program_playlist = vec![(0, 100, 1)];
+        app.program_playlist = vec![(0, 100, 1, false)];
         app.program_index = 5; // past the end
         app.start_program_segment();
         assert_eq!(app.status_message.as_deref(), Some("Program complete"));
@@ -4232,7 +4288,7 @@ mod tests {
         assert!(app.markers_visible);
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert!(!app.markers_visible);
-        assert_eq!(app.status_message.as_deref(), Some("Markers hidden — Ctrl-Alt-M to restore"));
+        assert_eq!(app.status_message.as_deref(), Some("Markers hidden — Ctrl-Alt-d to restore"));
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert!(app.markers_visible);
         assert_eq!(app.status_message.as_deref(), Some("Markers visible"));
@@ -4243,7 +4299,7 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.markers_visible = false;
         app.dispatch(actions::Action::ClearBankMarkers);
-        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-M"));
+        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-d"));
     }
 
     #[test]
@@ -4293,6 +4349,48 @@ mod tests {
         assert_eq!(app.selected_marker, Some(3));
         app.select_next_marker(); // 3 → 0 (wrap)
         assert_eq!(app.selected_marker, Some(0));
+    }
+
+    #[test]
+    fn test_select_next_marker_initializes_default_markers_when_none() {
+        // Bug 1: without first playing the sample, marker navigation beyond SOF was
+        // impossible because preview.markers was None (no BEXT data in file).
+        // ensure_markers() must be called so defaults are created.
+        let mut app = App::new(Theme::default());
+        // Provide a preview with NO markers (simulates a file with no BEXT cue data).
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: None, // <-- the key: no markers yet
+            pcm: None,
+        });
+        // Before the fix: only SOF was navigable (defined_marker_indices returns [0]).
+        // After the fix: ensure_markers() creates defaults, so m1/m2/m3 are reachable.
+        app.select_next_marker(); // SOF (0)
+        assert_eq!(app.selected_marker, Some(0));
+        app.select_next_marker(); // m1 (1)
+        assert_eq!(app.selected_marker, Some(1));
+        app.select_next_marker(); // m2 (2)
+        assert_eq!(app.selected_marker, Some(2));
+        app.select_next_marker(); // m3 (3)
+        assert_eq!(app.selected_marker, Some(3));
+    }
+
+    #[test]
+    fn test_select_prev_marker_initializes_default_markers_when_none() {
+        // Same as above but for select_prev_marker().
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: None,
+            markers: None,
+            pcm: None,
+        });
+        // After ensure_markers() initializes defaults, prev from SOF wraps to m3.
+        app.select_prev_marker(); // SOF → m3 (wrap)
+        assert_eq!(app.selected_marker, Some(3));
     }
 
     #[test]
@@ -4769,7 +4867,7 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.markers_visible = false;
         app.dispatch(actions::Action::SetMarker1);
-        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-M"));
+        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-d"));
     }
 
     #[test]
@@ -4777,7 +4875,7 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.markers_visible = false;
         app.dispatch(actions::Action::SaveMarkers);
-        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-M"));
+        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-d"));
     }
 
     // --- Sprint 12 fixes: F1, F2, F3, F5 ---
@@ -4810,8 +4908,18 @@ mod tests {
     #[test]
     fn test_rewind_to_start_while_stopped_is_noop() {
         // When playback is stopped, rewind_to_start should not panic.
-        let app = App::new(Theme::default());
+        let mut app = App::new(Theme::default());
         app.rewind_to_start(); // no engine playing — should be a silent no-op
+    }
+
+    #[test]
+    fn test_rewind_to_start_resets_cursor_sample() {
+        // Bug 2: rewind_to_start must reset cursor_sample to 0 so the UI reflects
+        // the rewound position, regardless of playback state.
+        let mut app = App::new(Theme::default());
+        app.cursor_sample = 44100; // simulate having scrubbed
+        app.rewind_to_start();
+        assert_eq!(app.cursor_sample, 0, "cursor_sample should be 0 after rewind");
     }
 
     #[test]
