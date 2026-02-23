@@ -33,6 +33,14 @@ criterion = { version = "0.5", features = ["html_reports"] }
 predicates = "3"
 proptest = "1"
 
+[[test]]
+name = "engine"
+path = "tests/engine/main.rs"
+
+[[test]]
+name = "ui"
+path = "tests/ui/main.rs"
+
 [[bench]]
 name = "metadata_read"
 harness = false
