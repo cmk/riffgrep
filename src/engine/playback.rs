@@ -694,6 +694,24 @@ impl PlaybackEngine {
         Ok(())
     }
 
+    /// Set playback volume (linear scale, 0.0 = silence, 1.0 = unity, >1.0 = amplified).
+    ///
+    /// Applied to the active sink. No-op when stopped.
+    pub fn set_volume(&self, linear: f32) {
+        if let Some(ref sink) = *self.sink.lock().unwrap() {
+            sink.set_volume(linear);
+        }
+    }
+
+    /// Set playback speed multiplier (1.0 = normal, 0.5 = half, 2.0 = double).
+    ///
+    /// Applied to the active sink via rodio's speed filter. No-op when stopped.
+    pub fn set_speed(&self, ratio: f32) {
+        if let Some(ref sink) = *self.sink.lock().unwrap() {
+            sink.set_speed(ratio);
+        }
+    }
+
     /// Enable or disable looping on the currently active source.
     ///
     /// Writes to [`SourceControl::loop_enabled`] which is read by the mixer

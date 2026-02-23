@@ -106,6 +106,10 @@ pub struct Opts {
     #[bpaf(long, argument("THEME"))]
     pub theme: Option<String>,
 
+    /// Initial session BPM for speed-relative playback
+    #[bpaf(long("session-bpm"), argument("BPM"))]
+    pub session_bpm: Option<f32>,
+
     /// Search paths (default: current directory)
     #[bpaf(positional("PATH"))]
     pub paths: Vec<PathBuf>,

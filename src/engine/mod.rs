@@ -1472,6 +1472,7 @@ mod tests {
             regenerate_peaks: false,
             no_tui: false,
             theme: None,
+            session_bpm: None,
             paths: vec![],
         }
     }

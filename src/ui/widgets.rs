@@ -348,13 +348,16 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
         }
     };
 
-    // Right side: filter suffix only (result count moved to search prompt).
-    let filter_suffix = if app.show_marked_only { " [marked] " } else { "" };
-    let right = if !filter_suffix.is_empty() {
-        format!("{filter_suffix} ")
-    } else {
-        String::new()
+    // Right side: volume / speed / session BPM / filter.
+    let vol_sign = if app.volume_db >= 0.0 { "+" } else { "" };
+    let vol_str = format!("{vol_sign}{:.1}dB", app.volume_db);
+    let speed_str = format!("{:.2}\u{00D7}", app.speed_multiplier); // ×
+    let bpm_str = match app.session_bpm {
+        Some(bpm) => format!(" \u{2669}{:.1}", bpm), // ♩
+        None => String::new(),
     };
+    let filter_str = if app.show_marked_only { " [marked]" } else { "" };
+    let right = format!(" {vol_str} {speed_str}{bpm_str}{filter_str} ");
 
     // Render left (playback) with accent style.
     if !left.is_empty() {
@@ -363,13 +366,11 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
         buf.set_string(area.x, area.y, &truncated, theme.playback_accent);
     }
 
-    // Render right (filter suffix) aligned right.
-    if !right.is_empty() {
-        let right_len = right.len() as u16;
-        if right_len <= area.width {
-            let right_x = area.x + area.width - right_len;
-            buf.set_string(right_x, area.y, &right, theme.status_text);
-        }
+    // Render right (volume / speed / session BPM) aligned right.
+    let right_len = right.len() as u16;
+    if right_len <= area.width {
+        let right_x = area.x + area.width - right_len;
+        buf.set_string(right_x, area.y, &right, theme.status_text);
     }
 }
 

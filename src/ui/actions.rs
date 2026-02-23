@@ -33,6 +33,21 @@ pub enum Action {
     ToggleTimeDisplay,
     ToggleGlobalLoop,
     ReversePlayback,
+    VolumeUp,
+    VolumeDown,
+    SpeedIncCents,
+    SpeedDecCents,
+    SpeedIncCentsFine,
+    SpeedDecCentsFine,
+    SpeedIncBpm,
+    SpeedDecBpm,
+    SpeedIncBpmFine,
+    SpeedDecBpmFine,
+    SpeedReset,
+    SessionBpmInc,
+    SessionBpmDec,
+    SessionBpmIncFine,
+    SessionBpmDecFine,
 
     // Marks
     ToggleMark,
@@ -111,6 +126,21 @@ impl Action {
         Action::ToggleTimeDisplay,
         Action::ToggleGlobalLoop,
         Action::ReversePlayback,
+        Action::VolumeUp,
+        Action::VolumeDown,
+        Action::SpeedIncCents,
+        Action::SpeedDecCents,
+        Action::SpeedIncCentsFine,
+        Action::SpeedDecCentsFine,
+        Action::SpeedIncBpm,
+        Action::SpeedDecBpm,
+        Action::SpeedIncBpmFine,
+        Action::SpeedDecBpmFine,
+        Action::SpeedReset,
+        Action::SessionBpmInc,
+        Action::SessionBpmDec,
+        Action::SessionBpmIncFine,
+        Action::SessionBpmDecFine,
         Action::ToggleMark,
         Action::ClearMarks,
         Action::ToggleMarkedFilter,
@@ -174,6 +204,21 @@ impl Action {
             "toggle_time_display" => Some(Action::ToggleTimeDisplay),
             "toggle_global_loop" => Some(Action::ToggleGlobalLoop),
             "reverse_playback" => Some(Action::ReversePlayback),
+            "volume_up" => Some(Action::VolumeUp),
+            "volume_down" => Some(Action::VolumeDown),
+            "speed_inc_cents" => Some(Action::SpeedIncCents),
+            "speed_dec_cents" => Some(Action::SpeedDecCents),
+            "speed_inc_cents_fine" => Some(Action::SpeedIncCentsFine),
+            "speed_dec_cents_fine" => Some(Action::SpeedDecCentsFine),
+            "speed_inc_bpm" => Some(Action::SpeedIncBpm),
+            "speed_dec_bpm" => Some(Action::SpeedDecBpm),
+            "speed_inc_bpm_fine" => Some(Action::SpeedIncBpmFine),
+            "speed_dec_bpm_fine" => Some(Action::SpeedDecBpmFine),
+            "speed_reset" => Some(Action::SpeedReset),
+            "session_bpm_inc" => Some(Action::SessionBpmInc),
+            "session_bpm_dec" => Some(Action::SessionBpmDec),
+            "session_bpm_inc_fine" => Some(Action::SessionBpmIncFine),
+            "session_bpm_dec_fine" => Some(Action::SessionBpmDecFine),
             "toggle_mark" => Some(Action::ToggleMark),
             "clear_marks" => Some(Action::ClearMarks),
             "toggle_marked_filter" => Some(Action::ToggleMarkedFilter),
@@ -239,6 +284,21 @@ impl Action {
             Action::ToggleTimeDisplay => "toggle_time_display",
             Action::ToggleGlobalLoop => "toggle_global_loop",
             Action::ReversePlayback => "reverse_playback",
+            Action::VolumeUp => "volume_up",
+            Action::VolumeDown => "volume_down",
+            Action::SpeedIncCents => "speed_inc_cents",
+            Action::SpeedDecCents => "speed_dec_cents",
+            Action::SpeedIncCentsFine => "speed_inc_cents_fine",
+            Action::SpeedDecCentsFine => "speed_dec_cents_fine",
+            Action::SpeedIncBpm => "speed_inc_bpm",
+            Action::SpeedDecBpm => "speed_dec_bpm",
+            Action::SpeedIncBpmFine => "speed_inc_bpm_fine",
+            Action::SpeedDecBpmFine => "speed_dec_bpm_fine",
+            Action::SpeedReset => "speed_reset",
+            Action::SessionBpmInc => "session_bpm_inc",
+            Action::SessionBpmDec => "session_bpm_dec",
+            Action::SessionBpmIncFine => "session_bpm_inc_fine",
+            Action::SessionBpmDecFine => "session_bpm_dec_fine",
             Action::ToggleMark => "toggle_mark",
             Action::ClearMarks => "clear_marks",
             Action::ToggleMarkedFilter => "toggle_marked_filter",
@@ -311,6 +371,21 @@ impl Action {
             Action::ToggleTimeDisplay => "Toggle elapsed/remaining",
             Action::ToggleGlobalLoop => "Toggle global loop",
             Action::ReversePlayback => "Reverse playback",
+            Action::VolumeUp => "Volume up (+1 dBFS)",
+            Action::VolumeDown => "Volume down (-1 dBFS)",
+            Action::SpeedIncCents => "Speed +100¢ (coarse)",
+            Action::SpeedDecCents => "Speed -100¢ (coarse)",
+            Action::SpeedIncCentsFine => "Speed +1¢ (fine)",
+            Action::SpeedDecCentsFine => "Speed -1¢ (fine)",
+            Action::SpeedIncBpm => "Speed +1 BPM (linear)",
+            Action::SpeedDecBpm => "Speed -1 BPM (linear)",
+            Action::SpeedIncBpmFine => "Speed +0.1 BPM (fine)",
+            Action::SpeedDecBpmFine => "Speed -0.1 BPM (fine)",
+            Action::SpeedReset => "Reset speed to 1×",
+            Action::SessionBpmInc => "Session BPM +1",
+            Action::SessionBpmDec => "Session BPM -1",
+            Action::SessionBpmIncFine => "Session BPM +0.1",
+            Action::SessionBpmDecFine => "Session BPM -0.1",
             Action::ToggleMark => "Toggle mark on row",
             Action::ClearMarks => "Clear all marks",
             Action::ToggleMarkedFilter => "Filter to marked only",
@@ -372,7 +447,22 @@ impl Action {
             | Action::ToggleAutoAdvance
             | Action::ToggleTimeDisplay
             | Action::ToggleGlobalLoop
-            | Action::ReversePlayback => "Playback",
+            | Action::ReversePlayback
+            | Action::VolumeUp
+            | Action::VolumeDown
+            | Action::SpeedIncCents
+            | Action::SpeedDecCents
+            | Action::SpeedIncCentsFine
+            | Action::SpeedDecCentsFine
+            | Action::SpeedIncBpm
+            | Action::SpeedDecBpm
+            | Action::SpeedIncBpmFine
+            | Action::SpeedDecBpmFine
+            | Action::SpeedReset
+            | Action::SessionBpmInc
+            | Action::SessionBpmDec
+            | Action::SessionBpmIncFine
+            | Action::SessionBpmDecFine => "Playback",
             Action::ToggleMark
             | Action::ClearMarks
             | Action::ToggleMarkedFilter
@@ -620,12 +710,11 @@ impl Keymap {
         let none = KeyModifiers::NONE;
         let shift = KeyModifiers::SHIFT;
         let ctrl = KeyModifiers::CONTROL;
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
 
-        // Navigation
+        // Navigation (j/k for row nav; Up/Down now control volume)
         bindings.insert((KeyCode::Char('j'), none), Action::MoveDown);
         bindings.insert((KeyCode::Char('k'), none), Action::MoveUp);
-        bindings.insert((KeyCode::Down, none), Action::MoveDown);
-        bindings.insert((KeyCode::Up, none), Action::MoveUp);
         bindings.insert((KeyCode::Char('G'), shift), Action::MoveToBottom);
         bindings.insert((KeyCode::Char('d'), ctrl), Action::PageDown);
         bindings.insert((KeyCode::Char('u'), ctrl), Action::PageUp);
@@ -639,6 +728,28 @@ impl Keymap {
 
         // Playback
         bindings.insert((KeyCode::Char(' '), none), Action::TogglePlayback);
+        // Volume: Up/Down arrows (j/k still navigate rows)
+        bindings.insert((KeyCode::Up, none), Action::VolumeUp);
+        bindings.insert((KeyCode::Down, none), Action::VolumeDown);
+        // Speed (pitch): Ctrl-Up/Down for coarse ±100¢, Ctrl-Shift-Up/Down for fine ±1¢.
+        // Arrow-key combos are reliably forwarded by Terminal.app and most terminals.
+        // Ctrl + punctuation (e.g. Ctrl-. or Ctrl-Alt-.) is NOT forwarded by Terminal.app
+        // and so is avoided here. BPM-relative actions (SpeedIncBpm etc.) are left unbound
+        // by default — they require both a BPM metadata tag and Option=Meta in terminal
+        // preferences; users who want them can bind via [keymap] in config.toml.
+        bindings.insert((KeyCode::Up, ctrl), Action::SpeedIncCents);
+        bindings.insert((KeyCode::Down, ctrl), Action::SpeedDecCents);
+        bindings.insert((KeyCode::Up, ctrl_shift), Action::SpeedIncCentsFine);
+        bindings.insert((KeyCode::Down, ctrl_shift), Action::SpeedDecCentsFine);
+        // Speed reset: Ctrl-/ (0x1F in most terminals; may need testing on your terminal).
+        bindings.insert((KeyCode::Char('/'), ctrl), Action::SpeedReset);
+        // Session BPM: . / , (coarse), > / < (fine)
+        bindings.insert((KeyCode::Char('.'), none), Action::SessionBpmInc);
+        bindings.insert((KeyCode::Char(','), none), Action::SessionBpmDec);
+        // '>' = Shift+. and '<' = Shift+, — after normalize_key SHIFT is stripped,
+        // so we bind the raw char directly.
+        bindings.insert((KeyCode::Char('>'), none), Action::SessionBpmIncFine);
+        bindings.insert((KeyCode::Char('<'), none), Action::SessionBpmDecFine);
         bindings.insert((KeyCode::Right, none), Action::SeekForwardSmall);
         bindings.insert((KeyCode::Left, none), Action::SeekBackwardSmall);
         bindings.insert((KeyCode::Right, shift), Action::SeekForwardLarge);
@@ -681,7 +792,6 @@ impl Keymap {
         bindings.insert((KeyCode::Char('0'), none), Action::ZoomReset);
         // Nudge: Ctrl-Left/Right (small), Ctrl-Shift-Left/Right (large).
         // Note: Cmd-Ctrl-* won't work in any standard macOS terminal (SUPER not forwarded).
-        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
         bindings.insert((KeyCode::Right, ctrl), Action::NudgeMarkerForwardSmall);
         bindings.insert((KeyCode::Left, ctrl), Action::NudgeMarkerBackwardSmall);
         bindings.insert((KeyCode::Right, ctrl_shift), Action::NudgeMarkerForwardLarge);
@@ -850,8 +960,8 @@ mod tests {
 
     #[test]
     fn test_all_count_matches_variants() {
-        // 57 Sprint 12 + 1 RandomSort (Sprint 13) = 58.
-        assert_eq!(Action::ALL.len(), 58);
+        // 57 S12 + 1 RandomSort (Q1) + 15 audio controls (A1/A2/A3) = 73.
+        assert_eq!(Action::ALL.len(), 73);
     }
 
     #[test]
@@ -1040,7 +1150,7 @@ mod tests {
 
     #[test]
     fn test_action_all_count_final() {
-        assert_eq!(Action::ALL.len(), 58, "Sprint 13: 58 = 57 + RandomSort");
+        assert_eq!(Action::ALL.len(), 73, "Sprint 13: 73 = 57 + RandomSort + 15 audio controls");
     }
 
     #[test]

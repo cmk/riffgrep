@@ -245,6 +245,29 @@ pub struct App {
     /// Scrub actions update this while stopped; cleared on selection change and
     /// applied as the initial seek target when playback starts.
     pub cursor_sample: u32,
+
+    // --- Audio controls (A1/A2/A3) ---
+
+    /// Current volume adjustment in dBFS (0.0 = unity, clamped to −60..+6).
+    pub volume_db: f32,
+    /// Whether to reset volume to 0 dBFS on each new sample selection (default true).
+    pub reset_volume_on_selection: bool,
+    /// Current speed multiplier (1.0 = normal, clamped to [0.5, 2.0]).
+    pub speed_multiplier: f32,
+    /// Coarse speed step in cents (default 100.0).
+    pub speed_cents_coarse: f32,
+    /// Fine speed step in cents (default 1.0).
+    pub speed_cents_fine: f32,
+    /// Coarse speed step in BPM for BPM-relative adjustment (default 1.0).
+    pub speed_bpm_coarse: f32,
+    /// Fine speed step in BPM (default 0.1).
+    pub speed_bpm_fine: f32,
+    /// Session BPM for speed-relative playback (None = speed multiplier used directly).
+    ///
+    /// When set and the selected sample has a BPM tag, `speed_multiplier` is
+    /// automatically recomputed as `session_bpm / sample_bpm` on each sample change
+    /// and on each `SessionBpm*` action.
+    pub session_bpm: Option<f32>,
 }
 
 impl App {
@@ -305,6 +328,14 @@ impl App {
             zoom_cache: None,
             zoom_peaks: Vec::new(),
             cursor_sample: 0,
+            volume_db: 0.0,
+            reset_volume_on_selection: true,
+            speed_multiplier: 1.0,
+            speed_cents_coarse: 100.0,
+            speed_cents_fine: 1.0,
+            speed_bpm_coarse: 1.0,
+            speed_bpm_fine: 0.1,
+            session_bpm: None,
         }
     }
 
@@ -363,6 +394,21 @@ impl App {
             Action::ToggleTimeDisplay => self.show_remaining = !self.show_remaining,
             Action::ToggleGlobalLoop => self.toggle_global_loop(),
             Action::ReversePlayback => self.reverse_playback(),
+            Action::VolumeUp => self.volume_adjust(1.0),
+            Action::VolumeDown => self.volume_adjust(-1.0),
+            Action::SpeedIncCents => { let d = self.speed_cents_coarse; self.speed_adjust_cents(d); }
+            Action::SpeedDecCents => { let d = self.speed_cents_coarse; self.speed_adjust_cents(-d); }
+            Action::SpeedIncCentsFine => { let d = self.speed_cents_fine; self.speed_adjust_cents(d); }
+            Action::SpeedDecCentsFine => { let d = self.speed_cents_fine; self.speed_adjust_cents(-d); }
+            Action::SpeedIncBpm => { let d = self.speed_bpm_coarse; self.speed_adjust_bpm(d); }
+            Action::SpeedDecBpm => { let d = self.speed_bpm_coarse; self.speed_adjust_bpm(-d); }
+            Action::SpeedIncBpmFine => { let d = self.speed_bpm_fine; self.speed_adjust_bpm(d); }
+            Action::SpeedDecBpmFine => { let d = self.speed_bpm_fine; self.speed_adjust_bpm(-d); }
+            Action::SpeedReset => self.speed_reset_action(),
+            Action::SessionBpmInc => self.session_bpm_adjust(1.0),
+            Action::SessionBpmDec => self.session_bpm_adjust(-1.0),
+            Action::SessionBpmIncFine => self.session_bpm_adjust(0.1),
+            Action::SessionBpmDecFine => self.session_bpm_adjust(-0.1),
             Action::ToggleMark => self.toggle_mark(),
             Action::ClearMarks => self.clear_all_marks(),
             Action::ToggleMarkedFilter => self.toggle_marked_filter(),
@@ -1220,6 +1266,9 @@ impl App {
             if let Some(ref engine) = self.playback {
                 match engine.play_with_segments(&path, &playlist, self.global_loop) {
                     Ok(()) => {
+                        // Apply current volume and speed immediately after starting.
+                        engine.set_volume(self.volume_linear());
+                        engine.set_speed(self.speed_multiplier);
                         // If the user scrubbed while stopped, jump to that position.
                         if self.cursor_sample > 0 {
                             let _ = engine.seek_to_sample(self.cursor_sample);
@@ -1327,6 +1376,107 @@ impl App {
         self.sort_column = None;
         self.selected = self.selected.min(n.saturating_sub(1));
         self.set_status("Shuffled".to_string());
+    }
+
+    // -------------------------------------------------------------------------
+    // Audio controls — Volume (A1), Speed (A2), Session BPM (A3)
+    // -------------------------------------------------------------------------
+
+    /// Convert `volume_db` to a linear amplitude factor for `Sink::set_volume`.
+    fn volume_linear(&self) -> f32 {
+        10_f32.powf(self.volume_db / 20.0)
+    }
+
+    /// Adjust volume by `delta_db` dBFS and apply immediately to the engine.
+    fn volume_adjust(&mut self, delta_db: f32) {
+        self.volume_db = (self.volume_db + delta_db).clamp(-60.0, 6.0);
+        if let Some(ref engine) = self.playback {
+            engine.set_volume(self.volume_linear());
+        }
+        let sign = if self.volume_db >= 0.0 { "+" } else { "" };
+        self.set_status(format!("Volume: {sign}{:.1} dBFS", self.volume_db));
+    }
+
+    /// Adjust speed multiplicatively by `delta_cents` semitone-cents.
+    ///
+    /// 1 octave = 1200¢. The multiplier `2^(delta/1200)` is applied on top of the
+    /// current `speed_multiplier` and clamped to [0.5, 2.0] (±1 octave).
+    fn speed_adjust_cents(&mut self, delta_cents: f32) {
+        let factor = 2_f32.powf(delta_cents / 1200.0);
+        self.speed_multiplier = (self.speed_multiplier * factor).clamp(0.5, 2.0);
+        if let Some(ref engine) = self.playback {
+            engine.set_speed(self.speed_multiplier);
+        }
+        self.set_status(format!("Speed: {:.3}\u{00D7}", self.speed_multiplier));
+    }
+
+    /// Adjust speed linearly by `delta_bpm` relative to the sample's BPM metadata.
+    ///
+    /// Requires a BPM tag on the selected sample. If absent, shows a status message
+    /// and returns without changing speed.
+    fn speed_adjust_bpm(&mut self, delta_bpm: f32) {
+        let sample_bpm = self.preview.as_ref()
+            .and_then(|p| p.metadata.bpm)
+            .map(|b| b as f32);
+        let Some(sbpm) = sample_bpm else {
+            self.set_status("No BPM metadata (use cent-based speed instead)".to_string());
+            return;
+        };
+        // current effective BPM = sbpm * speed_multiplier; shift by delta_bpm.
+        let new_effective = sbpm * self.speed_multiplier + delta_bpm;
+        self.speed_multiplier = (new_effective / sbpm).clamp(0.5, 2.0);
+        if let Some(ref engine) = self.playback {
+            engine.set_speed(self.speed_multiplier);
+        }
+        self.set_status(format!("Speed: {:.3}\u{00D7}", self.speed_multiplier));
+    }
+
+    /// Reset speed to 1.0× and apply immediately.
+    fn speed_reset_action(&mut self) {
+        self.speed_multiplier = 1.0;
+        if let Some(ref engine) = self.playback {
+            engine.set_speed(1.0);
+        }
+        self.set_status("Speed: 1.000\u{00D7}".to_string());
+    }
+
+    /// Adjust session BPM by `delta` and recompute `speed_multiplier` from sample BPM.
+    fn session_bpm_adjust(&mut self, delta: f32) {
+        let new_bpm = self.session_bpm.unwrap_or(120.0) + delta;
+        self.session_bpm = Some(new_bpm.clamp(10.0, 999.9));
+        self.recompute_speed_from_session_bpm();
+        self.set_status(format!("Session BPM: {:.1}", self.session_bpm.unwrap()));
+    }
+
+    /// If `session_bpm` is set and the selected sample has a BPM tag, set
+    /// `speed_multiplier = session_bpm / sample_bpm` (clamped to [0.5, 2.0]).
+    pub fn recompute_speed_from_session_bpm(&mut self) {
+        let Some(sbpm_session) = self.session_bpm else { return };
+        let Some(sample_bpm) = self.preview.as_ref()
+            .and_then(|p| p.metadata.bpm)
+            .map(|b| b as f32)
+            .filter(|&b| b > 0.0)
+        else { return };
+        self.speed_multiplier = (sbpm_session / sample_bpm).clamp(0.5, 2.0);
+        if let Some(ref engine) = self.playback {
+            engine.set_speed(self.speed_multiplier);
+        }
+    }
+
+    /// Called when the selected sample changes.
+    ///
+    /// Resets the stopped-cursor position, and optionally resets volume/speed
+    /// (speed is always reset to 1.0 before recomputing from session BPM).
+    pub fn on_selection_change(&mut self) {
+        // Stopped-cursor position is no longer valid for the new file.
+        self.cursor_sample = 0;
+        // Speed always resets to 1.0 on selection change, then may be recomputed
+        // from session BPM if a BPM tag is present.
+        self.speed_multiplier = 1.0;
+        // Volume resets to 0 dBFS if configured (default: true).
+        if self.reset_volume_on_selection {
+            self.volume_db = 0.0;
+        }
     }
 
     /// Move column selection by delta with wrapping.
@@ -2402,7 +2552,7 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
         // Check if selection changed for preview debounce.
         if app.selection_changed {
             app.selection_changed = false;
-            app.cursor_sample = 0; // Stopped-cursor position no longer valid for new file.
+            app.on_selection_change(); // resets cursor_sample, volume, speed
             preview_debounce = Some(Instant::now() + debounce_duration);
         }
 
@@ -2668,8 +2818,9 @@ mod tests {
         let mut app = make_app_with_results(100);
         app.selected = 50;
         app.on_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
-        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        // g dispatched RewindToStart, down moves selection to 51.
+        // Down arrow is now VolumeDown — use 'j' (MoveDown) to test row nav.
+        app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        // g dispatched RewindToStart, j moves selection down to 51.
         assert_eq!(app.selected, 51);
     }
 
@@ -4607,6 +4758,148 @@ mod tests {
         app.results = vec![];
         app.random_sort(); // Must not panic.
         assert_eq!(app.results.len(), 0);
+    }
+
+    // --- Sprint 13 A1/A2/A3: Volume, Speed, Session BPM ---
+
+    fn make_app_with_bpm(bpm: Option<u16>) -> App {
+        let mut app = App::new(crate::ui::theme::Theme::default());
+        app.preview = Some(PreviewData {
+            metadata: UnifiedMetadata {
+                bpm,
+                ..Default::default()
+            },
+            peaks: vec![],
+            audio_info: None,
+            markers: None,
+            pcm: None,
+        });
+        app
+    }
+
+    #[test]
+    fn test_volume_adjust_clamps_and_updates() {
+        let mut app = App::new(Theme::default());
+        assert!((app.volume_db - 0.0).abs() < f32::EPSILON);
+        app.volume_adjust(1.0);
+        assert!((app.volume_db - 1.0).abs() < f32::EPSILON);
+        app.volume_adjust(-3.0);
+        assert!((app.volume_db - (-2.0)).abs() < f32::EPSILON);
+        // Clamp at -60.
+        app.volume_db = -59.0;
+        app.volume_adjust(-5.0);
+        assert!((app.volume_db - (-60.0)).abs() < f32::EPSILON);
+        // Clamp at +6.
+        app.volume_db = 5.5;
+        app.volume_adjust(2.0);
+        assert!((app.volume_db - 6.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_volume_linear_conversion() {
+        let mut app = App::new(Theme::default());
+        // 0 dBFS → 1.0 linear
+        app.volume_db = 0.0;
+        assert!((app.volume_linear() - 1.0).abs() < 1e-5);
+        // +6 dBFS → ~2.0 linear
+        app.volume_db = 6.0;
+        assert!((app.volume_linear() - 10_f32.powf(6.0 / 20.0)).abs() < 1e-5);
+        // -20 dBFS → 0.1 linear
+        app.volume_db = -20.0;
+        assert!((app.volume_linear() - 0.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_speed_adjust_cents_coarse() {
+        let mut app = App::new(Theme::default());
+        // +1200¢ = double speed.
+        app.speed_adjust_cents(1200.0);
+        assert!((app.speed_multiplier - 2.0).abs() < 1e-5);
+        // -2400¢ from 2.0 would be 0.5 (clamped).
+        app.speed_adjust_cents(-2400.0);
+        assert!((app.speed_multiplier - 0.5).abs() < 1e-5);
+        // Zero-cents = no-op.
+        app.speed_multiplier = 1.0;
+        app.speed_adjust_cents(0.0);
+        assert!((app.speed_multiplier - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_speed_adjust_bpm_requires_bpm_tag() {
+        let mut app = App::new(Theme::default()); // no BPM in preview
+        app.speed_adjust_bpm(1.0);
+        // No BPM → status message set, speed unchanged.
+        assert!((app.speed_multiplier - 1.0).abs() < f32::EPSILON);
+        assert!(app.status_message.as_deref().unwrap_or("")
+            .contains("BPM"));
+    }
+
+    #[test]
+    fn test_speed_adjust_bpm_with_tag() {
+        let mut app = make_app_with_bpm(Some(120));
+        // Start at 1.0×; +1 BPM on a 120 BPM sample → 121/120.
+        app.speed_adjust_bpm(1.0);
+        let expected = 121.0_f32 / 120.0;
+        assert!((app.speed_multiplier - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_speed_reset_action() {
+        let mut app = App::new(Theme::default());
+        app.speed_multiplier = 1.5;
+        app.speed_reset_action();
+        assert!((app.speed_multiplier - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_session_bpm_adjust_sets_and_clamps() {
+        let mut app = App::new(Theme::default());
+        assert!(app.session_bpm.is_none());
+        app.session_bpm_adjust(1.0); // starts from 120
+        assert!((app.session_bpm.unwrap() - 121.0).abs() < f32::EPSILON);
+        // Clamp at 999.9
+        app.session_bpm = Some(999.5);
+        app.session_bpm_adjust(1.0);
+        assert!(app.session_bpm.unwrap() <= 999.9);
+        // Clamp at 10.0
+        app.session_bpm = Some(10.1);
+        app.session_bpm_adjust(-5.0);
+        assert!((app.session_bpm.unwrap() - 10.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_recompute_speed_from_session_bpm() {
+        let mut app = make_app_with_bpm(Some(120));
+        app.session_bpm = Some(180.0);
+        app.recompute_speed_from_session_bpm();
+        // 180 / 120 = 1.5
+        assert!((app.speed_multiplier - 1.5).abs() < 1e-5);
+        // Clamped to 2.0 when ratio exceeds ceiling.
+        app.session_bpm = Some(480.0); // 480/120 = 4.0, clamped to 2.0
+        app.recompute_speed_from_session_bpm();
+        assert!((app.speed_multiplier - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_on_selection_change_resets_cursor_and_speed() {
+        let mut app = App::new(Theme::default());
+        app.cursor_sample = 1234;
+        app.speed_multiplier = 1.7;
+        app.volume_db = 3.0;
+        app.on_selection_change();
+        assert_eq!(app.cursor_sample, 0);
+        assert!((app.speed_multiplier - 1.0).abs() < f32::EPSILON);
+        // Volume resets when reset_volume_on_selection = true (default).
+        assert!((app.volume_db - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_on_selection_change_preserves_volume_when_disabled() {
+        let mut app = App::new(Theme::default());
+        app.reset_volume_on_selection = false;
+        app.volume_db = 3.0;
+        app.on_selection_change();
+        assert!((app.volume_db - 3.0).abs() < f32::EPSILON);
     }
 
     #[test]

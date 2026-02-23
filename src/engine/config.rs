@@ -8,6 +8,60 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Playback audio control configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlaybackConfig {
+    /// Reset volume to 0 dBFS when a new sample is selected (default true).
+    pub reset_volume_on_selection: Option<bool>,
+    /// Coarse speed step in cents (default 100.0).
+    pub speed_cents_coarse: Option<f32>,
+    /// Fine speed step in cents (default 1.0).
+    pub speed_cents_fine: Option<f32>,
+    /// Coarse speed step in BPM for BPM-relative adjustments (default 1.0).
+    pub speed_bpm_coarse: Option<f32>,
+    /// Fine speed step in BPM (default 0.1).
+    pub speed_bpm_fine: Option<f32>,
+}
+
+/// Resolved playback config with defaults applied.
+pub struct ResolvedPlaybackConfig {
+    /// Whether to reset volume to 0 dBFS on selection change.
+    pub reset_volume_on_selection: bool,
+    /// Coarse speed step in cents.
+    pub speed_cents_coarse: f32,
+    /// Fine speed step in cents.
+    pub speed_cents_fine: f32,
+    /// Coarse speed step in BPM.
+    pub speed_bpm_coarse: f32,
+    /// Fine speed step in BPM.
+    pub speed_bpm_fine: f32,
+}
+
+/// Resolve playback config values, applying defaults and clamping.
+pub fn resolve_playback_config(playback: Option<&PlaybackConfig>) -> ResolvedPlaybackConfig {
+    ResolvedPlaybackConfig {
+        reset_volume_on_selection: playback
+            .and_then(|p| p.reset_volume_on_selection)
+            .unwrap_or(true),
+        speed_cents_coarse: playback
+            .and_then(|p| p.speed_cents_coarse)
+            .unwrap_or(100.0)
+            .clamp(0.01, 1200.0),
+        speed_cents_fine: playback
+            .and_then(|p| p.speed_cents_fine)
+            .unwrap_or(1.0)
+            .clamp(0.01, 100.0),
+        speed_bpm_coarse: playback
+            .and_then(|p| p.speed_bpm_coarse)
+            .unwrap_or(1.0)
+            .clamp(0.01, 100.0),
+        speed_bpm_fine: playback
+            .and_then(|p| p.speed_bpm_fine)
+            .unwrap_or(0.1)
+            .clamp(0.001, 10.0),
+    }
+}
+
 /// Scrubbing / seek configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScrubConfig {
@@ -40,6 +94,8 @@ pub struct Config {
     pub keymap: Option<HashMap<String, String>>,
     /// Scrubbing / seek settings.
     pub scrub: Option<ScrubConfig>,
+    /// Playback audio control settings (volume, speed).
+    pub playback: Option<PlaybackConfig>,
 }
 
 /// Resolve scrub increments from config, with clamping and defaults.
@@ -265,6 +321,7 @@ mod tests {
             default_sort_order: None,
             keymap: None,
             scrub: None,
+            playback: None,
         };
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
