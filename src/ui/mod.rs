@@ -337,11 +337,27 @@ impl App {
             Action::MoveColumnRight => self.move_column(1),
             Action::SortAscending => self.sort_by_selected_column(true),
             Action::SortDescending => self.sort_by_selected_column(false),
+            Action::RandomSort => self.random_sort(),
             Action::TogglePlayback => self.toggle_playback(),
             Action::SeekForwardSmall => self.seek_relative(self.scrub_small),
-            Action::SeekForwardLarge => self.seek_relative(self.scrub_large),
+            // B2: when a non-SOF marker is selected, large seek redirects to large nudge
+            // so that Shift-Right (which some terminals send instead of Ctrl-Shift-Right)
+            // still nudges the marker rather than moving the playhead cursor.
+            Action::SeekForwardLarge => {
+                if self.selected_marker.filter(|&m| m >= 1).is_some() {
+                    self.nudge_marker(true, self.marker_nudge_large);
+                } else {
+                    self.seek_relative(self.scrub_large);
+                }
+            }
             Action::SeekBackwardSmall => self.seek_relative(-self.scrub_small),
-            Action::SeekBackwardLarge => self.seek_relative(-self.scrub_large),
+            Action::SeekBackwardLarge => {
+                if self.selected_marker.filter(|&m| m >= 1).is_some() {
+                    self.nudge_marker(false, self.marker_nudge_large);
+                } else {
+                    self.seek_relative(-self.scrub_large);
+                }
+            }
             Action::RewindToStart => self.rewind_to_start(),
             Action::ToggleAutoAdvance => self.auto_advance = !self.auto_advance,
             Action::ToggleTimeDisplay => self.show_remaining = !self.show_remaining,
@@ -1291,6 +1307,28 @@ impl App {
         self.selection_changed = true;
     }
 
+    /// Shuffle the results list in-place using Fisher-Yates.
+    pub fn random_sort(&mut self) {
+        let n = self.results.len();
+        if n < 2 {
+            return;
+        }
+        // Minimal LCG RNG seeded from system time (no external rand crate needed).
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(12345);
+        let mut rng = seed ^ (n as u64).wrapping_mul(0x9e3779b97f4a7c15);
+        for i in (1..n).rev() {
+            rng = rng.wrapping_mul(0x6364136223846793).wrapping_add(0x1442695040888963);
+            let j = ((rng >> 33) as usize) % (i + 1);
+            self.results.swap(i, j);
+        }
+        self.sort_column = None;
+        self.selected = self.selected.min(n.saturating_sub(1));
+        self.set_status("Shuffled".to_string());
+    }
+
     /// Move column selection by delta with wrapping.
     pub fn move_column(&mut self, delta: isize) {
         let len = self.columns.len();
@@ -1618,16 +1656,10 @@ impl App {
             }
         };
 
-        // Determine preset based on category (look for "loop" in category).
-        let is_loop = self.preview.as_ref()
-            .map(|p| p.metadata.category.to_lowercase().contains("loop"))
-            .unwrap_or(total_samples >= 2 * 48000);
-
-        let mut preset = if is_loop {
-            crate::engine::bext::MarkerConfig::preset_loop(total_samples)
-        } else {
-            crate::engine::bext::MarkerConfig::preset_shot()
-        };
+        // Always reset to 25%/50%/75% quarter-point markers — a safe preset for
+        // both LOOP and SHOT samples. preset_shot (all-zero markers) is unhelpful
+        // as a reset target regardless of category. (B1 fix)
+        let mut preset = crate::engine::bext::MarkerConfig::preset_loop(total_samples);
 
         // Snap preset markers to zero-crossings when possible.
         for bank in [&mut preset.bank_a, &mut preset.bank_b] {
@@ -4454,6 +4486,127 @@ mod tests {
         // Should have markers now.
         let markers = app.preview.as_ref().unwrap().markers.as_ref().unwrap();
         assert!(!markers.bank_a.is_empty());
+    }
+
+    // --- Sprint 13 B1 fix: marker_reset always uses preset_loop ---
+
+    #[test]
+    fn test_marker_reset_always_uses_loop_preset() {
+        // B1: marker_reset should use 25%/50%/75% for both LOOP and SHOT samples.
+        let total = 240_000u32; // 5s @ 48kHz
+        let mut app = App::new(Theme::default());
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata {
+                // Category does NOT contain "loop" — this is a SHOT sample.
+                category: "SHOT".to_string(),
+                ..UnifiedMetadata::default()
+            },
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 5.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: None,
+            pcm: None,
+        });
+        app.marker_reset();
+        let markers = app.preview.as_ref().unwrap().markers.as_ref().unwrap();
+        // Should be quarter points (preset_loop), not all-zero (preset_shot).
+        let expected = crate::engine::bext::MarkerConfig::preset_loop(total);
+        assert_eq!(markers.bank_a.m1, expected.bank_a.m1, "m1 should be at 25%");
+        assert_eq!(markers.bank_a.m2, expected.bank_a.m2, "m2 should be at 50%");
+        assert_eq!(markers.bank_a.m3, expected.bank_a.m3, "m3 should be at 75%");
+    }
+
+    // --- Sprint 13 B2 fix: SeekForwardLarge/BackwardLarge redirects to nudge when marker selected ---
+
+    #[test]
+    fn test_seek_large_redirects_to_nudge_when_marker_selected() {
+        // B2: when a non-SOF marker is selected, SeekForwardLarge/BackwardLarge must
+        // route to nudge_marker instead of seek_relative (which updates cursor_sample).
+        let mut app = App::new(Theme::default());
+        app.cursor_sample = 0;
+        // Set up a preview with markers so nudge has something to work with.
+        let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 1.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: Some(markers),
+            pcm: None,
+        });
+        // Select marker 1 (non-SOF).
+        app.selected_marker = Some(1);
+        // SeekForwardLarge with a marker selected should NOT update cursor_sample.
+        app.dispatch(actions::Action::SeekForwardLarge);
+        // cursor_sample should remain 0 (seek_relative was NOT called).
+        assert_eq!(app.cursor_sample, 0, "cursor_sample must not change when marker selected + large seek");
+    }
+
+    #[test]
+    fn test_seek_large_seeks_when_no_marker_selected() {
+        // B2: with no marker selected, SeekForwardLarge/BackwardLarge should still seek.
+        let mut app = App::new(Theme::default());
+        app.cursor_sample = 0;
+        app.on_preview_ready(PreviewData {
+            metadata: UnifiedMetadata::default(),
+            peaks: vec![],
+            audio_info: Some(crate::engine::wav::AudioInfo {
+                duration_secs: 5.0,
+                sample_rate: 48000,
+                bit_depth: 16,
+                channels: 1,
+            }),
+            markers: None,
+            pcm: None,
+        });
+        app.selected_marker = None; // No marker selected.
+        app.dispatch(actions::Action::SeekForwardLarge);
+        // cursor_sample should have advanced by scrub_large * sample_rate.
+        assert!(app.cursor_sample > 0, "cursor_sample should advance when no marker selected");
+    }
+
+    // --- Sprint 13 Q1: RandomSort ---
+
+    #[test]
+    fn test_random_sort_shuffles_results() {
+        let mut app = App::new(Theme::default());
+        // Create 10 results with different paths.
+        app.results = (0..10).map(|i| TableRow {
+            meta: UnifiedMetadata {
+                path: std::path::PathBuf::from(format!("/test/{i}.wav")),
+                ..UnifiedMetadata::default()
+            },
+            audio_info: None,
+            marked: false,
+            markers: None,
+        }).collect();
+        let original_order: Vec<_> = app.results.iter().map(|r| r.meta.path.clone()).collect();
+        app.random_sort();
+        let new_order: Vec<_> = app.results.iter().map(|r| r.meta.path.clone()).collect();
+        // After shuffle, all same paths still present.
+        let mut orig_sorted = original_order.clone();
+        let mut new_sorted = new_order.clone();
+        orig_sorted.sort();
+        new_sorted.sort();
+        assert_eq!(orig_sorted, new_sorted, "shuffle must not lose or duplicate entries");
+        assert_eq!(app.status_message.as_deref(), Some("Shuffled"));
+        assert!(app.sort_column.is_none(), "sort_column must be cleared after shuffle");
+    }
+
+    #[test]
+    fn test_random_sort_noop_on_empty() {
+        let mut app = App::new(Theme::default());
+        app.results = vec![];
+        app.random_sort(); // Must not panic.
+        assert_eq!(app.results.len(), 0);
     }
 
     #[test]

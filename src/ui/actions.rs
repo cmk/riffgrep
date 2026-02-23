@@ -20,6 +20,7 @@ pub enum Action {
     // Sort
     SortAscending,
     SortDescending,
+    RandomSort,
 
     // Playback
     TogglePlayback,
@@ -99,6 +100,7 @@ impl Action {
         Action::MoveColumnRight,
         Action::SortAscending,
         Action::SortDescending,
+        Action::RandomSort,
         Action::TogglePlayback,
         Action::SeekForwardSmall,
         Action::SeekForwardLarge,
@@ -161,6 +163,7 @@ impl Action {
             "move_column_right" => Some(Action::MoveColumnRight),
             "sort_ascending" => Some(Action::SortAscending),
             "sort_descending" => Some(Action::SortDescending),
+            "random_sort" => Some(Action::RandomSort),
             "toggle_playback" => Some(Action::TogglePlayback),
             "seek_forward_small" => Some(Action::SeekForwardSmall),
             "seek_forward_large" => Some(Action::SeekForwardLarge),
@@ -225,6 +228,7 @@ impl Action {
             Action::MoveColumnRight => "move_column_right",
             Action::SortAscending => "sort_ascending",
             Action::SortDescending => "sort_descending",
+            Action::RandomSort => "random_sort",
             Action::TogglePlayback => "toggle_playback",
             Action::SeekForwardSmall => "seek_forward_small",
             Action::SeekForwardLarge => "seek_forward_large",
@@ -296,6 +300,7 @@ impl Action {
             Action::MoveColumnRight => "Move column right",
             Action::SortAscending => "Sort column ascending",
             Action::SortDescending => "Sort column descending",
+            Action::RandomSort => "Shuffle results randomly",
             Action::TogglePlayback => "Play / pause",
             Action::SeekForwardSmall => "Seek forward (small)",
             Action::SeekForwardLarge => "Seek forward (large)",
@@ -357,7 +362,7 @@ impl Action {
             | Action::PageUp
             | Action::MoveColumnLeft
             | Action::MoveColumnRight => "Navigation",
-            Action::SortAscending | Action::SortDescending => "Sort",
+            Action::SortAscending | Action::SortDescending | Action::RandomSort => "Sort",
             Action::TogglePlayback
             | Action::SeekForwardSmall
             | Action::SeekForwardLarge
@@ -511,16 +516,18 @@ pub fn parse_key(s: &str) -> Option<KeyEvent> {
         return Some(KeyEvent::new(KeyCode::Char(ch), mods));
     }
 
-    // Modifier prefix: Ctrl-S- (Ctrl+Shift + special key)
-    if let Some(rest) = s.strip_prefix("Ctrl-S-") {
-        let inner = match rest {
-            "Left" => KeyCode::Left,
-            "Right" => KeyCode::Right,
-            "Up" => KeyCode::Up,
-            "Down" => KeyCode::Down,
-            _ => return None,
-        };
-        return Some(KeyEvent::new(inner, KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+    // Modifier prefix: Ctrl-S- / Ctrl-Shift- (Ctrl+Shift + special key)
+    for prefix in &["Ctrl-S-", "Ctrl-Shift-"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            let inner = match rest {
+                "Left" => KeyCode::Left,
+                "Right" => KeyCode::Right,
+                "Up" => KeyCode::Up,
+                "Down" => KeyCode::Down,
+                _ => return None,
+            };
+            return Some(KeyEvent::new(inner, KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+        }
     }
 
     // Modifier prefix: Ctrl-
@@ -628,6 +635,7 @@ impl Keymap {
         // Sort
         bindings.insert((KeyCode::Char('o'), none), Action::SortAscending);
         bindings.insert((KeyCode::Char('O'), shift), Action::SortDescending);
+        bindings.insert((KeyCode::Char('r'), none), Action::RandomSort);
 
         // Playback
         bindings.insert((KeyCode::Char(' '), none), Action::TogglePlayback);
@@ -842,9 +850,8 @@ mod tests {
 
     #[test]
     fn test_all_count_matches_variants() {
-        // 53 Sprint 11 + 3 zoom (ZoomIn/ZoomOut/ZoomReset) + 1 RewindToStart = 57.
-        // ToggleMarkersEnabled was renamed to ToggleMarkerDisplay (no net change).
-        assert_eq!(Action::ALL.len(), 57);
+        // 57 Sprint 12 + 1 RandomSort (Sprint 13) = 58.
+        assert_eq!(Action::ALL.len(), 58);
     }
 
     #[test]
@@ -1033,7 +1040,7 @@ mod tests {
 
     #[test]
     fn test_action_all_count_final() {
-        assert_eq!(Action::ALL.len(), 57, "Sprint 12 fixes: 57 = 56 + RewindToStart");
+        assert_eq!(Action::ALL.len(), 58, "Sprint 13: 58 = 57 + RandomSort");
     }
 
     #[test]
@@ -1206,6 +1213,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_key_ctrl_shift_alias() {
+        // "Ctrl-Shift-Right" is an alias for "Ctrl-S-Right".
+        let key = parse_key("Ctrl-Shift-Right").unwrap();
+        assert_eq!(key.code, KeyCode::Right);
+        assert_eq!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+
+        let left = parse_key("Ctrl-Shift-Left").unwrap();
+        assert_eq!(left.code, KeyCode::Left);
+        assert_eq!(left.modifiers, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    }
+
+    #[test]
     fn test_parse_key_shift_tab() {
         let key = parse_key("S-Tab").unwrap();
         assert_eq!(key.code, KeyCode::BackTab);
@@ -1267,10 +1286,10 @@ mod tests {
     }
 
     #[test]
-    fn test_reverse_playback_unbound() {
+    fn test_random_sort_bound_to_r() {
         let km = Keymap::default_keymap();
         let r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-        assert_eq!(km.resolve(r), None, "'r' should be unbound (ReversePlayback removed from keymap)");
+        assert_eq!(km.resolve(r), Some(Action::RandomSort), "'r' should be bound to RandomSort");
     }
 
     #[test]
@@ -1352,11 +1371,20 @@ mod tests {
     }
 
     #[test]
+    fn test_random_sort_roundtrip() {
+        let name = Action::RandomSort.name();
+        assert_eq!(name, "random_sort");
+        assert_eq!(Action::from_name(name), Some(Action::RandomSort));
+        assert_eq!(Action::RandomSort.category(), "Sort");
+    }
+
+    #[test]
     fn test_config_keymap_all_action_names_valid() {
         // Verify all canonical action names used in config round-trip through from_name().
         let names = [
             "move_down", "move_up", "move_to_bottom", "page_down", "page_up",
             "move_column_left", "move_column_right", "sort_ascending", "sort_descending",
+            "random_sort",
             "toggle_playback", "seek_forward_small", "seek_backward_small",
             "seek_forward_large", "seek_backward_large", "rewind_to_start",
             "toggle_auto_advance", "toggle_time_display", "toggle_global_loop",
