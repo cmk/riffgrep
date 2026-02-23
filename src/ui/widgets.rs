@@ -661,15 +661,11 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
                 let start_s = (app.zoom_offset * k_current) as u64;
                 (viewport_s, start_s)
             } else {
-                let total = preview.audio_info.as_ref().map_or(0u32, |ai| {
-                    (ai.duration_secs * ai.sample_rate as f64) as u32
-                });
+                let total = preview.audio_info.as_ref().map_or(0u32, |ai| ai.total_samples);
                 (total as u64, 0)
             }
         } else {
-            let total = preview.audio_info.as_ref().map_or(0u32, |ai| {
-                (ai.duration_secs * ai.sample_rate as f64) as u32
-            });
+            let total = preview.audio_info.as_ref().map_or(0u32, |ai| ai.total_samples);
             (total as u64, 0)
         };
 
@@ -693,9 +689,7 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     if app.markers_visible {
     if let Some(markers) = &preview.markers {
         if !markers.is_empty() {
-            let total_samples = preview.audio_info.as_ref().map_or(0u32, |ai| {
-                (ai.duration_secs * ai.sample_rate as f64) as u32
-            });
+            let total_samples = preview.audio_info.as_ref().map_or(0u32, |ai| ai.total_samples);
             if total_samples > 0 && effective_total_samples > 0 {
                 render_marker_lines(
                     markers,
@@ -736,7 +730,7 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
         let total_file_samples = preview
             .audio_info
             .as_ref()
-            .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u64)
+            .map(|ai| ai.total_samples as u64)
             .unwrap_or(effective_total_samples);
         let play_sample = (app.playback_position() as f64 * total_file_samples as f64) as u64;
 
@@ -1420,6 +1414,7 @@ mod tests {
             },
             peaks: vec![128u8; 180],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 141_120,
                 duration_secs: 3.2,
                 sample_rate: 44100,
                 bit_depth: 16,
@@ -1734,6 +1729,7 @@ mod tests {
                 ..Default::default()
             },
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 120_000,
                 duration_secs: 2.5,
                 sample_rate: 48000,
                 bit_depth: 24,
@@ -1893,6 +1889,7 @@ mod tests {
                 ..Default::default()
             },
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 120_000,
                 duration_secs: 2.5,
                 sample_rate: 48000,
                 bit_depth: 24,
@@ -2254,6 +2251,7 @@ mod tests {
         let mut app = App::new(Theme::default());
         // Set up audio info: 48000 samples at 48kHz = 1s.
         let audio_info = crate::engine::wav::AudioInfo {
+            total_samples: 48_000,
             duration_secs: 1.0,
             sample_rate: 48000,
             bit_depth: 16,

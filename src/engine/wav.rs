@@ -474,7 +474,11 @@ pub fn compute_peaks_stereo_from_path(path: &Path) -> Result<Vec<u8>, RiffError>
 /// Audio metadata extracted from the fmt chunk.
 #[derive(Debug, Clone)]
 pub struct AudioInfo {
-    /// Duration in seconds.
+    /// Total number of sample frames (per channel). Exact integer, never derived
+    /// from a float round-trip. Use this for all sample-position arithmetic.
+    pub total_samples: u32,
+    /// Duration in seconds. Derived from `total_samples / sample_rate` at
+    /// construction time. Use only for human-readable display, not arithmetic.
     pub duration_secs: f64,
     /// Sample rate in Hz.
     pub sample_rate: u32,
@@ -487,15 +491,22 @@ pub struct AudioInfo {
 impl AudioInfo {
     /// Compute audio info from fmt chunk and data size.
     pub fn from_fmt(fmt: &FmtChunk, data_size: u32) -> Self {
-        let byte_rate = fmt.sample_rate as u64
-            * fmt.channels as u64
-            * (fmt.bits_per_sample / 8) as u64;
-        let duration_secs = if byte_rate > 0 {
-            data_size as f64 / byte_rate as f64
+        // Use block_align (bytes per frame, as written by the encoder) rather than
+        // recomputing from bits_per_sample.  Integer division of bits_per_sample/8
+        // silently truncates for non-multiples of 8 (e.g. 20-bit → 2 instead of 3).
+        let bytes_per_frame = fmt.block_align as u64;
+        let total_samples = if bytes_per_frame > 0 {
+            (data_size as u64 / bytes_per_frame) as u32
+        } else {
+            0
+        };
+        let duration_secs = if fmt.sample_rate > 0 {
+            total_samples as f64 / fmt.sample_rate as f64
         } else {
             0.0
         };
         Self {
+            total_samples,
             duration_secs,
             sample_rate: fmt.sample_rate,
             bit_depth: fmt.bits_per_sample,
@@ -1720,6 +1731,7 @@ mod tests {
     #[test]
     fn test_format_display_stereo() {
         let info = AudioInfo {
+            total_samples: 44100,
             duration_secs: 1.0,
             sample_rate: 44100,
             bit_depth: 16,
@@ -1731,6 +1743,7 @@ mod tests {
     #[test]
     fn test_format_display_mono() {
         let info = AudioInfo {
+            total_samples: 44100,
             duration_secs: 1.0,
             sample_rate: 44100,
             bit_depth: 24,

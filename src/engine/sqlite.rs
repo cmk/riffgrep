@@ -14,9 +14,9 @@ use rusqlite::{Connection, params};
 use super::{MatchMode, Pattern, SearchQuery, UnifiedMetadata};
 
 /// Current schema version, tracked via `PRAGMA user_version`.
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
-/// SQL for inserting/replacing a sample row (29 parameters).
+/// SQL for inserting/replacing a sample row (30 parameters).
 const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
     path, name, parent_folder,
     vendor, library, category, sound_id,
@@ -24,7 +24,8 @@ const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
     rating, subcategory, genre_id, usage_id,
     umid, recid, mtime, peaks, peaks_source,
     duration, sample_rate, bit_depth, channels,
-    date, take, track, item, markers_blob
+    date, take, track, item, markers_blob,
+    total_samples
 ) VALUES (
     ?1, ?2, ?3,
     ?4, ?5, ?6, ?7,
@@ -32,7 +33,8 @@ const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
     ?12, ?13, ?14, ?15,
     ?16, ?17, ?18, ?19, ?20,
     ?21, ?22, ?23, ?24,
-    ?25, ?26, ?27, ?28, ?29
+    ?25, ?26, ?27, ?28, ?29,
+    ?30
 )";
 
 /// SQLite index database.
@@ -124,6 +126,7 @@ impl Database {
                     meta.track,
                     meta.item,
                     Option::<Vec<u8>>::None, // markers_blob
+                    Option::<i64>::None,     // total_samples
                 ])?;
             }
         }
@@ -266,6 +269,7 @@ impl Database {
                     meta.track,
                     meta.item,
                     Option::<Vec<u8>>::None, // markers_blob
+                    Option::<i64>::None,     // total_samples
                 ])?;
             }
         }
@@ -328,6 +332,7 @@ impl Database {
                     meta.track,
                     meta.item,
                     markers_blob,
+                    audio_info.as_ref().map(|i| i.total_samples as i64),
                 ])?;
             }
         }
@@ -646,6 +651,7 @@ fn create_schema(conn: &Connection) -> anyhow::Result<()> {
             sample_rate INTEGER,
             bit_depth INTEGER,
             channels INTEGER,
+            total_samples INTEGER,
             date TEXT NOT NULL DEFAULT '',
             take TEXT NOT NULL DEFAULT '',
             track TEXT NOT NULL DEFAULT '',
@@ -742,6 +748,13 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     if version < 5 {
         // v4 → v5: add markers_blob column.
         add_column_if_missing(conn, "markers_blob", "BLOB")?;
+    }
+
+    if version < 6 {
+        // v5 → v6: add total_samples column (exact integer, replaces float round-trip).
+        // Existing rows get NULL; they fall back to duration*sample_rate on read
+        // until the index is rebuilt.
+        add_column_if_missing(conn, "total_samples", "INTEGER")?;
     }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1040,15 +1053,24 @@ fn row_to_table_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::TableRow
     let sample_rate: Option<i32> = row.get("sample_rate")?;
     let bit_depth: Option<i32> = row.get("bit_depth")?;
     let channels: Option<i32> = row.get("channels")?;
+    let total_samples_db: Option<i64> = row.get("total_samples").unwrap_or(None);
     let marked: i32 = row.get("marked").unwrap_or(0);
 
     let audio_info = match (duration, sample_rate, bit_depth, channels) {
-        (Some(dur), Some(sr), Some(bd), Some(ch)) => Some(super::wav::AudioInfo {
-            duration_secs: dur,
-            sample_rate: sr as u32,
-            bit_depth: bd as u16,
-            channels: ch as u16,
-        }),
+        (Some(dur), Some(sr), Some(bd), Some(ch)) => {
+            // Prefer the exact integer stored in v6+; fall back to float derivation
+            // for rows indexed before the schema upgrade.
+            let total_samples = total_samples_db
+                .map(|n| n as u32)
+                .unwrap_or_else(|| (dur * sr as f64) as u32);
+            Some(super::wav::AudioInfo {
+                total_samples,
+                duration_secs: dur,
+                sample_rate: sr as u32,
+                bit_depth: bd as u16,
+                channels: ch as u16,
+            })
+        }
         _ => None,
     };
 
@@ -1263,7 +1285,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     // --- Ticket 2 tests: DB path resolution ---
@@ -2152,7 +2174,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
 
         let mut stmt = db.conn.prepare("PRAGMA table_info(samples)").unwrap();
         let cols: Vec<String> = stmt
@@ -2221,7 +2243,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
 
         // All new columns should exist.
         let source: String = db
@@ -2304,7 +2326,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
 
         // v3 columns should exist.
         assert!(has_column(&db.conn, "marked"));
@@ -2375,6 +2397,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let meta = make_test_meta("/test/audio.wav", "V");
         let audio_info = Some(super::super::wav::AudioInfo {
+            total_samples: 168_000,
             duration_secs: 3.5,
             sample_rate: 48000,
             bit_depth: 24,
@@ -2474,7 +2497,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

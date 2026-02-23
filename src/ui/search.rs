@@ -502,6 +502,7 @@ mod tests {
                 ..Default::default()
             };
             let audio_info = Some(crate::engine::wav::AudioInfo {
+                total_samples: 110_250,
                 duration_secs: 2.5,
                 sample_rate: 44100,
                 bit_depth: 16,

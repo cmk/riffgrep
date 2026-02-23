@@ -865,7 +865,7 @@ impl App {
         // 3. Duration-aware default: short files get shot, longer files get loop.
         let total_samples = self.preview.as_ref()
             .and_then(|p| p.audio_info.as_ref())
-            .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32);
+            .map(|ai| ai.total_samples);
         match total_samples {
             Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
             _ => crate::engine::bext::MarkerConfig::preset_shot(),
@@ -969,7 +969,7 @@ impl App {
     fn total_samples(&self) -> Option<u32> {
         self.preview.as_ref()
             .and_then(|p| p.audio_info.as_ref())
-            .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32)
+            .map(|ai| ai.total_samples)
     }
 
     /// Get the current playback position as an absolute sample offset.
@@ -3846,6 +3846,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 240_000,
                 duration_secs: 5.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -3867,6 +3868,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 24_000,
                 duration_secs: 0.5,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -3952,6 +3954,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 48_000,
                 duration_secs: 1.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -3972,6 +3975,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 240_000,
                 duration_secs: 5.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -4062,6 +4066,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 48_000,
                 duration_secs: 1.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -4092,6 +4097,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 48_000,
                 duration_secs: 1.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -4451,6 +4457,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 48_000,
                 duration_secs: 1.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -4624,6 +4631,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 240_000,
                 duration_secs: 5.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -4654,6 +4662,7 @@ mod tests {
             },
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 240_000,
                 duration_secs: 5.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -4685,6 +4694,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 48_000,
                 duration_secs: 1.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -4710,6 +4720,7 @@ mod tests {
             metadata: UnifiedMetadata::default(),
             peaks: vec![],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 240_000,
                 duration_secs: 5.0,
                 sample_rate: 48000,
                 bit_depth: 16,
@@ -5004,6 +5015,7 @@ mod tests {
             },
             peaks: peaks.into_iter().chain(std::iter::repeat(0).take(PEAK_COUNT)).collect(),
             audio_info: Some(AudioInfo {
+                total_samples: total_samples as u32,
                 duration_secs,
                 sample_rate,
                 bit_depth: 16,
@@ -5193,6 +5205,7 @@ mod tests {
             },
             peaks: vec![0u8; 360],
             audio_info: Some(crate::engine::wav::AudioInfo {
+                total_samples: 48_000,
                 duration_secs: 1.0,
                 sample_rate: 48000,
                 bit_depth: 16,
