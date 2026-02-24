@@ -5,8 +5,12 @@
 -- Description block so riffgrep can use it natively.
 --
 -- Migration receipt:
---   sample:bext_umid() — non-empty once a file has been ported; the original SM
---                        _UMID hex string written into the 64-byte BEXT UMID field
+--   sample:is_packed() — true once a file has been ported; riffgrep writes a
+--                        UUID v7 file_id into the packed BEXT Description block
+--                        when the first packed field is committed.
+--   sample:bext_umid() — the SM _UMID hex string written by riffgrep into the
+--                        standard BEXT UMID field; used as a cross-reference
+--                        key to look up records in the SM database.
 --
 -- Run as:
 --   riffgrep --workflow scripts/etl_soundminer.lua --no-db ~/SoundMinerExport
@@ -23,11 +27,15 @@ local SM_PREFIX = "/Volumes/SSD"   -- volume prefix SoundMiner used at scan time
 
 -- ── Early-exit guard ─────────────────────────────────────────────────────────
 -- Skip already-ported files unless --force is given.
--- bext_umid() is the migration receipt: riffgrep writes the SM _UMID (a 32-char
--- hex string) into the 64-byte BEXT UMID field on first port.  That field is
--- cryptographically large enough to serve as a unique identifier.  Description-
--- field values (recid, category, etc.) are too short and too easily colliding.
-if not riffgrep.force and sample:bext_umid() ~= "" then
+-- is_packed() checks file_id != 0 in the packed Description block — a value
+-- that only riffgrep's init_packed_and_write_markers() ever writes.  We prefer
+-- this over bext_umid() ~= "" because writing the UMID field alone (a standard
+-- BEXT field) does NOT initialize the packed schema: if a run writes UMID but
+-- fails to write packed fields (e.g. due to a bug), bext_umid() would mark the
+-- file as "done" and block all future ports.  is_packed() only becomes true
+-- when at least one packed Description field has been committed, which is the
+-- definitive signal that the port is complete.
+if not riffgrep.force and sample:is_packed() then
     return
 end
 
@@ -59,26 +67,30 @@ if not row then
     return
 end
 
--- ── Port fields (non-destructive: only fill empty fields) ────────────────────
--- In --force mode, write_metadata_changes uses a blank baseline, so ALL
--- non-empty fields in the modified sample are written regardless of their
--- current on-disk value.  The per-field guards below keep the Lua logic simple.
-if sample:category()    == "" then sample:set_category(row.Category    or "") end
-if sample:subcategory() == "" then sample:set_subcategory(row.SubCategory or "") end
-if sample:library()     == "" then sample:set_library(row.Library      or "") end
-if sample:sound_id()    == "" then sample:set_sound_id(row.ShortID     or "") end
-if sample:key()         == "" then sample:set_key(row.Key              or "") end
-if sample:comment()     == "" then sample:set_comment(row.Description  or "") end
-if sample:vendor()      == "" then sample:set_vendor(row.Artist        or "") end
+-- ── Port fields ───────────────────────────────────────────────────────────────
+-- Packed Description fields (category, sound_id, key, etc.) are always empty
+-- in un-packed files — no guard needed; SM is authoritative for these fields.
+-- Standard BEXT fields (vendor, library) may already be populated by SM in the
+-- BEXT Originator/OriginatorRef bytes — only overwrite if currently empty.
+sample:set_category(row.Category       or "")
+sample:set_subcategory(row.SubCategory or "")
+sample:set_sound_id(row.ShortID        or "")
+sample:set_key(row.Key                 or "")
+sample:set_comment(row.Description     or "")
 
-if sample:bpm() == nil and row.BPM and tonumber(row.BPM) then
+if sample:vendor()  == "" then sample:set_vendor(row.Artist  or "") end
+if sample:library() == "" then sample:set_library(row.Library or "") end
+
+-- BPM: only set when SM has a numeric value (preserve existing if SM lacks it).
+if row.BPM and tonumber(row.BPM) then
     sample:set_bpm(math.floor(tonumber(row.BPM)))
 end
 
--- ── Stamp migration receipt ───────────────────────────────────────────────────
--- bext_umid is the receipt: a non-empty value marks the file as ported.
--- It stores the SM _UMID hex string in the 64-byte BEXT UMID field, which is
--- cryptographically large enough to serve as a unique identifier.
+-- ── Stamp SM cross-reference ──────────────────────────────────────────────────
+-- Write the SM _UMID into the 64-byte BEXT UMID field so the file can be
+-- looked up in the SM database later.  Note: SM already writes this field
+-- itself, so this is a no-op for files that SM has processed — it is kept here
+-- for completeness and for files SM hasn't touched.
 if row._UMID then
     sample:set_bext_umid(row._UMID)
 end

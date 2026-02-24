@@ -1242,7 +1242,46 @@ impl App {
     /// Builds a playlist from the active bank's markers and hands it to
     /// [`PlaybackEngine::play_with_segments`], which pre-decodes the file and
     /// creates a [`SegmentSource`] that enforces boundaries at the sample level.
+    ///
+    /// `reps = [0,0,0,0]` on the active bank is a sentinel meaning "no marker
+    /// configuration — play through the whole file." This covers ETL-packed files
+    /// where `init_packed_and_write_markers` ran but no markers were ever set
+    /// manually. Individual `rep = 0` values still mean "skip this segment" when
+    /// other reps are non-zero.
     fn play_program(&mut self) {
+        // Sentinel: when the active bank exists but all reps are 0, play through
+        // the whole file as a single segment (ignoring markers entirely).
+        // When bank is None (markers not yet loaded), fall through to ensure_markers().
+        let active_reps_all_zero = self.active_bank_ref()
+            .map(|b| b.reps == [0u8; 4])
+            .unwrap_or(false);
+
+        if active_reps_all_zero {
+            if let Some(row) = self.results.get(self.selected) {
+                let path = row.meta.path.clone();
+                if let Some(ref engine) = self.playback {
+                    match engine.play(&path) {
+                        Ok(()) => {
+                            engine.set_volume(self.volume_linear());
+                            engine.set_speed(self.speed_multiplier);
+                            engine.set_loop_enabled(self.global_loop);
+                            if self.cursor_sample > 0 {
+                                let _ = engine.seek_to_sample(self.cursor_sample);
+                                self.cursor_sample = 0;
+                            }
+                            self.played.insert(path);
+                        }
+                        Err(e) => {
+                            self.set_status(format!("Play error: {e}"));
+                            return;
+                        }
+                    }
+                }
+            }
+            self.set_status("Playing".to_string());
+            return;
+        }
+
         self.ensure_markers();
         let segs = self.segments();
         if segs.is_empty() {

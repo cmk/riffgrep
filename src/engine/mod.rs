@@ -738,6 +738,15 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
 
         let path = meta.path.clone();
 
+        // Save BEXT-only view before ID3 merge so it can serve as the diff/write
+        // baseline.  Lua scripts still receive the ID3-augmented meta (richer
+        // data available in script logic), but changes are diffed against the
+        // on-disk BEXT state — not the ID3-inflated state.  Without this, ETL
+        // scripts that read packed fields from ID3 (TCON, TIT2, etc.) would see
+        // all fields already populated and produce an empty diff even for files
+        // whose packed BEXT Description block is still empty.
+        let meta_bext = meta.clone();
+
         // Augment with ID3v2 data (fills fields not covered by BEXT/RIFF INFO).
         if let Ok(id3) = id3::read_id3_tags(&path) {
             id3::merge_id3_into_unified(&mut meta, &id3);
@@ -751,7 +760,8 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
             }
         };
 
-        let diff = workflow::compute_meta_diff(&meta, &new_meta);
+        // Diff / write against the BEXT baseline (pre-ID3), not the merged view.
+        let diff = workflow::compute_meta_diff(&meta_bext, &new_meta);
         if diff.is_empty() {
             continue;
         }
@@ -761,7 +771,7 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
         let _ = write!(out, "{}", workflow::format_meta_diff(&diff));
 
         if opts.commit
-            && let Err(e) = workflow::write_metadata_changes(&path, &meta, &new_meta, opts.force)
+            && let Err(e) = workflow::write_metadata_changes(&path, &meta_bext, &new_meta, opts.force)
         {
             eprintln!("riffgrep: write error on {}: {e}", path.display());
         }
