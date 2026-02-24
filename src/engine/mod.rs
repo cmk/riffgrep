@@ -4,11 +4,13 @@ pub mod bext;
 pub mod cli;
 pub mod config;
 pub mod filesystem;
+pub mod id3;
 pub mod marks;
 pub mod playback;
 pub mod riff_info;
 pub mod sqlite;
 pub mod wav;
+pub mod workflow;
 
 use std::collections::HashSet;
 use std::io::BufReader;
@@ -590,6 +592,9 @@ pub fn run(opts: cli::Opts) -> anyhow::Result<()> {
     if opts.db_stats {
         return run_db_stats(&opts);
     }
+    if opts.is_workflow_mode() {
+        return run_workflow(&opts);
+    }
 
     use std::io::{BufWriter, Write};
     use std::thread;
@@ -663,6 +668,111 @@ pub fn run(opts: cli::Opts) -> anyhow::Result<()> {
     if count == 0 {
         std::process::exit(1);
     }
+
+    Ok(())
+}
+
+// --- Workflow pipeline ---
+
+/// Run the `--eval` / `--workflow` subcommand.
+///
+/// Loads the Lua script, walks matching files, runs the script against each
+/// file's metadata, prints a diff, and optionally writes changes back.
+fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
+    use std::io::{BufWriter, Write};
+    use std::thread;
+
+    let script = workflow::load_workflow_script(
+        opts.eval.as_deref(),
+        opts.workflow.as_deref(),
+    )?
+    .unwrap_or_default();
+
+    let query = build_query(opts)?;
+    let (tx, rx) = crossbeam_channel::bounded::<UnifiedMetadata>(2048);
+
+    let search_mode = determine_mode(opts)?;
+    let _walker = match search_mode {
+        SearchMode::Sqlite(db_path) => {
+            let query = query.clone();
+            thread::spawn(move || {
+                let db = match sqlite::Database::open(&db_path) {
+                    Ok(db) => db,
+                    Err(e) => {
+                        eprintln!("riffgrep: database error: {e}");
+                        return;
+                    }
+                };
+                db.search(&query, &tx);
+            })
+        }
+        SearchMode::Filesystem(roots) => {
+            let finder = filesystem::FilesystemFinder::new(roots, opts.threads);
+            let walk_query = query.clone();
+            thread::spawn(move || {
+                finder.walk(&walk_query, tx);
+            })
+        }
+    };
+
+    let stdout = std::io::stdout().lock();
+    let mut out = BufWriter::new(stdout);
+    let mut scanned: usize = 0;
+    let mut changed: usize = 0;
+
+    for mut meta in rx {
+        scanned += 1;
+
+        // Ensure Lua scripts always see absolute paths regardless of whether the
+        // search root was given as a relative path (e.g. `.`).
+        if let Ok(abs) = meta.path.canonicalize() {
+            meta.path = abs;
+        }
+
+        let path = meta.path.clone();
+
+        // Augment with ID3v2 data (fills fields not covered by BEXT/RIFF INFO).
+        if let Ok(id3) = id3::read_id3_tags(&path) {
+            id3::merge_id3_into_unified(&mut meta, &id3);
+        }
+
+        let new_meta = match workflow::run_lua_script(&script, meta.clone(), opts.force, opts.commit) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("riffgrep: lua error on {}: {e}", path.display());
+                continue;
+            }
+        };
+
+        let diff = workflow::compute_meta_diff(&meta, &new_meta);
+        if diff.is_empty() {
+            continue;
+        }
+
+        changed += 1;
+        let _ = writeln!(out, "{}", path.display());
+        let _ = write!(out, "{}", workflow::format_meta_diff(&diff));
+
+        if opts.commit
+            && let Err(e) = workflow::write_metadata_changes(&path, &meta, &new_meta, opts.force)
+        {
+            eprintln!("riffgrep: write error on {}: {e}", path.display());
+        }
+    }
+
+    let mode = if opts.commit {
+        if opts.force {
+            "changes applied --force"
+        } else {
+            "changes applied"
+        }
+    } else if opts.force {
+        "dry run --force — use --commit to apply"
+    } else {
+        "dry run — use --commit to apply"
+    };
+    let _ = writeln!(out, "{changed} files changed, {scanned} files scanned ({mode})");
+    let _ = out.flush();
 
     Ok(())
 }
@@ -1473,6 +1583,10 @@ mod tests {
             no_tui: false,
             theme: None,
             session_bpm: None,
+            eval: None,
+            workflow: None,
+            commit: false,
+            force: false,
             paths: vec![],
         }
     }

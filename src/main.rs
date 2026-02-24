@@ -44,4 +44,5 @@ fn should_launch_tui(opts: &engine::cli::Opts) -> bool {
         && !opts.verbose
         && !opts.json
         && !opts.count
+        && !opts.is_workflow_mode()
 }

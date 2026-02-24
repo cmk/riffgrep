@@ -110,6 +110,22 @@ pub struct Opts {
     #[bpaf(long("session-bpm"), argument("BPM"))]
     pub session_bpm: Option<f32>,
 
+    /// Lua one-liner to run against each matched file's metadata
+    #[bpaf(long, short('e'), argument("CODE"))]
+    pub eval: Option<String>,
+
+    /// Path to a Lua workflow script file to run against each matched file
+    #[bpaf(long, short('w'), argument("FILE"))]
+    pub workflow: Option<PathBuf>,
+
+    /// Apply metadata changes (default: dry-run, print diff only)
+    #[bpaf(long)]
+    pub commit: bool,
+
+    /// Re-write packed fields even when already ported; bypass script's "already done" guard
+    #[bpaf(long)]
+    pub force: bool,
+
     /// Search paths (default: current directory)
     #[bpaf(positional("PATH"))]
     pub paths: Vec<PathBuf>,
@@ -123,6 +139,18 @@ EXAMPLES:
   riffgrep --no-db ~/Samples           Search without database
   riffgrep --db-stats                  Show index health
   riffgrep --theme ableton             Launch TUI with theme
+ .
+WORKFLOW (Lua ETL):
+  riffgrep --eval 'sample:set_vendor(\"Splice\")' --no-db ~/Samples
+                                       Dry-run: print diffs for all files
+  riffgrep --eval '...' --no-db --commit ~/Samples
+                                       Apply changes to files
+  riffgrep --workflow etl.lua --no-db ~/Samples
+                                       Run a Lua script file (dry-run)
+  riffgrep --workflow etl.lua --no-db --force ~/Samples
+                                       Force re-write all packed fields (bypass guards)
+  riffgrep --workflow etl.lua --no-db --force --commit ~/Samples
+                                       Force re-write and apply changes
  .
 TUI KEYS (Normal mode):
   i, /    Enter search mode       Esc, Ctrl-C  Exit search mode
@@ -183,6 +211,11 @@ impl Opts {
             || self.bpm.is_some()
             || self.key.is_some()
     }
+
+    /// Returns true when a Lua workflow script is requested (`--eval` or `--workflow`).
+    pub fn is_workflow_mode(&self) -> bool {
+        self.eval.is_some() || self.workflow.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -229,5 +262,78 @@ mod tests {
             help.contains("CONFIG:"),
             "help should contain CONFIG section:\n{help}"
         );
+    }
+
+    #[test]
+    fn test_help_contains_workflow_section() {
+        let help = help_text();
+        assert!(
+            help.contains("WORKFLOW"),
+            "help should contain WORKFLOW section:\n{help}"
+        );
+    }
+
+    #[test]
+    fn test_eval_flag_parsed() {
+        let opts = opts_with_help()
+            .run_inner(&["--eval", "print(1)"])
+            .unwrap();
+        assert_eq!(opts.eval, Some("print(1)".to_string()));
+    }
+
+    #[test]
+    fn test_workflow_flag_parsed() {
+        let opts = opts_with_help()
+            .run_inner(&["--workflow", "foo.lua"])
+            .unwrap();
+        assert_eq!(opts.workflow, Some(PathBuf::from("foo.lua")));
+    }
+
+    #[test]
+    fn test_commit_flag_default_false() {
+        let opts = opts_with_help()
+            .run_inner(&[] as &[&str])
+            .unwrap();
+        assert!(!opts.commit);
+    }
+
+    #[test]
+    fn test_commit_flag_parsed() {
+        let opts = opts_with_help()
+            .run_inner(&["--commit"])
+            .unwrap();
+        assert!(opts.commit);
+    }
+
+    #[test]
+    fn test_force_flag_default_false() {
+        let opts = opts_with_help()
+            .run_inner(&[] as &[&str])
+            .unwrap();
+        assert!(!opts.force);
+    }
+
+    #[test]
+    fn test_force_flag_parsed() {
+        let opts = opts_with_help()
+            .run_inner(&["--force"])
+            .unwrap();
+        assert!(opts.force);
+    }
+
+    #[test]
+    fn test_is_workflow_mode_eval() {
+        let opts = opts_with_help()
+            .run_inner(&["--eval", "x()"])
+            .unwrap();
+        assert!(opts.is_workflow_mode());
+    }
+
+    #[test]
+    fn test_is_workflow_mode_false_by_default() {
+        let opts = opts_with_help()
+            .run_inner(&[] as &[&str])
+            .unwrap();
+        assert!(!opts.is_workflow_mode());
     }
 }
