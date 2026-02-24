@@ -7,6 +7,8 @@ A high-performance Rust CLI tool for searching WAV sample library metadata.
 - **Surgical I/O:** Read only the first ~1KB of each file; write metadata via fixed-offset overwrites without re-encoding audio
 - **Modular architecture:** Telescope-inspired Picker pattern with swappable data sources
 
+It's aspiring to be the BurntSushi version of a sample manager.
+
 ## Architecture
 
 The architecture follows a Telescope-style Picker abstraction with four modular components connected by Rust traits:
@@ -40,7 +42,7 @@ All metadata schemas (BEXT, ID3v2, iXML) parse into a common internal representa
 
 ```rust
 pub struct UnifiedMetadata<'a> {
-    pub recid: u64,
+    pub file_id: u64,               // High 64 bits of UUID v7 (0 = unpacked)
     pub umid: Cow<'a, str>,
     pub vendor: Cow<'a, str>,       // BEXT Originator
     pub library: Cow<'a, str>,      // BEXT OriginatorReference
@@ -154,6 +156,23 @@ The TUI renders peaks using a 4-row bipolar Braille waveform (Unicode U+2800-U+2
 
 Themes control waveform colors: `--theme ableton` (orange), `--theme soundminer` (green), `--theme telescope` (cyan/blue).
 
+## Tech Stack (key crates)
+
+| Crate | Purpose |
+|-------|---------|
+| `bpaf` | CLI parsing (lightweight vs clap) |
+| `ignore` | Parallel directory walking (from ripgrep) |
+| `rusqlite` | SQLite with FTS5 Trigram indexing |
+| `mlua` | Embedded Lua 5.4 for workflow scripting |
+| `uuid` | UUID v7 file identity (timestamp-monotonic, 64-bit) |
+| `ratatui` + `crossterm` | TUI framework |
+| `symphonia` + `rodio` | WAV decoding + audio playback |
+| `rayon` | Parallel file processing |
+| `zstd` | Compression for peak BLOBs in SQLite |
+| `mimalloc` | High-performance allocator (macOS) |
+| `proptest` | Property-based testing for BEXT parser |
+| `criterion` | Benchmarking |
+
 ## Workflow DSL
 
 Power users can script metadata operations via embedded Lua (`mlua`):
@@ -167,7 +186,69 @@ if sample:description():find("Kick") then
 end
 ```
 
-Workflows support dry-run mode by default, showing a colorized diff (via `similar` crate) before committing surgical BEXT writes. Use `--commit` to apply changes.
+Workflows support dry-run mode by default, showing a colorized diff before committing surgical BEXT writes. Use `--commit` to apply changes.
+
+## Workflow Engine
+
+The workflow engine runs Lua scripts against each WAV file. Scripts access and mutate metadata via the `sample` object; changes are shown as a diff and only written with `--commit`.
+
+```bash
+# One-liner transformation (dry-run)
+rfg --eval 'sample:set_category("DRUMS")' --no-db ./Incoming
+
+# Script from disk
+rfg --workflow scripts/etl_soundminer.lua --no-db ./Samples
+
+# Apply changes
+rfg --workflow scripts/etl_soundminer.lua --no-db --commit ./Samples
+
+# Force re-process already-ported files (bypasses bext_umid guard)
+rfg --workflow scripts/etl_soundminer.lua --no-db --force --commit ./Samples
+
+# Cap files processed (safe test run before a large port)
+rfg --workflow scripts/etl_soundminer.lua --no-db --limit 10 ./Samples
+```
+
+**Flags:**
+
+| Flag          | Description |
+|---------------|-------------|
+| `--eval CODE` | Run a Lua one-liner |
+| `--workflow F` | Run a Lua script from disk |
+| `--commit`    | Write changes (default: dry-run, print diff only) |
+| `--force`     | Re-process files whose migration receipt (`bext_umid`) is already set |
+| `--limit N`   | Cap files processed (for test runs before a large port) |
+| `--no-db`     | Bypass SQLite index, walk filesystem directly |
+
+**Lua `sample` API:**
+
+```lua
+sample:path()           -- absolute path
+sample:basename()       -- filename only (e.g. "kick.wav")
+sample:dirname()        -- parent directory
+sample:category()       -- getter
+sample:set_category(s)  -- setter
+sample:bext_umid()      -- 64-byte BEXT UMID field (migration receipt)
+sample:file_id()        -- riffgrep UUID v7 file identity (0 = not yet packed)
+sample:is_packed()      -- true when file_id != 0
+
+-- riffgrep global
+riffgrep.force          -- true when --force passed
+riffgrep.commit         -- true when --commit passed
+
+-- SQLite module (for ETL scripts)
+local db = sqlite.open("/path/to/db.sqlite", "readonly")
+local row = db:query_one("SELECT * FROM t WHERE path = ?", path)
+db:close()
+```
+
+**Full ETL example (SoundMiner → riffgrep):**
+
+```bash
+rfg --workflow scripts/etl_soundminer.lua --no-db --commit ~/Music/Samples
+```
+
+**Status: Schema locked — big port of 1.2M WAV files in `~/Music/Samples` imminent.**
 
 ## Project Source Layout
 

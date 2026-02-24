@@ -7,7 +7,6 @@
 -- Migration receipt:
 --   sample:bext_umid() — non-empty once a file has been ported; the original SM
 --                        _UMID hex string written into the 64-byte BEXT UMID field
---   sample:recid()     — SM database row ID (cross-reference only, not the guard)
 --
 -- Run as:
 --   riffgrep --workflow scripts/etl_soundminer.lua --no-db ~/SoundMinerExport
@@ -48,7 +47,7 @@ local sm_path = sample:path():gsub("^/Users/", SM_PREFIX .. "/Users/")
 
 local db = sqlite.open(SM_DB, "readonly")
 local row = db:query_one(
-    "SELECT _UMID, recid, Category, SubCategory, Library, ShortID, " ..
+    "SELECT _UMID, Category, SubCategory, Library, ShortID, " ..
     "BPM, Key, Artist, Description " ..
     "FROM justinmetadata WHERE FilePath = ?",
     sm_path
@@ -77,11 +76,9 @@ if sample:bpm() == nil and row.BPM and tonumber(row.BPM) then
 end
 
 -- ── Stamp migration receipt ───────────────────────────────────────────────────
--- bext_umid is the receipt: a non-empty value here marks the file as ported.
--- recid is stored as a cross-reference back to the SM database row.
+-- bext_umid is the receipt: a non-empty value marks the file as ported.
+-- It stores the SM _UMID hex string in the 64-byte BEXT UMID field, which is
+-- cryptographically large enough to serve as a unique identifier.
 if row._UMID then
     sample:set_bext_umid(row._UMID)
-end
-if row.recid then
-    sample:set_recid(row.recid)
 end

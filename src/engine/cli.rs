@@ -126,6 +126,10 @@ pub struct Opts {
     #[bpaf(long)]
     pub force: bool,
 
+    /// Process at most N files (useful for dry-run sampling before a large commit)
+    #[bpaf(long, argument("N"))]
+    pub limit: Option<usize>,
+
     /// Search paths (default: current directory)
     #[bpaf(positional("PATH"))]
     pub paths: Vec<PathBuf>,
@@ -151,6 +155,8 @@ WORKFLOW (Lua ETL):
                                        Force re-write all packed fields (bypass guards)
   riffgrep --workflow etl.lua --no-db --force --commit ~/Samples
                                        Force re-write and apply changes
+  riffgrep --workflow etl.lua --no-db --limit 10 ~/Samples
+                                       Dry-run on 10 files only (test before large port)
  .
 TUI KEYS (Normal mode):
   i, /    Enter search mode       Esc, Ctrl-C  Exit search mode
@@ -319,6 +325,20 @@ mod tests {
             .run_inner(&["--force"])
             .unwrap();
         assert!(opts.force);
+    }
+
+    #[test]
+    fn test_limit_flag_parsed() {
+        let opts = opts_with_help()
+            .run_inner(&["--limit", "42"])
+            .unwrap();
+        assert_eq!(opts.limit, Some(42));
+    }
+
+    #[test]
+    fn test_limit_flag_absent() {
+        let opts = opts_with_help().run_inner(&[]).unwrap();
+        assert_eq!(opts.limit, None);
     }
 
     #[test]

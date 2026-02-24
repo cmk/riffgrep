@@ -59,8 +59,9 @@ pub struct UnifiedMetadata {
     pub umid: String,
 
     // --- Packed Description fields (per PICKER_SCHEMA.md) ---
-    /// `[000:008]` SM recid (u64 LE).
-    pub recid: u64,
+    /// `[000:008]` riffgrep file identity — high 64 bits of UUID v7 generated at first pack (BE).
+    /// Zero means not yet packed.
+    pub file_id: u64,
     /// `[044:076]` COMR/Comment (32 ASCII).
     pub comment: String,
     /// `[076:080]` POPM/Rating (4 ASCII).
@@ -132,7 +133,7 @@ fn merge_metadata(path: &Path, bext: BextFields, info: InfoFields) -> UnifiedMet
         library: bext.library,
         description: bext.description,
         umid: bext.umid,
-        recid: bext.recid,
+        file_id: bext.file_id,
         comment: bext.comment,
         rating: bext.rating,
         bpm: bext.bpm,
@@ -721,6 +722,12 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
     let mut changed: usize = 0;
 
     for mut meta in rx {
+        if let Some(max) = opts.limit {
+            if scanned >= max {
+                break;
+            }
+        }
+
         scanned += 1;
 
         // Ensure Lua scripts always see absolute paths regardless of whether the
@@ -771,7 +778,14 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
     } else {
         "dry run — use --commit to apply"
     };
-    let _ = writeln!(out, "{changed} files changed, {scanned} files scanned ({mode})");
+    let limit_info = opts
+        .limit
+        .map(|n| format!(", limit {n}"))
+        .unwrap_or_default();
+    let _ = writeln!(
+        out,
+        "{changed} files changed, {scanned} files scanned ({mode}{limit_info})"
+    );
     let _ = out.flush();
 
     Ok(())
@@ -1083,8 +1097,8 @@ fn write_verbose<W: std::io::Write>(out: &mut W, meta: &UnifiedMetadata) -> std:
     if let Some(bpm) = meta.bpm {
         writeln!(out, "  bpm: {bpm}")?;
     }
-    if meta.recid != 0 {
-        writeln!(out, "  recid: {}", meta.recid)?;
+    if meta.file_id != 0 {
+        writeln!(out, "  file_id: {:016x}", meta.file_id)?;
     }
     Ok(())
 }
@@ -1587,6 +1601,7 @@ mod tests {
             workflow: None,
             commit: false,
             force: false,
+            limit: None,
             paths: vec![],
         }
     }

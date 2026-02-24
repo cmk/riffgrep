@@ -174,7 +174,7 @@ pub fn parse_bext_data<R: Read + Seek>(
 /// Detected format of the BEXT Reserved field (peak data source).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PeaksFormat {
-    /// Our packed schema (Description v0.1): Reserved holds 180 u8 amplitude peaks.
+    /// Our packed schema (Description v1.1): Reserved holds 180 u8 amplitude peaks.
     RiffgrepU8,
     /// Standard BWF (BEXT Version >= 1): Reserved holds R7 spectral data.
     BwfReserved,
@@ -216,8 +216,9 @@ pub struct BextFields {
     // --- Packed Description fields (when schema detected) ---
     /// Whether the packed schema was detected in the Description field.
     pub packed: bool,
-    /// `[000:008]` SM recid (u64 LE).
-    pub recid: u64,
+    /// `[000:008]` riffgrep file identity — high 64 bits of UUID v7 generated at first pack (BE).
+    /// Zero means not yet packed.
+    pub file_id: u64,
     /// `[044:076]` COMR/Comment (32 ASCII).
     pub comment: String,
     /// `[076:080]` POPM/Rating (4 ASCII).
@@ -282,26 +283,32 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
         peaks_raw.to_vec()
     };
 
-    // Detect packed schema: requires BOTH the schema version marker at bytes
-    // [008:012] (major=0, minor=1) AND bext_version >= 1 per PICKER_SCHEMA.md.
-    // The schema marker alone ([0x00, 0x00, 0x01, 0x00]) is too weak — bytes
-    // 8-11 of the Description could match by coincidence in third-party files
-    // (the adjacent marker block at [012:044] is sample offsets, not a hash).
+    // Detect packed schema: requires version_major == 1, version_minor >= 1,
+    // bext_version >= 2, AND a non-zero file_id (high 64 bits of UUID v7).
+    // All four conditions must hold — version_major=1 signals binary UUID content
+    // in a traditionally ASCII field; bext_version=2 signals EBU Tech 3285
+    // conformance; the non-zero file_id makes coincidental matches essentially
+    // impossible (collision probability ~1/370K for 10M files).
+    // Old files with version_major=0 or bext_version<2 are treated as unpacked —
+    // they predate the UUID schema and will be re-initialized on next write.
     let version_major = u16::from_le_bytes([buf[8], buf[9]]);
     let version_minor = u16::from_le_bytes([buf[10], buf[11]]);
-    let is_packed = version_major == 0 && version_minor >= 1 && bext_version >= 1;
+    let file_id = u64::from_be_bytes([
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+    ]);
+    let is_packed =
+        version_major == 1 && version_minor >= 1 && bext_version >= 2 && file_id != 0;
 
     // Determine peaks format.
-    // RiffgrepU8 requires BOTH the packed schema marker AND bext_version >= 1.
-    // This prevents misinterpreting arbitrary BEXT Reserved bytes from third-party
-    // DAWs (Reaper, SoundMiner, etc.) as waveform peak data.
+    // RiffgrepU8 requires the full packed schema (version_major=1, bext_version>=2,
+    // non-zero file_id). This prevents misinterpreting arbitrary BEXT Reserved bytes
+    // from third-party DAWs (Reaper, SoundMiner, etc.) as waveform peak data.
     let peaks_format = if all_zeros {
         PeaksFormat::Empty
-    } else if is_packed && bext_version >= 1 {
+    } else if is_packed {
         PeaksFormat::RiffgrepU8
     } else {
-        // Non-zero data but not our packed schema, or packed without the required
-        // BWF version — treat as opaque BWF Reserved data (not valid peaks).
+        // Non-zero data but not our packed schema — treat as opaque BWF Reserved data.
         PeaksFormat::BwfReserved
     };
 
@@ -323,9 +330,7 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
             bext_version,
             peaks_format,
             packed: true,
-            recid: u64::from_le_bytes([
-                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-            ]),
+            file_id,
             comment,
             description,
             rating: decode_fixed_ascii(&buf[76..80]),
@@ -485,7 +490,14 @@ pub fn write_markers(
     reader.read_exact(&mut bwf_buf)?;
     let bext_version = u16::from_le_bytes(bwf_buf);
 
-    let is_packed = version_major == 0 && version_minor >= 1 && bext_version >= 1;
+    // Also read file_id (8 bytes BE) at Description[0:8] to confirm non-zero.
+    reader.seek(SeekFrom::Start(bext_offset))?;
+    let mut id_buf = [0u8; 8];
+    reader.read_exact(&mut id_buf)?;
+    let file_id = u64::from_be_bytes(id_buf);
+
+    let is_packed =
+        version_major == 1 && version_minor >= 1 && bext_version >= 2 && file_id != 0;
     if !is_packed {
         return Err(BextWriteError::NotPacked);
     }
@@ -504,13 +516,17 @@ pub fn write_markers(
 /// Initialize packed schema on an existing unpacked BEXT chunk and write markers.
 ///
 /// For files with BEXT that are NOT yet packed:
-/// 1. Writes recid=0 at Description[0:8]
-/// 2. Writes version_major=0, version_minor=2 at Description[8:12]
+/// 1. Generates a UUID v7 and writes the high 8 bytes (BE) at Description[0:8]
+/// 2. Writes version_major=1, version_minor=2 at Description[8:12]
 /// 3. Writes marker data at Description[12:44]
-/// 4. Sets bext_version to 1 at offset 346 (enables packed detection on re-read)
+/// 4. Sets bext_version to 2 at offset 346 (signals EBU Tech 3285 compliance)
 ///
 /// Preserves all other BEXT fields (Originator, OriginatorReference, Date, UMID, etc.)
 /// since those live at fixed offsets outside [0:44].
+///
+/// The UUID v7 high 64 bits encode: 48-bit ms timestamp | 0x7 version nibble | 12-bit random.
+/// A non-zero file_id combined with version_major=1 and bext_version=2 is definitively
+/// riffgrep-packed — collision probability ~1/370K for a 10M file collection.
 pub fn init_packed_and_write_markers(
     path: &std::path::Path,
     markers: &MarkerConfig,
@@ -531,18 +547,22 @@ pub fn init_packed_and_write_markers(
 
     drop(reader);
 
-    // 1. Write recid=0 at Description[0:8].
-    write_bext_field(path, &map, 0, &0u64.to_le_bytes())?;
+    // 1. Generate UUID v7 and write the high 8 bytes (big-endian) at Description[0:8].
+    //    High 64 bits = 48-bit ms timestamp | 4-bit version nibble (0x7) | 12-bit random.
+    let uuid = uuid::Uuid::now_v7();
+    let uuid_bytes = uuid.as_bytes();
+    write_bext_field(path, &map, 0, &uuid_bytes[..8])?;
 
-    // 2. Write version_major=0, version_minor=2 at Description[8:12].
-    write_bext_field(path, &map, 8, &0u16.to_le_bytes())?;
+    // 2. Write version_major=1, version_minor=2 at Description[8:12].
+    write_bext_field(path, &map, 8, &1u16.to_le_bytes())?;
     write_bext_field(path, &map, 10, &PACKED_VERSION_MINOR_V2.to_le_bytes())?;
 
     // 3. Write marker data at Description[12:44].
     write_bext_field(path, &map, 12, &markers.to_bytes())?;
 
-    // 4. Set bext_version to 1 at offset 346 (enables packed detection).
-    write_bext_field(path, &map, 346, &1u16.to_le_bytes())?;
+    // 4. Set bext_version=2 at offset 346 (signals EBU Tech 3285 compliance and
+    //    honest acknowledgment of non-standard use of loudness fields for u8 peaks).
+    write_bext_field(path, &map, 346, &2u16.to_le_bytes())?;
 
     Ok(())
 }
@@ -876,11 +896,11 @@ mod tests {
     /// Build a 602-byte BEXT buffer with known values at every field.
     fn make_bext_buffer_packed() -> [u8; BEXT_STANDARD_SIZE] {
         let mut buf = [0u8; BEXT_STANDARD_SIZE];
-        // recid [000:008] = 985188
-        buf[0..8].copy_from_slice(&985188u64.to_le_bytes());
-        // version [008:012] = 0.1 (packed schema marker)
-        buf[8..10].copy_from_slice(&0u16.to_le_bytes());
-        buf[10..12].copy_from_slice(&1u16.to_le_bytes());
+        // file_id [000:008] = 985188 (stored big-endian, as UUID v7 high bytes are)
+        buf[0..8].copy_from_slice(&985188u64.to_be_bytes());
+        // version [008:012] = 1.2 (version_major=1, version_minor=2)
+        buf[8..10].copy_from_slice(&1u16.to_le_bytes());
+        buf[10..12].copy_from_slice(&2u16.to_le_bytes());
         // markers [012:044] = zeros (unused)
         // COMR/Comment [044:076] = "Sequential Circuits Prophet-10"
         buf[44..74].copy_from_slice(b"Sequential Circuits Prophet-10");
@@ -912,8 +932,8 @@ mod tests {
         buf[288..303].copy_from_slice(b"DX100 From Mars");
         // OriginationDate [320:330] = "2024-01-15"
         buf[320..330].copy_from_slice(b"2024-01-15");
-        // BWF Version [346:348] = 1 (required for RiffgrepU8 peak detection).
-        buf[346..348].copy_from_slice(&1u16.to_le_bytes());
+        // BWF Version [346:348] = 2 (signals EBU Tech 3285; required for RiffgrepU8 detection).
+        buf[346..348].copy_from_slice(&2u16.to_le_bytes());
         // UMID [348:412] = "976132720e774b668c36826386ae6505" as ASCII
         buf[348..380].copy_from_slice(b"976132720e774b668c36826386ae6505");
         buf
@@ -924,7 +944,7 @@ mod tests {
         let buf = make_bext_buffer_packed();
         let fields = parse_bext_buffer(&buf);
         assert!(fields.packed);
-        assert_eq!(fields.recid, 985188);
+        assert_eq!(fields.file_id, 985188);
         assert_eq!(fields.comment, "Sequential Circuits Prophet-10");
         assert_eq!(fields.description, "Sequential Circuits Prophet-10");
         assert_eq!(fields.rating, "****");
@@ -949,7 +969,7 @@ mod tests {
         let buf = [0u8; BEXT_STANDARD_SIZE];
         let fields = parse_bext_buffer(&buf);
         assert!(!fields.packed);
-        assert_eq!(fields.recid, 0);
+        assert_eq!(fields.file_id, 0);
         assert_eq!(fields.description, "");
         assert_eq!(fields.vendor, "");
         assert_eq!(fields.library, "");
@@ -1149,7 +1169,7 @@ mod tests {
         }
         let fields = parse_bext_buffer(&buf);
         assert_eq!(fields.peaks_format, PeaksFormat::RiffgrepU8);
-        assert_eq!(fields.bext_version, 1, "packed helper should set bext_version=1");
+        assert_eq!(fields.bext_version, 2, "packed helper should set bext_version=2");
         assert!(!fields.peaks.is_empty());
     }
 
@@ -1322,7 +1342,7 @@ mod tests {
 
     #[test]
     fn version_round_trip_packed_schema() {
-        // Simulate a riffgrep-written file: packed schema + bext_version=1.
+        // Simulate a riffgrep-written file: packed schema v1.2 + bext_version=2.
         // All version-dependent fields should be present.
         let mut buf = make_bext_buffer_packed();
         // Set non-zero peaks.
@@ -1332,10 +1352,10 @@ mod tests {
         let fields = parse_bext_buffer(&buf);
         // Version-dependent features all active:
         assert!(fields.packed, "packed schema should be detected");
-        assert_eq!(fields.bext_version, 1);
+        assert_eq!(fields.bext_version, 2);
         assert_eq!(fields.peaks_format, PeaksFormat::RiffgrepU8);
-        assert!(!fields.umid.is_empty(), "UMID should be read for v1");
-        assert_eq!(fields.recid, 985188);
+        assert!(!fields.umid.is_empty(), "UMID should be read for v>=1");
+        assert_eq!(fields.file_id, 985188);
         assert_eq!(fields.category, "LOOP");
         assert_eq!(fields.sound_id, "DHC");
         assert!(!fields.peaks.is_empty());
@@ -1599,14 +1619,16 @@ mod tests {
 
     // --- S9-T5 tests: Write markers to BEXT ---
 
-    /// Create a temp WAV file with a packed BEXT chunk (version 0.1, bext_version=1).
+    /// Create a temp WAV file with a packed BEXT chunk (version 1.2, bext_version=2).
     fn make_temp_wav_packed(suffix: &str) -> (std::path::PathBuf, ChunkMap) {
         let mut bext_data = [0u8; BEXT_STANDARD_SIZE];
-        // Packed schema marker: major=0, minor=1.
-        bext_data[8..10].copy_from_slice(&0u16.to_le_bytes());
-        bext_data[10..12].copy_from_slice(&1u16.to_le_bytes());
-        // BWF version = 1 at offset 346.
-        bext_data[346..348].copy_from_slice(&1u16.to_le_bytes());
+        // file_id [0:8] — non-zero fixture value, big-endian.
+        bext_data[0..8].copy_from_slice(&0x0000_0001_0000_0001u64.to_be_bytes());
+        // Packed schema: version_major=1, version_minor=2.
+        bext_data[8..10].copy_from_slice(&1u16.to_le_bytes());
+        bext_data[10..12].copy_from_slice(&2u16.to_le_bytes());
+        // BWF version = 2 at offset 346.
+        bext_data[346..348].copy_from_slice(&2u16.to_le_bytes());
         // Some comment text.
         bext_data[44..55].copy_from_slice(b"TestComment");
         bext_data[88..92].copy_from_slice(b"LOOP");
@@ -2033,7 +2055,7 @@ mod tests {
                 prop_assert_eq!(a.sound_id, b.sound_id);
                 prop_assert_eq!(a.key, b.key);
                 prop_assert_eq!(a.umid, b.umid);
-                prop_assert_eq!(a.recid, b.recid);
+                prop_assert_eq!(a.file_id, b.file_id);
                 prop_assert_eq!(a.bext_version, b.bext_version);
                 prop_assert_eq!(a.peaks_format, b.peaks_format);
             }

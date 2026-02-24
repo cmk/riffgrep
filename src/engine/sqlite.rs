@@ -22,7 +22,7 @@ const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
     vendor, library, category, sound_id,
     description, comment, key, bpm,
     rating, subcategory, genre_id, usage_id,
-    umid, recid, mtime, peaks, peaks_source,
+    umid, file_id, mtime, peaks, peaks_source,
     duration, sample_rate, bit_depth, channels,
     date, take, track, item, markers_blob,
     total_samples
@@ -113,7 +113,7 @@ impl Database {
                     meta.genre_id,
                     meta.usage_id,
                     meta.umid,
-                    meta.recid as i64,
+                    meta.file_id as i64,
                     mtime,
                     peaks.as_deref(),
                     peaks_source,
@@ -256,7 +256,7 @@ impl Database {
                     meta.genre_id,
                     meta.usage_id,
                     meta.umid,
-                    meta.recid as i64,
+                    meta.file_id as i64,
                     mtime,
                     peaks.as_deref(),
                     source.as_str(),
@@ -319,7 +319,7 @@ impl Database {
                     meta.genre_id,
                     meta.usage_id,
                     meta.umid,
-                    meta.recid as i64,
+                    meta.file_id as i64,
                     mtime,
                     peaks.as_deref(),
                     source.as_str(),
@@ -642,7 +642,7 @@ fn create_schema(conn: &Connection) -> anyhow::Result<()> {
             genre_id TEXT NOT NULL DEFAULT '',
             usage_id TEXT NOT NULL DEFAULT '',
             umid TEXT NOT NULL DEFAULT '',
-            recid INTEGER NOT NULL DEFAULT 0,
+            file_id INTEGER NOT NULL DEFAULT 0,
             mtime INTEGER NOT NULL,
             peaks BLOB,
             peaks_source TEXT NOT NULL DEFAULT 'none',
@@ -1020,7 +1020,7 @@ fn escape_like(s: &str) -> String {
 fn row_to_metadata(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnifiedMetadata> {
     let path_str: String = row.get("path")?;
     let bpm: Option<i32> = row.get("bpm")?;
-    let recid: i64 = row.get("recid")?;
+    let file_id: i64 = row.get("file_id")?;
 
     Ok(UnifiedMetadata {
         path: PathBuf::from(path_str),
@@ -1028,7 +1028,7 @@ fn row_to_metadata(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnifiedMetadata>
         library: row.get("library")?,
         description: row.get("description")?,
         umid: row.get("umid")?,
-        recid: recid as u64,
+        file_id: file_id as u64,
         comment: row.get("comment")?,
         rating: row.get("rating")?,
         bpm: bpm.map(|v| v as u16),
@@ -1362,14 +1362,14 @@ mod tests {
             genre_id: "ACID".to_string(),
             usage_id: "XPM".to_string(),
             umid: "abc123".to_string(),
-            recid: 985188,
+            file_id: 985188,
             ..Default::default()
         };
 
         db.insert_batch(&[(meta, 1000, None)]).unwrap();
 
         let row: (String, String, String, String, String, String, String, Option<i32>, String, String, String, String, String, i64) = db.conn.query_row(
-            "SELECT vendor, library, category, sound_id, description, comment, key, bpm, rating, subcategory, genre_id, usage_id, umid, recid FROM samples WHERE path = '/samples/test.wav'",
+            "SELECT vendor, library, category, sound_id, description, comment, key, bpm, rating, subcategory, genre_id, usage_id, umid, file_id FROM samples WHERE path = '/samples/test.wav'",
             [],
             |r| Ok((
                 r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?,
@@ -2225,7 +2225,7 @@ mod tests {
                     genre_id TEXT NOT NULL DEFAULT '',
                     usage_id TEXT NOT NULL DEFAULT '',
                     umid TEXT NOT NULL DEFAULT '',
-                    recid INTEGER NOT NULL DEFAULT 0,
+                    file_id INTEGER NOT NULL DEFAULT 0,
                     mtime INTEGER NOT NULL,
                     peaks BLOB
                 );",
@@ -2307,7 +2307,7 @@ mod tests {
                     genre_id TEXT NOT NULL DEFAULT '',
                     usage_id TEXT NOT NULL DEFAULT '',
                     umid TEXT NOT NULL DEFAULT '',
-                    recid INTEGER NOT NULL DEFAULT 0,
+                    file_id INTEGER NOT NULL DEFAULT 0,
                     mtime INTEGER NOT NULL,
                     peaks BLOB,
                     peaks_source TEXT NOT NULL DEFAULT 'none'
