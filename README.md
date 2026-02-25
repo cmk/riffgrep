@@ -1,17 +1,11 @@
 # riffgrep
 
-A high-performance Rust CLI tool for searching WAV sample library metadata.
+A high-performance Rust CLI tool for searching WAV sample library metadata. As the name implies, riffgrep aspires to be the BurntSushi version of a sample manager.
 
 - **Ripgrep speed:** 1-3 seconds (RIFF INFO only) to 3-5 seconds (INFO + ID3v2) across 1.2M ~ 4TB files
 - **Dual-mode search:** SQLite-indexed mode for instant results, databaseless filesystem mode for zero-setup use
 - **Surgical I/O:** Read only the first ~1KB of each file; write metadata via fixed-offset overwrites without re-encoding audio
-- **Modular architecture:** Telescope-inspired Picker pattern with swappable data sources
-
-It's aspiring to be the BurntSushi version of a sample manager.
-
-## Architecture
-
-The architecture follows a Telescope-style Picker abstraction with four modular components connected by Rust traits:
+- **Modular architecture:** The architecture follows a Neovim/Telescope-style Picker abstraction with four modular components connected by Rust traits:
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -107,7 +101,7 @@ panic = "abort"
 strip = true
 ```
 
-Build with `RUSTFLAGS="-C target-cpu=native"` for SIMD acceleration.
+For SIMD acceleration: `export RUSTFLAGS="-C target-cpu=native" && cargo build --release`
 
 ## SQLite Schema
 
@@ -156,22 +150,6 @@ The TUI renders peaks using a 4-row bipolar Braille waveform (Unicode U+2800-U+2
 
 Themes control waveform colors: `--theme ableton` (orange), `--theme soundminer` (green), `--theme telescope` (cyan/blue).
 
-## Tech Stack (key crates)
-
-| Crate | Purpose |
-|-------|---------|
-| `bpaf` | CLI parsing (lightweight vs clap) |
-| `ignore` | Parallel directory walking (from ripgrep) |
-| `rusqlite` | SQLite with FTS5 Trigram indexing |
-| `mlua` | Embedded Lua 5.4 for workflow scripting |
-| `uuid` | UUID v7 file identity (timestamp-monotonic, 64-bit) |
-| `ratatui` + `crossterm` | TUI framework |
-| `symphonia` + `rodio` | WAV decoding + audio playback |
-| `rayon` | Parallel file processing |
-| `zstd` | Compression for peak BLOBs in SQLite |
-| `mimalloc` | High-performance allocator (macOS) |
-| `proptest` | Property-based testing for BEXT parser |
-| `criterion` | Benchmarking |
 
 ## Workflow DSL
 
@@ -248,8 +226,6 @@ db:close()
 rfg --workflow scripts/etl_soundminer.lua --no-db --commit ~/Music/Samples
 ```
 
-**Status: Schema locked — big port of 1.2M WAV files in `~/Music/Samples` imminent.**
-
 ## Project Source Layout
 
 ```
@@ -267,3 +243,27 @@ src/
 │   └── theme.rs         # Theme definitions (Ableton, SoundMiner, Telescope)
 └── util.rs              # Logging, path normalization, hashing
 ```
+
+## Primary Crates
+
+| Crate | Purpose |
+|-------|---------|
+| `bpaf` | CLI parsing (lightweight vs clap) |
+| `ignore` | Parallel directory walking (from ripgrep) |
+| `rusqlite` | SQLite with FTS5 Trigram indexing |
+| `mlua` | Embedded Lua 5.4 for workflow scripting |
+| `uuid` | UUID v7 file identity (timestamp-monotonic, 64-bit) |
+| `ratatui` + `crossterm` | TUI framework |
+| `symphonia` + `rodio` | WAV decoding + audio playback |
+| `rayon` | Parallel file processing |
+| `zstd` | Compression for peak BLOBs in SQLite |
+| `mimalloc` | High-performance allocator (macOS) |
+| `proptest` | Property-based testing for BEXT parser |
+| `criterion` | Benchmarking |
+
+* `ignore`: Using the WalkBuilder from the ignore crate is the fastest way to crawl a filesystem while respecting hidden files (e.g. .DS_Store, .gitignore, etc). It’s significantly faster than `walkdir` because it leverages parallel directory traversal.
+* `rayon`: riffgrep feeds that iterator into a parallel bridge. Since the BEXT parser is custom and byte-level, the performance bottleneck is disk I/O (specifically metadata lookups).
+* `lofty`: To keep search as fast as possible, riffgrep stores its metadata in the bext chunk, and its parser just looks for the RIFF header, jumps to the bext offset, and does a fixed-size `read_exact`. Lofty is only used for batch workflows when parsing tags at the end of a file.
+* `rusqlite`: Riffgrep uses rusqlite to leverage WAL (Write-Ahead Logging) mode. If you aren't already, use PRAGMA synchronous = OFF and PRAGMA journal_mode = WAL during the initial bulk index. It will turn your SQLite database into a high-speed append-only log, matching riffgreps's velocity.
+* `mlua`: allows users to write custom renaming scripts or metadata mapping (e.g., "If Category is LOOP, set Usage ID to XPM").
+
