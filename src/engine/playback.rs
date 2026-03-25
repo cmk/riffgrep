@@ -1,7 +1,7 @@
 //! Audio playback engine using symphonia for decoding and rodio for output.
 //!
 //! Segment boundaries, looping, and crossfades are enforced at the sample level
-//! by [`SegmentSource`], eliminating pops from rodio's mixer buffering.
+//! by `SegmentSource`, eliminating pops from rodio's mixer buffering.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
@@ -53,7 +53,7 @@ const NO_SEEK: u32 = u32::MAX;
 /// Crossfade duration in frames (~1.3ms at 48kHz).
 const CROSSFADE_FRAMES: u32 = 64;
 
-/// Shared state between the [`SegmentSource`] (mixer thread) and the UI.
+/// Shared state between the `SegmentSource` (mixer thread) and the UI.
 pub struct SourceControl {
     /// Current frame position (written by source, read by UI).
     ///
@@ -392,7 +392,7 @@ impl PlaybackEngine {
 
     /// Start playing a WAV file from the beginning. Stops any current playback.
     ///
-    /// Uses a [`SegmentSource`] with a single segment spanning the entire file
+    /// Uses a `SegmentSource` with a single segment spanning the entire file
     /// (no boundaries, no looping).
     pub fn play(&self, path: &Path) -> Result<(), anyhow::Error> {
         self.stop();
@@ -429,16 +429,16 @@ impl PlaybackEngine {
         // Compute duration from pre-decoded data.
         let dur = Duration::from_secs_f64(total_frames as f64 / sample_rate as f64);
 
-        *self.sink.lock().unwrap() = Some(sink);
-        *self.source_control.lock().unwrap() = Some(control);
-        *self.duration.lock().unwrap() = Some(dur);
-        *self.total_samples.lock().unwrap() = total_frames;
-        *self.sample_rate_hz.lock().unwrap() = sample_rate;
-        *self.play_start.lock().unwrap() = Some(Instant::now());
-        *self.paused_elapsed.lock().unwrap() = Duration::ZERO;
-        *self.current_path.lock().unwrap() = Some(path.to_path_buf());
-        *self.drain_start.lock().unwrap() = None;
-        *self.sample_offset.lock().unwrap() = 0;
+        *self.sink.lock().expect("playback lock poisoned") = Some(sink);
+        *self.source_control.lock().expect("playback lock poisoned") = Some(control);
+        *self.duration.lock().expect("playback lock poisoned") = Some(dur);
+        *self.total_samples.lock().expect("playback lock poisoned") = total_frames;
+        *self.sample_rate_hz.lock().expect("playback lock poisoned") = sample_rate;
+        *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
+        *self.paused_elapsed.lock().expect("playback lock poisoned") = Duration::ZERO;
+        *self.current_path.lock().expect("playback lock poisoned") = Some(path.to_path_buf());
+        *self.drain_start.lock().expect("playback lock poisoned") = None;
+        *self.sample_offset.lock().expect("playback lock poisoned") = 0;
         self.state.store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
 
         Ok(())
@@ -533,16 +533,16 @@ impl PlaybackEngine {
 
         let dur = Duration::from_secs_f64(total_frames as f64 / sample_rate as f64);
 
-        *self.sink.lock().unwrap() = Some(sink);
-        *self.source_control.lock().unwrap() = Some(control);
-        *self.duration.lock().unwrap() = Some(dur);
-        *self.total_samples.lock().unwrap() = total_frames;
-        *self.sample_rate_hz.lock().unwrap() = sample_rate;
-        *self.play_start.lock().unwrap() = Some(Instant::now());
-        *self.paused_elapsed.lock().unwrap() = Duration::ZERO;
-        *self.current_path.lock().unwrap() = Some(path.to_path_buf());
-        *self.drain_start.lock().unwrap() = None;
-        *self.sample_offset.lock().unwrap() = first_start;
+        *self.sink.lock().expect("playback lock poisoned") = Some(sink);
+        *self.source_control.lock().expect("playback lock poisoned") = Some(control);
+        *self.duration.lock().expect("playback lock poisoned") = Some(dur);
+        *self.total_samples.lock().expect("playback lock poisoned") = total_frames;
+        *self.sample_rate_hz.lock().expect("playback lock poisoned") = sample_rate;
+        *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
+        *self.paused_elapsed.lock().expect("playback lock poisoned") = Duration::ZERO;
+        *self.current_path.lock().expect("playback lock poisoned") = Some(path.to_path_buf());
+        *self.drain_start.lock().expect("playback lock poisoned") = None;
+        *self.sample_offset.lock().expect("playback lock poisoned") = first_start;
         self.state.store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
 
         Ok(())
@@ -553,20 +553,20 @@ impl PlaybackEngine {
         let current = PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
         match current {
             PlaybackState::Playing => {
-                if let Some(ref sink) = *self.sink.lock().unwrap() {
+                if let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned") {
                     sink.pause();
                 }
                 // Save elapsed time before pausing.
                 let elapsed = self.compute_elapsed();
-                *self.paused_elapsed.lock().unwrap() = elapsed;
-                *self.play_start.lock().unwrap() = None;
+                *self.paused_elapsed.lock().expect("playback lock poisoned") = elapsed;
+                *self.play_start.lock().expect("playback lock poisoned") = None;
                 self.state.store(PlaybackState::Paused.to_u8(), Ordering::Relaxed);
             }
             PlaybackState::Paused => {
-                if let Some(ref sink) = *self.sink.lock().unwrap() {
+                if let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned") {
                     sink.play();
                 }
-                *self.play_start.lock().unwrap() = Some(Instant::now());
+                *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
                 self.state.store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
             }
             PlaybackState::Stopped => {}
@@ -575,16 +575,16 @@ impl PlaybackEngine {
 
     /// Stop playback and reset state.
     pub fn stop(&self) {
-        if let Some(sink) = self.sink.lock().unwrap().take() {
+        if let Some(sink) = self.sink.lock().expect("playback lock poisoned").take() {
             sink.stop();
         }
-        *self.source_control.lock().unwrap() = None;
-        *self.play_start.lock().unwrap() = None;
-        *self.paused_elapsed.lock().unwrap() = Duration::ZERO;
-        *self.current_path.lock().unwrap() = None;
-        *self.duration.lock().unwrap() = None;
-        *self.drain_start.lock().unwrap() = None;
-        *self.sample_offset.lock().unwrap() = 0;
+        *self.source_control.lock().expect("playback lock poisoned") = None;
+        *self.play_start.lock().expect("playback lock poisoned") = None;
+        *self.paused_elapsed.lock().expect("playback lock poisoned") = Duration::ZERO;
+        *self.current_path.lock().expect("playback lock poisoned") = None;
+        *self.duration.lock().expect("playback lock poisoned") = None;
+        *self.drain_start.lock().expect("playback lock poisoned") = None;
+        *self.sample_offset.lock().expect("playback lock poisoned") = 0;
         self.state.store(PlaybackState::Stopped.to_u8(), Ordering::Relaxed);
     }
 
@@ -595,9 +595,9 @@ impl PlaybackEngine {
     pub fn state(&self) -> PlaybackState {
         let state = PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
         if state == PlaybackState::Playing {
-            if let Some(ref sink) = *self.sink.lock().unwrap() {
+            if let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned") {
                 if sink.empty() {
-                    let mut drain = self.drain_start.lock().unwrap();
+                    let mut drain = self.drain_start.lock().expect("playback lock poisoned");
                     if drain.is_none() {
                         *drain = Some(Instant::now());
                         return PlaybackState::Playing;
@@ -623,33 +623,33 @@ impl PlaybackEngine {
 
     /// Total duration of the current track (if known).
     pub fn duration(&self) -> Option<Duration> {
-        *self.duration.lock().unwrap()
+        *self.duration.lock().expect("playback lock poisoned")
     }
 
     /// Path of the currently loaded file.
     pub fn current_path(&self) -> Option<PathBuf> {
-        self.current_path.lock().unwrap().clone()
+        self.current_path.lock().expect("playback lock poisoned").clone()
     }
 
     /// Current playback position in frames.
     pub fn sample_offset(&self) -> u32 {
-        *self.sample_offset.lock().unwrap()
+        *self.sample_offset.lock().expect("playback lock poisoned")
     }
 
     /// Total number of frames in the current file.
     pub fn total_samples(&self) -> u32 {
-        *self.total_samples.lock().unwrap()
+        *self.total_samples.lock().expect("playback lock poisoned")
     }
 
     /// Sample rate of the current file in Hz.
     pub fn sample_rate(&self) -> u32 {
-        *self.sample_rate_hz.lock().unwrap()
+        *self.sample_rate_hz.lock().expect("playback lock poisoned")
     }
 
     /// Playback position as a fraction 0.0–1.0 (derived from sample_offset / total_samples).
     pub fn position_fraction(&self) -> f32 {
-        let offset = *self.sample_offset.lock().unwrap();
-        let total = *self.total_samples.lock().unwrap();
+        let offset = *self.sample_offset.lock().expect("playback lock poisoned");
+        let total = *self.total_samples.lock().expect("playback lock poisoned");
         if total == 0 {
             return 0.0;
         }
@@ -673,23 +673,23 @@ impl PlaybackEngine {
         }
 
         // Request seek via source control (consumed on mixer thread).
-        if let Some(ref ctl) = *self.source_control.lock().unwrap() {
+        if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
             ctl.pending_seek.store(clamped, Ordering::Relaxed);
             ctl.frame.store(clamped, Ordering::Relaxed);
         }
 
         // Update sample offset immediately for UI responsiveness.
-        *self.sample_offset.lock().unwrap() = clamped;
+        *self.sample_offset.lock().expect("playback lock poisoned") = clamped;
 
         // Reset elapsed tracking to match the new position.
         let duration = Duration::from_secs_f64(clamped as f64 / rate as f64);
-        *self.paused_elapsed.lock().unwrap() = duration;
+        *self.paused_elapsed.lock().expect("playback lock poisoned") = duration;
         if state == PlaybackState::Playing {
-            *self.play_start.lock().unwrap() = Some(Instant::now());
+            *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
         }
 
         // Clear drain_start (seeking restarts drain detection).
-        *self.drain_start.lock().unwrap() = None;
+        *self.drain_start.lock().expect("playback lock poisoned") = None;
 
         Ok(())
     }
@@ -698,7 +698,7 @@ impl PlaybackEngine {
     ///
     /// Applied to the active sink. No-op when stopped.
     pub fn set_volume(&self, linear: f32) {
-        if let Some(ref sink) = *self.sink.lock().unwrap() {
+        if let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned") {
             sink.set_volume(linear);
         }
     }
@@ -707,7 +707,7 @@ impl PlaybackEngine {
     ///
     /// Applied to the active sink via rodio's speed filter. No-op when stopped.
     pub fn set_speed(&self, ratio: f32) {
-        if let Some(ref sink) = *self.sink.lock().unwrap() {
+        if let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned") {
             sink.set_speed(ratio);
         }
     }
@@ -718,7 +718,7 @@ impl PlaybackEngine {
     /// thread on every frame boundary. Gates both infinite per-segment reps
     /// (`reps == 255`) and global playlist restart. No-op when stopped.
     pub fn set_loop_enabled(&self, enabled: bool) {
-        if let Some(ref ctl) = *self.source_control.lock().unwrap() {
+        if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
             ctl.loop_enabled.store(enabled, Ordering::Relaxed);
         }
     }
@@ -728,20 +728,21 @@ impl PlaybackEngine {
     /// Unlike `seek_to_sample(0)`, this resets `seg_idx` inside the source so
     /// reversed segments (whose buffer data lives past `total_frames`) are
     /// reached correctly. No-op when stopped.
+    #[allow(dead_code)] // Reserved for program segment restart.
     pub fn restart_program(&self) {
         let state = PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
         if state == PlaybackState::Stopped {
             return;
         }
-        if let Some(ref ctl) = *self.source_control.lock().unwrap() {
+        if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
             ctl.pending_restart.store(true, Ordering::Relaxed);
         }
-        *self.sample_offset.lock().unwrap() = 0;
-        *self.paused_elapsed.lock().unwrap() = Duration::ZERO;
+        *self.sample_offset.lock().expect("playback lock poisoned") = 0;
+        *self.paused_elapsed.lock().expect("playback lock poisoned") = Duration::ZERO;
         if state == PlaybackState::Playing {
-            *self.play_start.lock().unwrap() = Some(Instant::now());
+            *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
         }
-        *self.drain_start.lock().unwrap() = None;
+        *self.drain_start.lock().expect("playback lock poisoned") = None;
     }
 
     /// Seek relative to current position in seconds.
@@ -769,15 +770,15 @@ impl PlaybackEngine {
         if state != PlaybackState::Playing {
             return;
         }
-        if let Some(ref ctl) = *self.source_control.lock().unwrap() {
+        if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
             let frame = ctl.frame.load(Ordering::Relaxed);
-            *self.sample_offset.lock().unwrap() = frame;
+            *self.sample_offset.lock().expect("playback lock poisoned") = frame;
         }
     }
 
     fn compute_elapsed(&self) -> Duration {
-        let paused = *self.paused_elapsed.lock().unwrap();
-        match *self.play_start.lock().unwrap() {
+        let paused = *self.paused_elapsed.lock().expect("playback lock poisoned");
+        match *self.play_start.lock().expect("playback lock poisoned") {
             Some(start) => paused + start.elapsed(),
             None => paused,
         }
@@ -792,30 +793,30 @@ impl PlaybackEngine {
 impl PlaybackEngine {
     /// Test helper: read drain_start value.
     pub fn test_drain_start(&self) -> Option<Instant> {
-        *self.drain_start.lock().unwrap()
+        *self.drain_start.lock().expect("playback lock poisoned")
     }
 
     /// Test helper: set drain_start directly.
     pub fn test_set_drain_start(&self, v: Option<Instant>) {
-        *self.drain_start.lock().unwrap() = v;
+        *self.drain_start.lock().expect("playback lock poisoned") = v;
     }
 
     /// Test helper: create an empty sink (no audio appended = immediately empty).
     pub fn test_create_empty_sink(&self) {
         if let Ok(sink) = Sink::try_new(&self.stream_handle) {
-            *self.sink.lock().unwrap() = Some(sink);
+            *self.sink.lock().expect("playback lock poisoned") = Some(sink);
         }
     }
 
     /// Test helper: set sample position fields directly.
     pub fn test_set_sample_position(&self, offset: u32, total: u32) {
-        *self.sample_offset.lock().unwrap() = offset;
-        *self.total_samples.lock().unwrap() = total;
+        *self.sample_offset.lock().expect("playback lock poisoned") = offset;
+        *self.total_samples.lock().expect("playback lock poisoned") = total;
     }
 
     /// Test helper: set sample rate directly.
     pub fn test_set_sample_rate(&self, rate: u32) {
-        *self.sample_rate_hz.lock().unwrap() = rate;
+        *self.sample_rate_hz.lock().expect("playback lock poisoned") = rate;
     }
 
     /// Test helper: set internal state directly (Playing/Paused/Stopped).
@@ -1035,7 +1036,7 @@ mod tests {
         }
         engine.play(path).unwrap();
         // Simulate offset advancing.
-        *engine.sample_offset.lock().unwrap() = 44100;
+        *engine.sample_offset.lock().expect("playback lock poisoned") = 44100;
         // Play again — should reset offset.
         engine.play(path).unwrap();
         assert_eq!(
@@ -1072,7 +1073,7 @@ mod tests {
             return;
         }
         engine.play(path).unwrap();
-        *engine.sample_offset.lock().unwrap() = 22050;
+        *engine.sample_offset.lock().expect("playback lock poisoned") = 22050;
         engine.seek_to_sample(0).unwrap();
         assert_eq!(engine.sample_offset(), 0, "seek_to_sample(0) should rewind to start");
     }
@@ -1108,7 +1109,7 @@ mod tests {
             return;
         }
         engine.play(path).unwrap();
-        *engine.sample_offset.lock().unwrap() = 0;
+        *engine.sample_offset.lock().expect("playback lock poisoned") = 0;
         let rate = engine.sample_rate();
         engine.seek_relative(0.5).unwrap();
         let expected = (0.5 * rate as f64) as u32;
@@ -1131,7 +1132,7 @@ mod tests {
             return;
         }
         engine.play(path).unwrap();
-        *engine.sample_offset.lock().unwrap() = 1000;
+        *engine.sample_offset.lock().expect("playback lock poisoned") = 1000;
         engine.seek_relative(-999.0).unwrap();
         assert_eq!(
             engine.sample_offset(),

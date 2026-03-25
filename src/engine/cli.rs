@@ -108,6 +108,7 @@ pub struct Opts {
 
     /// Initial session BPM for speed-relative playback
     #[bpaf(long("session-bpm"), argument("BPM"))]
+    #[allow(dead_code)] // Parsed from CLI, used by TUI playback.
     pub session_bpm: Option<f32>,
 
     /// Lua one-liner to run against each matched file's metadata

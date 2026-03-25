@@ -1,1 +1,2 @@
 *.wav filter=lfs diff=lfs merge=lfs -text
+test_files/riff+defaults-info_reaper-sm.wav filter=lfs diff=lfs merge=lfs -text

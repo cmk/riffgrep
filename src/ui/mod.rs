@@ -1339,6 +1339,7 @@ impl App {
     /// With the SegmentSource architecture, this is only used as a fallback for
     /// compatibility with existing callers. Normally `play_program` constructs
     /// the full playlist and hands it to the engine in one shot.
+    #[allow(dead_code)] // Reserved for program segment playback.
     fn start_program_segment(&mut self) {
         if self.program_index >= self.program_playlist.len() {
             self.program_playlist.clear();
@@ -1963,9 +1964,61 @@ impl App {
 
     // --- T13: Reverse Playback ---
 
-    /// Reverse playback of the current segment (basic implementation).
+    /// Reverse the current segment by swapping its boundary markers.
+    ///
+    /// Segments 1-2 are bounded by adjacent markers (m1/m2 or m2/m3) so
+    /// swapping the pair flips the direction. Segment 0 (SOF→m1) and
+    /// segment 3 (m3→EOF) cannot be reversed since one boundary is fixed.
     fn reverse_playback(&mut self) {
-        self.set_status("Reverse playback not yet implemented".to_string());
+        self.ensure_markers();
+
+        let seg_idx = match self.selected_marker {
+            Some(idx) => idx,
+            None => match self.current_segment_index() {
+                Some(s) => s,
+                None => {
+                    self.set_status("Play file first".to_string());
+                    return;
+                }
+            },
+        };
+
+        // Only segments 1 and 2 can be reversed (bounded by two movable markers).
+        let (lo_idx, hi_idx) = match seg_idx {
+            1 => (0usize, 1usize), // m1 ↔ m2
+            2 => (1, 2),           // m2 ↔ m3
+            _ => {
+                self.set_status(format!("Segment {} cannot be reversed", seg_idx + 1));
+                return;
+            }
+        };
+
+        // Swap markers on the active bank (and mirror if sync is on).
+        if self.bank_sync {
+            if let Some(ref mut preview) = self.preview {
+                if let Some(ref mut markers) = preview.markers {
+                    Self::swap_bank_markers(&mut markers.bank_a, lo_idx, hi_idx);
+                    Self::swap_bank_markers(&mut markers.bank_b, lo_idx, hi_idx);
+                }
+            }
+        } else if let Some(bank) = self.active_bank_mut() {
+            Self::swap_bank_markers(bank, lo_idx, hi_idx);
+        }
+
+        let segs = self.segments();
+        let dir = if segs.get(seg_idx).is_some_and(|s| s.reverse) { "reverse" } else { "forward" };
+        self.set_status(format!("Segment {} → {dir}", seg_idx + 1));
+    }
+
+    /// Swap two marker values in a bank by index (0=m1, 1=m2, 2=m3).
+    fn swap_bank_markers(bank: &mut crate::engine::bext::MarkerBank, a: usize, b: usize) {
+        let get = |bank: &crate::engine::bext::MarkerBank, i: usize| -> u32 {
+            match i { 0 => bank.m1, 1 => bank.m2, 2 => bank.m3, _ => 0 }
+        };
+        let va = get(bank, a);
+        let vb = get(bank, b);
+        match a { 0 => bank.m1 = vb, 1 => bank.m2 = vb, 2 => bank.m3 = vb, _ => {} }
+        match b { 0 => bank.m1 = va, 1 => bank.m2 = va, 2 => bank.m3 = va, _ => {} }
     }
 
     // --- Sprint 12: ToggleMarkerDisplay ---

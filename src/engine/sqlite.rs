@@ -55,6 +55,7 @@ impl Database {
     }
 
     /// Open an in-memory database (for testing).
+    #[allow(dead_code)] // Used by unit tests.
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
         apply_pragmas(&conn)?;
@@ -66,6 +67,7 @@ impl Database {
 
     /// Insert a batch of records in a single transaction. Returns the number
     /// of rows inserted.
+    #[allow(dead_code)] // Used by unit tests and search module tests.
     pub fn insert_batch(
         &self,
         records: &[(UnifiedMetadata, i64, Option<Vec<u8>>)],
@@ -137,6 +139,7 @@ impl Database {
 
     /// Consume records from a channel, batch-inserting into the database.
     /// Returns the total number of records inserted.
+    #[allow(dead_code)] // Used by indexing pipeline and tests.
     pub fn index_writer(
         &self,
         rx: &Receiver<(UnifiedMetadata, i64, Option<Vec<u8>>)>,
@@ -163,6 +166,7 @@ impl Database {
 
     /// Consume records with per-record peaks_source from a channel.
     /// Returns the total number of records inserted.
+    #[allow(dead_code)] // Used by indexing pipeline.
     pub fn index_writer_with_source(
         &self,
         rx: &Receiver<(UnifiedMetadata, i64, Option<Vec<u8>>, String)>,
@@ -216,6 +220,7 @@ impl Database {
     }
 
     /// Insert records with per-record peaks_source in a single transaction.
+    #[allow(dead_code)] // Called by index_writer_with_source.
     fn insert_batch_individually(
         &self,
         records: &[(UnifiedMetadata, i64, Option<Vec<u8>>)],
