@@ -7,8 +7,10 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use mlua::prelude::*;
+use rusqlite::Connection;
 
 use super::bext;
 use super::UnifiedMetadata;
@@ -152,7 +154,120 @@ impl LuaUserData for SampleUserData {
             this.meta.usage_id = val;
             Ok(())
         });
+        methods.add_method_mut("set_bext_umid", |_, this, val: String| {
+            this.meta.umid = val;
+            Ok(())
+        });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Lua SQLite module — exposes sqlite.open() / db:query_one() / db:close()
+// ---------------------------------------------------------------------------
+
+/// Wrapper around rusqlite::Connection for Lua userdata.
+///
+/// `Connection` is `!Send`, but mlua requires `Send` for userdata. We wrap
+/// in `Arc<Mutex<>>` which is `Send`. The Mutex is never contended because
+/// Lua is single-threaded; it exists purely to satisfy the trait bound.
+struct LuaDatabase {
+    conn: Arc<Mutex<Option<Connection>>>,
+}
+
+impl LuaUserData for LuaDatabase {
+    fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("query_one", |lua, this, (sql, arg): (String, LuaValue)| {
+            let guard = this.conn.lock().expect("lua db lock poisoned");
+            let conn = guard.as_ref().ok_or_else(|| {
+                mlua::Error::RuntimeError("database is closed".to_string())
+            })?;
+
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
+                mlua::Error::RuntimeError(format!("SQL prepare: {e}"))
+            })?;
+
+            let col_count = stmt.column_count();
+            let col_names: Vec<String> = (0..col_count)
+                .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
+                .collect();
+
+            // Bind the single parameter (if provided) and execute.
+            // Bind the single parameter and execute.
+            let arg_owned: String = match &arg {
+                LuaValue::String(s) => s.to_str()
+                    .map_err(|e| mlua::Error::RuntimeError(format!("UTF-8 error: {e}")))?
+                    .to_string(),
+                _ => String::new(),
+            };
+
+            let mut rows = match &arg {
+                LuaValue::Nil => stmt.query([]).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("SQL query: {e}"))
+                })?,
+                LuaValue::String(_) => stmt.query([&arg_owned as &dyn rusqlite::types::ToSql]).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("SQL query: {e}"))
+                })?,
+                LuaValue::Integer(n) => stmt.query([*n]).map_err(|e| {
+                    mlua::Error::RuntimeError(format!("SQL query: {e}"))
+                })?,
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "query_one: unsupported parameter type".to_string(),
+                    ));
+                }
+            };
+
+            let row = match rows.next() {
+                Ok(Some(r)) => r,
+                Ok(None) => return Ok(LuaValue::Nil),
+                Err(e) => {
+                    return Err(mlua::Error::RuntimeError(format!("SQL fetch: {e}")));
+                }
+            };
+
+            // Build a Lua table from the row.
+            let mlua_err = |e: mlua::Error| e;
+            let table = lua.create_table().map_err(mlua_err)?;
+            for (i, name) in col_names.iter().enumerate() {
+                let val: Option<String> = row.get(i).unwrap_or(None);
+                match val {
+                    Some(s) => table.set(name.as_str(), s).map_err(mlua_err)?,
+                    None => table.set(name.as_str(), LuaValue::Nil).map_err(mlua_err)?,
+                }
+            }
+            Ok(LuaValue::Table(table))
+        });
+
+        methods.add_method("close", |_, this, ()| {
+            let mut guard = this.conn.lock().expect("lua db lock poisoned");
+            guard.take();
+            Ok(())
+        });
+    }
+}
+
+/// Create the `sqlite` Lua module table with `sqlite.open(path, mode)`.
+fn create_sqlite_module(lua: &Lua) -> Result<LuaTable, mlua::Error> {
+    let module = lua.create_table()?;
+    module.set(
+        "open",
+        lua.create_function(|_, (path, mode): (String, Option<String>)| {
+            let readonly = mode.as_deref() == Some("readonly");
+            let flags = if readonly {
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            } else {
+                rusqlite::OpenFlags::default()
+            };
+            let conn = Connection::open_with_flags(&path, flags).map_err(|e| {
+                mlua::Error::RuntimeError(format!("sqlite.open: {e}"))
+            })?;
+            Ok(LuaDatabase {
+                conn: Arc::new(Mutex::new(Some(conn))),
+            })
+        })?,
+    )?;
+    Ok(module)
 }
 
 /// Run a Lua script against a single file's metadata, returning the
@@ -174,6 +289,10 @@ pub fn run_lua_script(
     rfg_table.set("force", force).map_err(lua_err)?;
     rfg_table.set("commit", commit).map_err(lua_err)?;
     lua.globals().set("riffgrep", rfg_table).map_err(lua_err)?;
+
+    // Expose `sqlite` module.
+    let sqlite_mod = create_sqlite_module(&lua).map_err(lua_err)?;
+    lua.globals().set("sqlite", sqlite_mod).map_err(lua_err)?;
 
     // Expose `sample` userdata.
     let ud = lua.create_userdata(SampleUserData { meta }).map_err(lua_err)?;
@@ -245,6 +364,7 @@ pub fn compute_meta_diff(before: &UnifiedMetadata, after: &UnifiedMetadata) -> M
     cmp_field!(take, "take");
     cmp_field!(track, "track");
     cmp_field!(item, "item");
+    cmp_field!(umid, "umid");
 
     // BPM needs special handling (Option<u16>).
     if before.bpm != after.bpm {
@@ -322,6 +442,25 @@ mod tests {
     }
 
     // --- run_lua_script ---
+
+    #[test]
+    fn lua_set_bext_umid() {
+        let script = WorkflowScript {
+            source: "sample:set_bext_umid('a4ea16c1d8a34edbb50c6df46ea2395c')".to_string(),
+        };
+        let result = run_lua_script(&script, sample_meta(), false, false).unwrap();
+        assert_eq!(result.umid, "a4ea16c1d8a34edbb50c6df46ea2395c");
+    }
+
+    #[test]
+    fn diff_detects_umid_change() {
+        let a = sample_meta();
+        let mut b = a.clone();
+        b.umid = "deadbeef".to_string();
+        let diff = compute_meta_diff(&a, &b);
+        assert!(!diff.is_empty());
+        assert!(diff.changes.iter().any(|c| c.field == "umid"));
+    }
 
     #[test]
     fn lua_set_category() {
@@ -477,6 +616,91 @@ mod tests {
         assert!(formatted.contains("DRUMS"));
         assert!(formatted.contains("SFX"));
     }
+
+    // --- sqlite module ---
+
+    #[test]
+    fn lua_sqlite_open_query_close() {
+        // Create a temp DB, insert a row, query it from Lua.
+        let db_path = std::env::temp_dir().join("riffgrep_lua_sqlite_test.db");
+        let _ = std::fs::remove_file(&db_path);
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);
+                 INSERT INTO t VALUES (1, 'hello');"
+            ).unwrap();
+        }
+
+        let script = WorkflowScript {
+            source: format!(
+                r#"
+                local db = sqlite.open("{}", "readonly")
+                local row = db:query_one("SELECT name FROM t WHERE id = ?", 1)
+                assert(row ~= nil, "expected a row")
+                assert(row.name == "hello", "expected 'hello', got " .. tostring(row.name))
+                db:close()
+                "#,
+                db_path.display()
+            ),
+        };
+        let result = run_lua_script(&script, sample_meta(), false, false);
+        let _ = std::fs::remove_file(&db_path);
+        assert!(result.is_ok(), "Lua sqlite test failed: {}", result.unwrap_err());
+    }
+
+    #[test]
+    fn lua_sqlite_query_one_no_match() {
+        let db_path = std::env::temp_dir().join("riffgrep_lua_sqlite_nil.db");
+        let _ = std::fs::remove_file(&db_path);
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);").unwrap();
+        }
+
+        let script = WorkflowScript {
+            source: format!(
+                r#"
+                local db = sqlite.open("{}", "readonly")
+                local row = db:query_one("SELECT name FROM t WHERE id = ?", 99)
+                assert(row == nil, "expected nil for missing row")
+                db:close()
+                "#,
+                db_path.display()
+            ),
+        };
+        let result = run_lua_script(&script, sample_meta(), false, false);
+        let _ = std::fs::remove_file(&db_path);
+        assert!(result.is_ok(), "Lua sqlite nil test failed: {}", result.unwrap_err());
+    }
+
+    #[test]
+    fn lua_sqlite_string_param() {
+        let db_path = std::env::temp_dir().join("riffgrep_lua_sqlite_str.db");
+        let _ = std::fs::remove_file(&db_path);
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE files (path TEXT PRIMARY KEY, cat TEXT);
+                 INSERT INTO files VALUES ('/test/kick.wav', 'DRUMS');"
+            ).unwrap();
+        }
+
+        let script = WorkflowScript {
+            source: format!(
+                r#"
+                local db = sqlite.open("{}", "readonly")
+                local row = db:query_one("SELECT cat FROM files WHERE path = ?", "/test/kick.wav")
+                assert(row.cat == "DRUMS", "expected DRUMS, got " .. tostring(row.cat))
+                db:close()
+                "#,
+                db_path.display()
+            ),
+        };
+        let result = run_lua_script(&script, sample_meta(), false, false);
+        let _ = std::fs::remove_file(&db_path);
+        assert!(result.is_ok(), "Lua sqlite string param failed: {}", result.unwrap_err());
+    }
 }
 
 /// Write metadata changes back to the file's BEXT chunk.
@@ -546,6 +770,11 @@ pub fn write_metadata_changes(
     }
     if before.key != after.key {
         write_ascii(104, 8, &after.key)?;
+    }
+
+    // Standard BEXT UMID field (bytes 348-411, 64 bytes).
+    if before.umid != after.umid {
+        write_ascii(348, 64, &after.umid)?;
     }
 
     Ok(())

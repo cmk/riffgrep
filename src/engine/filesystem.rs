@@ -38,9 +38,13 @@ impl FilesystemFinder {
         }
 
         let mut types = TypesBuilder::new();
-        types.add("wav", "*.wav").expect("valid glob");
-        types.add("wav", "*.WAV").expect("valid glob");
-        types.select("wav");
+        types.add("audio", "*.wav").expect("valid glob");
+        types.add("audio", "*.WAV").expect("valid glob");
+        types.add("audio", "*.aif").expect("valid glob");
+        types.add("audio", "*.AIF").expect("valid glob");
+        types.add("audio", "*.aiff").expect("valid glob");
+        types.add("audio", "*.AIFF").expect("valid glob");
+        types.select("audio");
         let types = types.build().expect("valid types");
 
         let mut builder = WalkBuilder::new(&self.roots[0]);

@@ -319,10 +319,15 @@ pub fn compute_peaks_with_options<R: Read + Seek>(
 
 #[allow(dead_code)] // Reserved for configurable peak computation.
 /// Convenience: open a file, scan chunks, parse fmt, compute peaks with options.
+///
+/// Returns empty peaks for AIFF files (no RIFF chunks to parse).
 pub fn compute_peaks_from_path_with_options(
     path: &Path,
     opts: &PeakOptions,
 ) -> Result<Vec<u8>, RiffError> {
+    if super::is_aiff(path) {
+        return Ok(Vec::new());
+    }
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::with_capacity(8192, file);
     let map = super::bext::scan_chunks(&mut reader)?;
@@ -470,7 +475,12 @@ fn stream_samples_stereo<R: Read + Seek>(
 }
 
 /// Convenience: open a file, compute stereo peaks.
+///
+/// Returns empty peaks for AIFF files (no RIFF chunks to parse).
 pub fn compute_peaks_stereo_from_path(path: &Path) -> Result<Vec<u8>, RiffError> {
+    if super::is_aiff(path) {
+        return Ok(vec![0u8; STEREO_PEAK_COUNT]);
+    }
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::with_capacity(8192, file);
     let map = super::bext::scan_chunks(&mut reader)?;
@@ -696,6 +706,10 @@ impl PcmData {
 /// callers should treat `Err` as "zoom unavailable" and continue with
 /// `pcm = None`.
 pub fn load_pcm_data(path: &std::path::Path) -> Result<PcmData, RiffError> {
+    // AIFF files don't have RIFF chunks; PCM zoom is not supported for them.
+    if super::is_aiff(path) {
+        return Err(RiffError::NotRiffWave);
+    }
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::with_capacity(8192, file);
     let map = super::bext::scan_chunks(&mut reader)?;

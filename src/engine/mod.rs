@@ -90,13 +90,31 @@ pub struct UnifiedMetadata {
     pub date: String,
 }
 
-/// Read and merge metadata from a single WAV file.
+/// Returns true if `path` has an AIFF/AIF extension (case-insensitive).
+fn is_aiff(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("aif") || e.eq_ignore_ascii_case("aiff"))
+}
+
+/// Read and merge metadata from a single audio file (WAV or AIFF).
 ///
+/// For WAV files:
 /// 1. Scan first 4KB for chunk offsets
 /// 2. Parse BEXT if found
 /// 3. Parse LIST-INFO if found within 4KB
 /// 4. Merge: BEXT fields take priority, INFO fills empty fields
+///
+/// For AIFF files, returns a minimal `UnifiedMetadata` with only the path.
+/// AIFF metadata (ID3 tags) is handled separately by the workflow engine.
 pub fn read_metadata(path: &Path) -> Result<UnifiedMetadata, RiffError> {
+    if is_aiff(path) {
+        return Ok(UnifiedMetadata {
+            path: path.to_path_buf(),
+            ..Default::default()
+        });
+    }
+
     let file = std::fs::File::open(path)?;
     let mut reader = BufReader::with_capacity(8192, file);
 
@@ -109,9 +127,23 @@ pub fn read_metadata(path: &Path) -> Result<UnifiedMetadata, RiffError> {
 
 /// Read metadata, extract BEXT peaks, markers, and return the detected peaks format.
 /// Returns `(metadata, peaks_bytes, peaks_format, markers)`.
+///
+/// For AIFF files, returns empty peaks, `NoPeaks` format, and no markers.
 pub fn read_metadata_with_peaks_format(
     path: &Path,
 ) -> Result<(UnifiedMetadata, Vec<u8>, bext::PeaksFormat, Option<bext::MarkerConfig>), RiffError> {
+    if is_aiff(path) {
+        return Ok((
+            UnifiedMetadata {
+                path: path.to_path_buf(),
+                ..Default::default()
+            },
+            Vec::new(),
+            bext::PeaksFormat::Empty,
+            None,
+        ));
+    }
+
     let file = std::fs::File::open(path)?;
     let mut reader = BufReader::with_capacity(8192, file);
 
