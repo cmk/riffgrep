@@ -798,14 +798,16 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
             continue;
         }
 
-        changed += 1;
         let _ = writeln!(out, "{}", path.display());
         let _ = write!(out, "{}", workflow::format_meta_diff(&diff));
 
-        if opts.commit
-            && let Err(e) = workflow::write_metadata_changes(&path, &meta_bext, &new_meta, opts.force)
-        {
-            eprintln!("riffgrep: write error on {}: {e}", path.display());
+        if opts.commit {
+            match workflow::write_metadata_changes(&path, &meta_bext, &new_meta, opts.force) {
+                Ok(()) => changed += 1,
+                Err(e) => eprintln!("riffgrep: write error on {}: {e}", path.display()),
+            }
+        } else {
+            changed += 1;
         }
     }
 
