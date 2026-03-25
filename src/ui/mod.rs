@@ -215,6 +215,8 @@ pub struct App {
     pub status_message_time: Option<std::time::Instant>,
     /// Global loop: when ON, playback auto-restarts after program completes.
     pub global_loop: bool,
+    /// Reverse traversal: when ON, each segment plays end→start.
+    pub reversed: bool,
     /// Bank sync: when ON, marker edits mirror to both banks.
     pub bank_sync: bool,
     /// Currently selected marker for nudge/snap (0=SOF, 1=m1, 2=m2, 3=m3).
@@ -317,6 +319,7 @@ impl App {
             status_message: None,
             status_message_time: None,
             global_loop: false,
+            reversed: false,
             bank_sync: true,
             selected_marker: None,
             markers_visible: true,
@@ -1964,61 +1967,21 @@ impl App {
 
     // --- T13: Reverse Playback ---
 
-    /// Reverse the current segment by swapping its boundary markers.
+    /// Toggle reverse playback direction via the engine's atomic flag.
     ///
-    /// Segments 1-2 are bounded by adjacent markers (m1/m2 or m2/m3) so
-    /// swapping the pair flips the direction. Segment 0 (SOF→m1) and
-    /// segment 3 (m3→EOF) cannot be reversed since one boundary is fixed.
+    /// When reversed, each segment is traversed end→start (frames read
+    /// backwards, channels within a frame still L→R). Takes effect
+    /// immediately mid-playback — no restart needed. With the default
+    /// evenly-spaced marker config this reverses the entire file.
     fn reverse_playback(&mut self) {
-        self.ensure_markers();
-
-        let seg_idx = match self.selected_marker {
-            Some(idx) => idx,
-            None => match self.current_segment_index() {
-                Some(s) => s,
-                None => {
-                    self.set_status("Play file first".to_string());
-                    return;
-                }
-            },
-        };
-
-        // Only segments 1 and 2 can be reversed (bounded by two movable markers).
-        let (lo_idx, hi_idx) = match seg_idx {
-            1 => (0usize, 1usize), // m1 ↔ m2
-            2 => (1, 2),           // m2 ↔ m3
-            _ => {
-                self.set_status(format!("Segment {} cannot be reversed", seg_idx + 1));
-                return;
-            }
-        };
-
-        // Swap markers on the active bank (and mirror if sync is on).
-        if self.bank_sync {
-            if let Some(ref mut preview) = self.preview {
-                if let Some(ref mut markers) = preview.markers {
-                    Self::swap_bank_markers(&mut markers.bank_a, lo_idx, hi_idx);
-                    Self::swap_bank_markers(&mut markers.bank_b, lo_idx, hi_idx);
-                }
-            }
-        } else if let Some(bank) = self.active_bank_mut() {
-            Self::swap_bank_markers(bank, lo_idx, hi_idx);
+        if let Some(ref engine) = self.playback {
+            self.reversed = !self.reversed;
+            engine.set_reversed(self.reversed);
+            let dir = if self.reversed { "Reverse" } else { "Forward" };
+            self.set_status(dir.to_string());
+        } else {
+            self.set_status("No playback engine".to_string());
         }
-
-        let segs = self.segments();
-        let dir = if segs.get(seg_idx).is_some_and(|s| s.reverse) { "reverse" } else { "forward" };
-        self.set_status(format!("Segment {} → {dir}", seg_idx + 1));
-    }
-
-    /// Swap two marker values in a bank by index (0=m1, 1=m2, 2=m3).
-    fn swap_bank_markers(bank: &mut crate::engine::bext::MarkerBank, a: usize, b: usize) {
-        let get = |bank: &crate::engine::bext::MarkerBank, i: usize| -> u32 {
-            match i { 0 => bank.m1, 1 => bank.m2, 2 => bank.m3, _ => 0 }
-        };
-        let va = get(bank, a);
-        let vb = get(bank, b);
-        match a { 0 => bank.m1 = vb, 1 => bank.m2 = vb, 2 => bank.m3 = vb, _ => {} }
-        match b { 0 => bank.m1 = va, 1 => bank.m2 = va, 2 => bank.m3 = va, _ => {} }
     }
 
     // --- Sprint 12: ToggleMarkerDisplay ---
