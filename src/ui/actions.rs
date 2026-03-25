@@ -8,96 +8,169 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     // Navigation
+    /// Move down one row.
     MoveDown,
+    /// Move up one row.
     MoveUp,
+    /// Jump to the first row.
     MoveToTop,
+    /// Jump to the last row.
     MoveToBottom,
+    /// Page down.
     PageDown,
+    /// Page up.
     PageUp,
+    /// Move column selection left.
     MoveColumnLeft,
+    /// Move column selection right.
     MoveColumnRight,
 
     // Sort
+    /// Sort the selected column in ascending order.
     SortAscending,
+    /// Sort the selected column in descending order.
     SortDescending,
+    /// Shuffle results randomly.
     RandomSort,
 
     // Playback
+    /// Toggle audio playback.
     TogglePlayback,
+    /// Seek forward by a small increment.
     SeekForwardSmall,
+    /// Seek forward by a large increment.
     SeekForwardLarge,
+    /// Seek backward by a small increment.
     SeekBackwardSmall,
+    /// Seek backward by a large increment.
     SeekBackwardLarge,
+    /// Rewind to the start of the file.
     RewindToStart,
+    /// Toggle auto-advance to the next file.
     ToggleAutoAdvance,
+    /// Toggle elapsed/remaining time display.
     ToggleTimeDisplay,
+    /// Toggle global loop mode.
     ToggleGlobalLoop,
+    /// Reverse playback direction.
     ReversePlayback,
+    /// Increase volume by 1 dBFS.
     VolumeUp,
+    /// Decrease volume by 1 dBFS.
     VolumeDown,
+    /// Increase speed by 100 cents (coarse).
     SpeedIncCents,
+    /// Decrease speed by 100 cents (coarse).
     SpeedDecCents,
+    /// Increase speed by 1 cent (fine).
     SpeedIncCentsFine,
+    /// Decrease speed by 1 cent (fine).
     SpeedDecCentsFine,
+    /// Increase speed by 1 BPM (linear).
     SpeedIncBpm,
+    /// Decrease speed by 1 BPM (linear).
     SpeedDecBpm,
+    /// Increase speed by 0.1 BPM (fine).
     SpeedIncBpmFine,
+    /// Decrease speed by 0.1 BPM (fine).
     SpeedDecBpmFine,
+    /// Reset playback speed to 1x.
     SpeedReset,
+    /// Increase session BPM by 1.
     SessionBpmInc,
+    /// Decrease session BPM by 1.
     SessionBpmDec,
+    /// Increase session BPM by 0.1.
     SessionBpmIncFine,
+    /// Decrease session BPM by 0.1.
     SessionBpmDecFine,
 
     // Marks
+    /// Toggle mark on the current row.
     ToggleMark,
+    /// Clear all marks.
     ClearMarks,
+    /// Filter results to marked rows only.
     ToggleMarkedFilter,
+    /// Save markers to file.
     SaveMarkers,
 
     // Markers
+    /// Toggle marker bank A/B.
     ToggleBank,
+    /// Toggle bank sync mode.
     ToggleBankSync,
+    /// Set marker 1 at the playback cursor.
     SetMarker1,
+    /// Set marker 2 at the playback cursor.
     SetMarker2,
+    /// Set marker 3 at the playback cursor.
     SetMarker3,
+    /// Clear the nearest marker.
     ClearNearestMarker,
+    /// Clear all markers in the current bank.
     ClearBankMarkers,
+    /// Increment segment repeat count.
     IncrementRep,
+    /// Decrement segment repeat count.
     DecrementRep,
+    /// Select the next marker.
     SelectNextMarker,
+    /// Select the previous marker.
     SelectPrevMarker,
+    /// Toggle infinite loop on the current segment.
     ToggleInfiniteLoop,
+    /// Toggle preview loop.
     TogglePreviewLoop,
+    /// Nudge marker forward by a small amount.
     NudgeMarkerForwardSmall,
+    /// Nudge marker backward by a small amount.
     NudgeMarkerBackwardSmall,
+    /// Nudge marker forward by a large amount.
     NudgeMarkerForwardLarge,
+    /// Nudge marker backward by a large amount.
     NudgeMarkerBackwardLarge,
+    /// Snap marker to the next zero-crossing.
     SnapZeroCrossingForward,
+    /// Snap marker to the previous zero-crossing.
     SnapZeroCrossingBackward,
+    /// Reset markers to preset positions.
     MarkerReset,
+    /// Export markers to a CSV file.
     ExportMarkersCsv,
+    /// Import markers from a CSV file.
     ImportMarkersCsv,
+    /// Toggle marker line display on the waveform.
     ToggleMarkerDisplay,
 
     // Waveform
+    /// Zoom into the waveform.
     ZoomIn,
+    /// Zoom out of the waveform.
     ZoomOut,
+    /// Reset waveform zoom to default.
     ZoomReset,
 
     // Mode
+    /// Enter search (insert) mode.
     EnterInsertMode,
+    /// Exit search mode and return to normal mode.
     EnterNormalMode,
+    /// Submit the current search query.
     SearchSubmit,
+    /// Clear the search query.
     ClearQuery,
 
     // Selection
+    /// Open the currently selected file.
     OpenSelected,
 
     // Help
+    /// Toggle the help overlay.
     ShowHelp,
 
     // App
+    /// Quit the application.
     Quit,
 }
 

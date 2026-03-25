@@ -14,6 +14,7 @@ pub trait MarkStore: Send + Sync {
     /// Unmark a file path.
     fn unmark(&self, path: &Path) -> anyhow::Result<()>;
     /// Check if a path is marked.
+    #[allow(dead_code)] // Part of MarkStore trait contract.
     fn is_marked(&self, path: &Path) -> bool;
     /// Get all marked paths.
     fn marked_paths(&self) -> anyhow::Result<Vec<PathBuf>>;
@@ -117,30 +118,30 @@ impl CsvMarkStore {
 
 impl MarkStore for CsvMarkStore {
     fn mark(&self, path: &Path) -> anyhow::Result<()> {
-        let mut marks = self.marks.lock().unwrap();
+        let mut marks = self.marks.lock().expect("marks lock poisoned");
         marks.insert(path.to_path_buf());
         self.flush(&marks)
     }
 
     fn unmark(&self, path: &Path) -> anyhow::Result<()> {
-        let mut marks = self.marks.lock().unwrap();
+        let mut marks = self.marks.lock().expect("marks lock poisoned");
         marks.remove(path);
         self.flush(&marks)
     }
 
     fn is_marked(&self, path: &Path) -> bool {
-        self.marks.lock().unwrap().contains(path)
+        self.marks.lock().expect("marks lock poisoned").contains(path)
     }
 
     fn marked_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
-        let marks = self.marks.lock().unwrap();
+        let marks = self.marks.lock().expect("marks lock poisoned");
         let mut paths: Vec<PathBuf> = marks.iter().cloned().collect();
         paths.sort();
         Ok(paths)
     }
 
     fn clear_all(&self) -> anyhow::Result<usize> {
-        let mut marks = self.marks.lock().unwrap();
+        let mut marks = self.marks.lock().expect("marks lock poisoned");
         let count = marks.len();
         marks.clear();
         self.flush(&marks)?;
@@ -148,7 +149,7 @@ impl MarkStore for CsvMarkStore {
     }
 
     fn mark_count(&self) -> usize {
-        self.marks.lock().unwrap().len()
+        self.marks.lock().expect("marks lock poisoned").len()
     }
 }
 

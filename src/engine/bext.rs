@@ -58,7 +58,7 @@ pub struct ChunkMap {
 /// Scan a RIFF/WAVE file to locate `bext`, `LIST`-`INFO`, `fmt `, and `data` chunks.
 ///
 /// Returns a [`ChunkMap`] with the file offsets and sizes of discovered chunks.
-/// For metadata chunks (bext, LIST-INFO), scanning stops at [`SCAN_LIMIT`] (4KB).
+/// For metadata chunks (bext, LIST-INFO), scanning stops at `SCAN_LIMIT` (4KB).
 /// For audio chunks (fmt, data), scanning continues until all chunks are found
 /// or the file ends, since these are needed for audio reading.
 pub fn scan_chunks<R: Read + Seek>(reader: &mut R) -> Result<ChunkMap, RiffError> {
@@ -209,12 +209,14 @@ pub struct BextFields {
     /// BEXT Reserved (bytes 422-601) as peak data (180 u8 values).
     pub peaks: Vec<u8>,
     /// BWF Version field at offset 346-347.
+    #[allow(dead_code)] // Verified in tests; not read in production paths.
     pub bext_version: u16,
     /// Detected format of the Reserved field.
     pub peaks_format: PeaksFormat,
 
     // --- Packed Description fields (when schema detected) ---
     /// Whether the packed schema was detected in the Description field.
+    #[allow(dead_code)] // Verified in tests; not read in production paths.
     pub packed: bool,
     /// `[000:008]` riffgrep file identity — high 64 bits of UUID v7 generated at first pack (BE).
     /// Zero means not yet packed.
@@ -249,7 +251,7 @@ pub struct BextFields {
     pub date: String,
 
     // --- MARKERSv2 (when packed schema detected) ---
-    /// Marker configuration from packed Description[12:44]. None for unpacked files.
+    /// Marker configuration from packed Description`[12:44]`. None for unpacked files.
     pub markers: Option<MarkerConfig>,
 }
 
@@ -455,7 +457,7 @@ pub fn write_bext_field(
 /// Packed schema version minor for MARKERSv2.
 pub const PACKED_VERSION_MINOR_V2: u16 = 2;
 
-/// Write a `MarkerConfig` to packed Description[12:44] and bump version minor to 2.
+/// Write a `MarkerConfig` to packed Description`[12:44]` and bump version minor to 2.
 ///
 /// Requires an existing BEXT chunk with the packed schema detected. Reads the
 /// file to verify the packed schema marker, then writes 32 bytes of marker data
@@ -516,13 +518,13 @@ pub fn write_markers(
 /// Initialize packed schema on an existing unpacked BEXT chunk and write markers.
 ///
 /// For files with BEXT that are NOT yet packed:
-/// 1. Generates a UUID v7 and writes the high 8 bytes (BE) at Description[0:8]
-/// 2. Writes version_major=1, version_minor=2 at Description[8:12]
-/// 3. Writes marker data at Description[12:44]
+/// 1. Generates a UUID v7 and writes the high 8 bytes (BE) at Description`[0:8]`
+/// 2. Writes version_major=1, version_minor=2 at Description`[8:12]`
+/// 3. Writes marker data at Description`[12:44]`
 /// 4. Sets bext_version to 2 at offset 346 (signals EBU Tech 3285 compliance)
 ///
 /// Preserves all other BEXT fields (Originator, OriginatorReference, Date, UMID, etc.)
-/// since those live at fixed offsets outside [0:44].
+/// since those live at fixed offsets outside `[0:44]`.
 ///
 /// The UUID v7 high 64 bits encode: 48-bit ms timestamp | 0x7 version nibble | 12-bit random.
 /// A non-zero file_id combined with version_major=1 and bext_version=2 is definitively
@@ -686,6 +688,7 @@ pub struct MarkerConfig {
     pub bank_b: MarkerBank,
 }
 
+#[allow(dead_code)] // Convenience constructors used by tests and TUI marker system.
 impl MarkerConfig {
     /// Create an empty marker config (both banks empty).
     pub fn empty() -> Self {
@@ -710,7 +713,7 @@ impl MarkerConfig {
         }
     }
 
-    /// Preset: "shot" — all markers at sample 0, reps=[0,0,0,1], both banks identical.
+    /// Preset: "shot" — all markers at sample 0, reps=`[0,0,0,1]`, both banks identical.
     pub fn preset_shot() -> Self {
         let bank = MarkerBank {
             m1: 0,
@@ -724,7 +727,7 @@ impl MarkerConfig {
         }
     }
 
-    /// Preset: "loop" — markers at quarter points, reps=[1,1,1,1].
+    /// Preset: "loop" — markers at quarter points, reps=`[1,1,1,1]`.
     pub fn preset_loop(total_samples: u32) -> Self {
         let q1 = total_samples / 4;
         let q2 = total_samples / 2;
@@ -2109,7 +2112,7 @@ mod tests {
                 );
             }
 
-            /// bext_version=0 always produces empty UMID, regardless of bytes at [348:412].
+            /// bext_version=0 always produces empty UMID, regardless of bytes at `[348:412]`.
             #[test]
             fn v0_arbitrary_umid_bytes_always_empty(
                 umid_bytes in proptest::collection::vec(any::<u8>(), 64)

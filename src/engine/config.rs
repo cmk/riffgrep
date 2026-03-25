@@ -24,6 +24,7 @@ pub struct PlaybackConfig {
 }
 
 /// Resolved playback config with defaults applied.
+#[allow(dead_code)] // Reserved for config-driven playback.
 pub struct ResolvedPlaybackConfig {
     /// Whether to reset volume to 0 dBFS on selection change.
     pub reset_volume_on_selection: bool,
@@ -38,6 +39,7 @@ pub struct ResolvedPlaybackConfig {
 }
 
 /// Resolve playback config values, applying defaults and clamping.
+#[allow(dead_code)] // Reserved for config-driven playback.
 pub fn resolve_playback_config(playback: Option<&PlaybackConfig>) -> ResolvedPlaybackConfig {
     ResolvedPlaybackConfig {
         reset_volume_on_selection: playback

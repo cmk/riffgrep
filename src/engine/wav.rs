@@ -111,6 +111,7 @@ fn decode_sample(bytes: &[u8], format: AudioFormat, bits: u16) -> f32 {
 }
 
 /// Channel mixdown mode for peak computation.
+#[allow(dead_code)] // Reserved for configurable peak computation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChannelMode {
     /// Average all channels.
@@ -121,6 +122,7 @@ pub enum ChannelMode {
 }
 
 /// Peak measurement method.
+#[allow(dead_code)] // Reserved for configurable peak computation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PeakMeasurement {
     /// Root-mean-square per bin.
@@ -131,6 +133,7 @@ pub enum PeakMeasurement {
 }
 
 /// Options controlling peak computation.
+#[allow(dead_code)] // Reserved for configurable peak computation.
 #[derive(Debug, Clone, Default)]
 pub struct PeakOptions {
     /// Channel mixdown mode.
@@ -141,6 +144,7 @@ pub struct PeakOptions {
 
 impl PeakOptions {
     /// Parse from config strings (case-insensitive).
+    #[allow(dead_code)] // Reserved for configurable peak computation.
     pub fn from_config(measurement: Option<&str>, channel: Option<&str>) -> Self {
         Self {
             measurement: match measurement.map(|s| s.to_ascii_lowercase()).as_deref() {
@@ -158,6 +162,7 @@ impl PeakOptions {
 /// Number of u8 peak values to produce.
 pub const PEAK_COUNT: usize = 180;
 
+#[allow(dead_code)] // Reserved for configurable peak computation.
 /// Stream raw PCM samples with configurable channel mode.
 ///
 /// `ChannelMode::Mix` averages all channels (same as `stream_samples`).
@@ -233,6 +238,7 @@ pub fn stream_samples_channel<R: Read + Seek>(
     Ok(mono_count)
 }
 
+#[allow(dead_code)] // Reserved for configurable peak computation.
 /// Compute peaks with configurable options.
 pub fn compute_peaks_with_options<R: Read + Seek>(
     reader: &mut R,
@@ -311,6 +317,7 @@ pub fn compute_peaks_with_options<R: Read + Seek>(
     }
 }
 
+#[allow(dead_code)] // Reserved for configurable peak computation.
 /// Convenience: open a file, scan chunks, parse fmt, compute peaks with options.
 pub fn compute_peaks_from_path_with_options(
     path: &Path,
@@ -534,6 +541,7 @@ impl AudioInfo {
 /// in silence or DC offset regions.
 pub const ZC_THRESHOLD: i32 = 64;
 
+#[allow(dead_code)] // Used by marker snapping (TUI).
 /// A zero-crossing point in mono PCM sample data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZeroCrossing {
@@ -541,6 +549,7 @@ pub struct ZeroCrossing {
     pub index: usize,
 }
 
+#[allow(dead_code)] // Used by marker snapping (TUI).
 /// Find all zero-crossings in a slice of mono i32 samples.
 ///
 /// A zero-crossing occurs between `samples[i]` and `samples[i+1]` when
@@ -663,6 +672,7 @@ pub struct PcmData {
     pub samples: Vec<i16>,
 }
 
+#[allow(dead_code)] // Reserved for zoom-level peak computation.
 impl PcmData {
     /// Number of frames (same as `samples.len()` for mono extraction).
     pub fn frame_count(&self) -> usize {
@@ -802,6 +812,7 @@ pub struct ZoomCache {
     /// `computed[level][col]` — whether that entry has been computed.
     computed: Vec<Vec<bool>>,
     /// Number of visible columns (always `NUM_ZOOM_COLS`).
+    #[allow(dead_code)] // Exposed for widget layout calculations.
     pub num_cols: usize,
 }
 

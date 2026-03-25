@@ -39,6 +39,7 @@ pub struct SearchHandle {
     join: Option<JoinHandle<usize>>,
 }
 
+#[allow(dead_code)] // Reserved for Lua scripting and batch actions.
 impl SearchHandle {
     /// Spawn a background search. Returns immediately.
     pub fn spawn(query: SearchQuery, mode: SearchMode) -> Self {
