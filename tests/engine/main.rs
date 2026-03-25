@@ -1,0 +1,1 @@
+//! Engine integration tests (placeholder).

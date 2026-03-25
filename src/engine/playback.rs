@@ -70,6 +70,11 @@ pub struct SourceControl {
     /// Unlike `pending_seek`, this resets `seg_idx` so reversed segments
     /// (whose data lives past `total_frames` in the buffer) play correctly.
     pub pending_restart: AtomicBool,
+    /// When true, each segment is traversed end→start (frames read in reverse
+    /// order, channels within a frame still in L→R order). Toggled by the
+    /// ReversePlayback TUI action. Independent of the pre-reverse buffer copy
+    /// used by marker-ordered reversed segments.
+    pub reversed: AtomicBool,
 }
 
 impl SourceControl {
@@ -81,6 +86,7 @@ impl SourceControl {
             // A true default causes reps=1 segments to restart the program forever.
             loop_enabled: AtomicBool::new(false),
             pending_restart: AtomicBool::new(false),
+            reversed: AtomicBool::new(false),
         }
     }
 }
@@ -189,32 +195,48 @@ impl SegmentSource {
         // 2. Segment boundary logic.
         if let Some(seg) = self.playlist.get(self.seg_idx).cloned() {
             let frame = self.frame();
+            let rev = self.control.reversed.load(Ordering::Relaxed);
 
-            // 2a. Start fade-out before segment end for loops.
-            let fade_len = CROSSFADE_FRAMES.min(seg.end.saturating_sub(seg.start));
-            let fo_start = seg.end.saturating_sub(fade_len);
-            if self.fade_out == 0
-                && self.will_loop()
-                && frame >= fo_start
-                && frame < seg.end
-            {
-                self.fade_out = seg.end - frame;
+            // In reverse mode, traversal runs seg.end-1 → seg.start, so the
+            // "playback origin" is seg.end-1 and the "boundary" is seg.start.
+            let (origin, boundary) = if rev {
+                (seg.end.saturating_sub(1), seg.start)
+            } else {
+                (seg.start, seg.end)
+            };
+
+            // 2a. Start fade-out before segment boundary for loops.
+            let seg_len = seg.end.saturating_sub(seg.start);
+            let fade_len = CROSSFADE_FRAMES.min(seg_len);
+            let at_boundary = if rev {
+                frame <= boundary.saturating_add(fade_len) && frame > boundary
+            } else {
+                frame >= boundary.saturating_sub(fade_len) && frame < boundary
+            };
+            let past_boundary = if rev { frame <= boundary } else { frame >= boundary };
+
+            if self.fade_out == 0 && self.will_loop() && at_boundary {
+                self.fade_out = if rev {
+                    frame.saturating_sub(boundary)
+                } else {
+                    boundary.saturating_sub(frame)
+                };
             }
 
-            // 2b. At segment end: handle loop or advance.
-            if frame >= seg.end {
+            // 2b. At segment boundary: handle loop or advance.
+            if past_boundary {
                 self.fade_out = 0;
                 let loop_en = self.control.loop_enabled.load(Ordering::Relaxed);
 
                 if self.reps_left == 255 && loop_en {
-                    // Infinite loop: jump to segment start with fade-in.
-                    self.pos = seg.start as usize * self.channels as usize;
+                    // Infinite loop: jump back to origin with fade-in.
+                    self.pos = origin as usize * self.channels as usize;
                     self.channel = 0;
                     self.fade_in = fade_len;
                 } else if self.reps_left > 1 && self.reps_left != 255 {
                     // Finite reps: always honored regardless of loop_enabled.
                     self.reps_left -= 1;
-                    self.pos = seg.start as usize * self.channels as usize;
+                    self.pos = origin as usize * self.channels as usize;
                     self.channel = 0;
                     self.fade_in = fade_len;
                 } else {
@@ -230,11 +252,15 @@ impl SegmentSource {
                     }
                     let next = self.playlist[self.seg_idx].clone();
                     self.reps_left = next.reps;
-                    // Sequential segments share boundaries — no jump needed.
-                    if self.frame() == next.start {
+                    let next_origin = if rev {
+                        next.end.saturating_sub(1)
+                    } else {
+                        next.start
+                    };
+                    if self.frame() == next_origin {
                         // Continuous: no seek.
                     } else {
-                        self.jump_to(next.start);
+                        self.jump_to(next_origin);
                     }
                 }
             }
@@ -294,6 +320,23 @@ impl Iterator for SegmentSource {
         self.channel += 1;
         if self.channel >= self.channels {
             self.channel = 0;
+
+            // Reverse traversal: we just finished emitting frame N (pos now
+            // points to frame N+1). Step back 2 frames to land on frame N-1.
+            // Channels within a frame are still emitted L→R.
+            if self.control.reversed.load(Ordering::Relaxed) {
+                let stride = 2 * self.channels as usize;
+                if self.pos >= stride {
+                    self.pos -= stride;
+                } else {
+                    // Reached the start of the segment — signal boundary.
+                    // Set pos to segment start so on_frame_boundary handles
+                    // loop/advance logic on the next call.
+                    if let Some(seg) = self.playlist.get(self.seg_idx) {
+                        self.pos = seg.start as usize * self.channels as usize;
+                    }
+                }
+            }
         }
 
         Some(sample)
@@ -720,6 +763,15 @@ impl PlaybackEngine {
     pub fn set_loop_enabled(&self, enabled: bool) {
         if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
             ctl.loop_enabled.store(enabled, Ordering::Relaxed);
+        }
+    }
+
+    /// Toggle the reverse flag on the active source. When reversed, each
+    /// segment is traversed end→start (frames read backwards, channels
+    /// within a frame still L→R). No-op when stopped.
+    pub fn set_reversed(&self, reversed: bool) {
+        if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
+            ctl.reversed.store(reversed, Ordering::Relaxed);
         }
     }
 
