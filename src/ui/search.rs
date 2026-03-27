@@ -260,15 +260,16 @@ pub async fn load_peaks_with_fallback(
     .flatten()
 }
 
-/// Load audio format info (duration, sample rate, etc.) from a WAV file.
+/// Load audio format info (duration, sample rate, etc.) from an audio file.
+///
+/// Dispatches through `AudioRegistry` — WAV uses fmt chunk, other formats
+/// use rodio's decoder.
 pub async fn load_audio_info(file_path: &Path) -> Option<crate::engine::wav::AudioInfo> {
     let path = file_path.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let file = std::fs::File::open(&path).ok()?;
-        let mut reader = std::io::BufReader::with_capacity(8192, file);
-        let map = crate::engine::bext::scan_chunks(&mut reader).ok()?;
-        let fmt = crate::engine::wav::parse_fmt(&mut reader, &map).ok()?;
-        Some(crate::engine::wav::AudioInfo::from_fmt(&fmt, map.data_size))
+        let registry = crate::engine::source::AudioRegistry::new();
+        let source = registry.for_path(&path)?;
+        source.audio_info(&path).ok()
     })
     .await
     .ok()

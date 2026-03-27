@@ -1252,12 +1252,12 @@ impl App {
     /// manually. Individual `rep = 0` values still mean "skip this segment" when
     /// other reps are non-zero.
     fn play_program(&mut self) {
-        // Sentinel: when the active bank exists but all reps are 0, play through
-        // the whole file as a single segment (ignoring markers entirely).
-        // When bank is None (markers not yet loaded), fall through to ensure_markers().
+        // Sentinel: when the active bank has all reps == 0, or no markers exist
+        // at all (e.g. AIFF files without BEXT), play through the whole file as
+        // a single segment (ignoring markers entirely).
         let active_reps_all_zero = self.active_bank_ref()
             .map(|b| b.reps == [0u8; 4])
-            .unwrap_or(false);
+            .unwrap_or(true);
 
         if active_reps_all_zero {
             if let Some(row) = self.results.get(self.selected) {
@@ -2011,10 +2011,7 @@ impl App {
     fn zoom_in(&mut self) {
         use crate::engine::wav::{MAX_ZOOM_LEVEL, NUM_ZOOM_COLS, ZoomCache};
 
-        if self.playback_state() == PlaybackState::Playing {
-            self.set_status("Stop playback before zooming".to_string());
-            return;
-        }
+        // Zoom is purely visual — no interaction with the playback engine.
 
         // For FS-mode files, pcm may not be loaded yet (only peaks were computed).
         // Attempt a synchronous load so zoom can proceed.
@@ -2059,9 +2056,19 @@ impl App {
         }
 
         // Determine zoom center (in samples).
-        let pos_fraction = self.playback_position() as f64;
+        // Priority: selected marker > playback position > cursor_sample > 0.
+        let playhead_sample = {
+            let pos = self.playback_position() as f64;
+            if pos > 0.0 {
+                (pos * total_samples as f64) as u32
+            } else if self.cursor_sample > 0 {
+                self.cursor_sample
+            } else {
+                0
+            }
+        };
+
         let zoom_center: u32 = if self.markers_visible {
-            // Use selected_marker position if a real marker (idx 1-3) is chosen.
             self.selected_marker
                 .filter(|&i| i > 0)
                 .and_then(|i| {
@@ -2082,9 +2089,9 @@ impl App {
                         })
                         .filter(|&m| m != crate::engine::bext::MARKER_EMPTY)
                 })
-                .unwrap_or_else(|| (pos_fraction * total_samples as f64) as u32)
+                .unwrap_or(playhead_sample)
         } else {
-            (pos_fraction * total_samples as f64) as u32
+            playhead_sample
         };
 
         self.zoom_center = Some(zoom_center);
@@ -4226,9 +4233,11 @@ mod tests {
     #[test]
     fn test_play_program_empty_bounds() {
         let mut app = App::new(Theme::default());
-        // No preview → empty segment_bounds → should report "No segments".
+        // No preview and no markers → falls through to simple play() path.
+        // Without a playback engine, play() can't start, so status is "Playing"
+        // (the sentinel path sets status before attempting engine.play()).
         app.play_program();
-        assert_eq!(app.status_message.as_deref(), Some("No segments"));
+        assert_eq!(app.status_message.as_deref(), Some("Playing"));
     }
 
     #[test]

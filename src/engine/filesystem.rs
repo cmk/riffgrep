@@ -10,9 +10,22 @@ use ignore::types::TypesBuilder;
 use ignore::WalkBuilder;
 
 use super::{SearchQuery, UnifiedMetadata, read_metadata};
+use super::source::AudioRegistry;
 
 /// Result sent through the channel for each matching file.
 pub type SearchResult = UnifiedMetadata;
+
+/// Build an `ignore::Types` matcher from the registry's extensions.
+/// Adds both lowercase and uppercase globs for each extension.
+pub fn build_audio_types(registry: &AudioRegistry) -> ignore::types::Types {
+    let mut builder = TypesBuilder::new();
+    for ext in registry.all_extensions() {
+        builder.add("audio", &format!("*.{ext}")).expect("valid glob");
+        builder.add("audio", &format!("*.{}", ext.to_uppercase())).expect("valid glob");
+    }
+    builder.select("audio");
+    builder.build().expect("valid types")
+}
 
 /// Parallel filesystem finder using `ignore::WalkParallel`.
 pub struct FilesystemFinder {
@@ -29,7 +42,7 @@ impl FilesystemFinder {
 
     /// Walk all roots in parallel, sending matching results to `tx`.
     ///
-    /// Each parallel worker reads metadata from WAV files and tests against
+    /// Each parallel worker reads metadata from audio files and tests against
     /// the query. Matches are sent through the channel. Individual file errors
     /// are logged to stderr and skipped.
     pub fn walk(&self, query: &SearchQuery, tx: Sender<SearchResult>) {
@@ -37,15 +50,7 @@ impl FilesystemFinder {
             return;
         }
 
-        let mut types = TypesBuilder::new();
-        types.add("audio", "*.wav").expect("valid glob");
-        types.add("audio", "*.WAV").expect("valid glob");
-        types.add("audio", "*.aif").expect("valid glob");
-        types.add("audio", "*.AIF").expect("valid glob");
-        types.add("audio", "*.aiff").expect("valid glob");
-        types.add("audio", "*.AIFF").expect("valid glob");
-        types.select("audio");
-        let types = types.build().expect("valid types");
+        let types = build_audio_types(&AudioRegistry::new());
 
         let mut builder = WalkBuilder::new(&self.roots[0]);
         for root in &self.roots[1..] {

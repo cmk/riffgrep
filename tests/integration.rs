@@ -4,6 +4,13 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn riffgrep() -> Command {
+    let mut cmd = Command::cargo_bin("riffgrep").unwrap();
+    cmd.arg("--no-db"); // Force filesystem mode so tests aren't affected by an existing index.
+    cmd
+}
+
+/// Bare command without --no-db (for SQLite-specific tests that pass --db-path).
+fn riffgrep_raw() -> Command {
     Command::cargo_bin("riffgrep").unwrap()
 }
 
@@ -240,7 +247,7 @@ fn no_db_overrides_sqlite() {
         .success();
 
     // --no-db forces filesystem mode even though DB exists.
-    riffgrep()
+    riffgrep_raw()
         .args([
             "--no-db",
             "--count",
