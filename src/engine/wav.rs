@@ -5,6 +5,8 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+use rodio::Source;
+
 use super::bext::{ChunkMap, RiffError};
 
 /// WAV audio format tag.
@@ -325,7 +327,11 @@ pub fn compute_peaks_from_path_with_options(
     path: &Path,
     opts: &PeakOptions,
 ) -> Result<Vec<u8>, RiffError> {
-    if super::is_aiff(path) {
+    // Only the RIFF path supports configurable peak options.
+    let registry = super::source::AudioRegistry::new();
+    let is_riff = registry.for_path(path)
+        .is_some_and(|s| s.extensions().contains(&"wav"));
+    if !is_riff {
         return Ok(Vec::new());
     }
     let file = std::fs::File::open(path)?;
@@ -478,14 +484,82 @@ fn stream_samples_stereo<R: Read + Seek>(
 ///
 /// Returns empty peaks for AIFF files (no RIFF chunks to parse).
 pub fn compute_peaks_stereo_from_path(path: &Path) -> Result<Vec<u8>, RiffError> {
-    if super::is_aiff(path) {
+    let registry = super::source::AudioRegistry::new();
+    match registry.for_path(path) {
+        Some(src) => src.compute_peaks_stereo(path),
+        None => Err(RiffError::NotRiffWave),
+    }
+}
+
+/// Compute stereo peaks using rodio's format-agnostic decoder.
+///
+/// Works for any format symphonia supports (AIFF, FLAC, etc.). Slower than
+/// the RIFF-specific path because it decodes the entire file to f32, but
+/// produces identical 360-byte output (180 left + 180 right RMS peaks).
+pub fn compute_peaks_stereo_via_decoder(path: &Path) -> Result<Vec<u8>, RiffError> {
+    let file = std::fs::File::open(path)?;
+    let reader = std::io::BufReader::new(file);
+    let decoder = rodio::Decoder::new(reader)
+        .map_err(|_| RiffError::NotRiffWave)?;
+
+    let channels = decoder.channels() as usize;
+    let samples: Vec<f32> = decoder.map(|s| s as f32 / 32768.0).collect();
+
+    if samples.is_empty() || channels == 0 {
         return Ok(vec![0u8; STEREO_PEAK_COUNT]);
     }
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::with_capacity(8192, file);
-    let map = super::bext::scan_chunks(&mut reader)?;
-    let fmt = parse_fmt(&mut reader, &map)?;
-    compute_peaks_stereo(&mut reader, &map, &fmt)
+
+    let total_frames = samples.len() / channels;
+    if total_frames == 0 {
+        return Ok(vec![0u8; STEREO_PEAK_COUNT]);
+    }
+
+    let bin_size = total_frames as f64 / PEAK_COUNT as f64;
+
+    let mut left_sum_sq = [0.0f64; PEAK_COUNT];
+    let mut right_sum_sq = [0.0f64; PEAK_COUNT];
+    let mut bin_count = [0u64; PEAK_COUNT];
+
+    for frame in 0..total_frames {
+        let base = frame * channels;
+        let left = samples[base] as f64;
+        let right = if channels > 1 {
+            samples[base + 1] as f64
+        } else {
+            left
+        };
+        let bin = (frame as f64 / bin_size).min((PEAK_COUNT - 1) as f64) as usize;
+        left_sum_sq[bin] += left * left;
+        right_sum_sq[bin] += right * right;
+        bin_count[bin] += 1;
+    }
+
+    let mut left_rms = [0.0f64; PEAK_COUNT];
+    let mut right_rms = [0.0f64; PEAK_COUNT];
+    for i in 0..PEAK_COUNT {
+        if bin_count[i] > 0 {
+            left_rms[i] = (left_sum_sq[i] / bin_count[i] as f64).sqrt();
+            right_rms[i] = (right_sum_sq[i] / bin_count[i] as f64).sqrt();
+        }
+    }
+
+    let left_max = left_rms.iter().cloned().fold(0.0f64, f64::max);
+    let right_max = right_rms.iter().cloned().fold(0.0f64, f64::max);
+    let global_max = left_max.max(right_max);
+
+    if global_max == 0.0 {
+        return Ok(vec![0u8; STEREO_PEAK_COUNT]);
+    }
+
+    let mut peaks = Vec::with_capacity(STEREO_PEAK_COUNT);
+    for &v in &left_rms {
+        peaks.push((v / global_max * 255.0).round() as u8);
+    }
+    for &v in &right_rms {
+        peaks.push((v / global_max * 255.0).round() as u8);
+    }
+
+    Ok(peaks)
 }
 
 /// Audio metadata extracted from the fmt chunk.
@@ -706,10 +780,15 @@ impl PcmData {
 /// callers should treat `Err` as "zoom unavailable" and continue with
 /// `pcm = None`.
 pub fn load_pcm_data(path: &std::path::Path) -> Result<PcmData, RiffError> {
-    // AIFF files don't have RIFF chunks; PCM zoom is not supported for them.
-    if super::is_aiff(path) {
-        return Err(RiffError::NotRiffWave);
+    let registry = super::source::AudioRegistry::new();
+    match registry.for_path(path) {
+        Some(src) => return src.load_pcm(path),
+        None => return Err(RiffError::NotRiffWave),
     }
+}
+
+/// RIFF-specific PCM loader. Called by [`super::source::RiffSource`].
+pub fn load_pcm_data_riff(path: &std::path::Path) -> Result<PcmData, RiffError> {
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::with_capacity(8192, file);
     let map = super::bext::scan_chunks(&mut reader)?;
@@ -787,6 +866,31 @@ pub fn load_pcm_data(path: &std::path::Path) -> Result<PcmData, RiffError> {
         };
         samples.push(s);
     }
+
+    Ok(PcmData { samples })
+}
+
+/// Load PCM data via rodio's format-agnostic decoder (for AIFF and other non-RIFF formats).
+/// Extracts left channel (or mono) as i16 samples, same as the RIFF path.
+pub fn load_pcm_data_via_decoder(path: &std::path::Path) -> Result<PcmData, RiffError> {
+    let file = std::fs::File::open(path)?;
+    let reader = std::io::BufReader::new(file);
+    let decoder = rodio::Decoder::new(reader)
+        .map_err(|_| RiffError::NotRiffWave)?;
+
+    let channels = decoder.channels() as usize;
+    // rodio::Decoder yields i16 samples (interleaved).
+    let all_samples: Vec<i16> = decoder.collect();
+
+    if all_samples.is_empty() || channels == 0 {
+        return Ok(PcmData { samples: Vec::new() });
+    }
+
+    // Extract left channel only (same as RIFF path).
+    let samples: Vec<i16> = all_samples
+        .chunks_exact(channels)
+        .map(|frame| frame[0])
+        .collect();
 
     Ok(PcmData { samples })
 }

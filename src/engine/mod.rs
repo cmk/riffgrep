@@ -8,6 +8,7 @@ pub mod id3;
 pub mod marks;
 pub mod playback;
 pub mod riff_info;
+pub mod source;
 pub mod sqlite;
 pub mod wav;
 pub mod workflow;
@@ -90,31 +91,20 @@ pub struct UnifiedMetadata {
     pub date: String,
 }
 
-/// Returns true if `path` has an AIFF/AIF extension (case-insensitive).
-fn is_aiff(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("aif") || e.eq_ignore_ascii_case("aiff"))
+/// Read and merge metadata from a single audio file.
+///
+/// Dispatches through [`source::AudioRegistry`] based on file extension.
+/// WAV files get the fast BEXT/INFO path; other formats return minimal metadata.
+pub fn read_metadata(path: &Path) -> Result<UnifiedMetadata, RiffError> {
+    let registry = source::AudioRegistry::new();
+    match registry.for_path(path) {
+        Some(src) => src.read_metadata(path),
+        None => Err(RiffError::NotRiffWave),
+    }
 }
 
-/// Read and merge metadata from a single audio file (WAV or AIFF).
-///
-/// For WAV files:
-/// 1. Scan first 4KB for chunk offsets
-/// 2. Parse BEXT if found
-/// 3. Parse LIST-INFO if found within 4KB
-/// 4. Merge: BEXT fields take priority, INFO fills empty fields
-///
-/// For AIFF files, returns a minimal `UnifiedMetadata` with only the path.
-/// AIFF metadata (ID3 tags) is handled separately by the workflow engine.
-pub fn read_metadata(path: &Path) -> Result<UnifiedMetadata, RiffError> {
-    if is_aiff(path) {
-        return Ok(UnifiedMetadata {
-            path: path.to_path_buf(),
-            ..Default::default()
-        });
-    }
-
+/// Read WAV metadata directly (BEXT + RIFF INFO merge). Called by [`source::RiffSource`].
+pub fn read_metadata_riff(path: &Path) -> Result<UnifiedMetadata, RiffError> {
     let file = std::fs::File::open(path)?;
     let mut reader = BufReader::with_capacity(8192, file);
 
@@ -129,19 +119,20 @@ pub fn read_metadata(path: &Path) -> Result<UnifiedMetadata, RiffError> {
 /// Returns `(metadata, peaks_bytes, peaks_format, markers)`.
 ///
 /// For AIFF files, returns empty peaks, `NoPeaks` format, and no markers.
+/// Read metadata with BEXT peaks and markers. RIFF-specific; non-RIFF formats
+/// return minimal metadata with empty peaks and no markers.
 pub fn read_metadata_with_peaks_format(
     path: &Path,
 ) -> Result<(UnifiedMetadata, Vec<u8>, bext::PeaksFormat, Option<bext::MarkerConfig>), RiffError> {
-    if is_aiff(path) {
-        return Ok((
-            UnifiedMetadata {
-                path: path.to_path_buf(),
-                ..Default::default()
-            },
-            Vec::new(),
-            bext::PeaksFormat::Empty,
-            None,
-        ));
+    let registry = source::AudioRegistry::new();
+    let is_riff = registry.for_path(path)
+        .is_some_and(|s| s.extensions().contains(&"wav"));
+
+    if !is_riff {
+        let meta = registry.for_path(path)
+            .map(|s| s.read_metadata(path))
+            .unwrap_or_else(|| Err(RiffError::NotRiffWave))?;
+        return Ok((meta, Vec::new(), bext::PeaksFormat::Empty, None));
     }
 
     let file = std::fs::File::open(path)?;
@@ -802,9 +793,14 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
         let _ = write!(out, "{}", workflow::format_meta_diff(&diff));
 
         if opts.commit {
-            match workflow::write_metadata_changes(&path, &meta_bext, &new_meta, opts.force) {
-                Ok(()) => changed += 1,
-                Err(e) => eprintln!("riffgrep: write error on {}: {e}", path.display()),
+            let registry = source::AudioRegistry::new();
+            match registry.for_path(&path) {
+                Some(src) => match src.write_metadata(&path, &meta_bext, &new_meta, opts.force) {
+                    Some(Ok(())) => changed += 1,
+                    Some(Err(e)) => eprintln!("riffgrep: write error on {}: {e}", path.display()),
+                    None => eprintln!("riffgrep: read-only format: {}", path.display()),
+                },
+                None => eprintln!("riffgrep: unsupported format: {}", path.display()),
             }
         } else {
             changed += 1;
@@ -839,7 +835,6 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
 
 /// Run the `--index` subcommand: walk filesystem and populate SQLite database.
 fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
-    use ignore::types::TypesBuilder;
     use ignore::WalkBuilder;
 
     let db_path = sqlite::resolve_db_path(opts.db_path.as_deref())?;
@@ -856,12 +851,8 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
 
     let start = Instant::now();
 
-    // Build walker (reuse same config as FilesystemFinder).
-    let mut types = TypesBuilder::new();
-    types.add("wav", "*.wav").expect("valid glob");
-    types.add("wav", "*.WAV").expect("valid glob");
-    types.select("wav");
-    let types = types.build().expect("valid types");
+    // Build walker using registry-derived extensions.
+    let types = filesystem::build_audio_types(&source::AudioRegistry::new());
 
     let mut builder = WalkBuilder::new(&roots[0]);
     for root in &roots[1..] {

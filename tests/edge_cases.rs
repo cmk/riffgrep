@@ -6,7 +6,9 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn riffgrep() -> Command {
-    Command::cargo_bin("riffgrep").unwrap()
+    let mut cmd = Command::cargo_bin("riffgrep").unwrap();
+    cmd.arg("--no-db"); // Force filesystem mode so tests aren't affected by an existing index.
+    cmd
 }
 
 #[test]
