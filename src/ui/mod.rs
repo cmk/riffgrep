@@ -270,6 +270,8 @@ pub struct App {
     /// automatically recomputed as `session_bpm / sample_bpm` on each sample change
     /// and on each `SessionBpm*` action.
     pub session_bpm: Option<f32>,
+    /// Optional path to the SQLite database (for loading embeddings in TUI).
+    pub db_path: Option<PathBuf>,
 }
 
 impl App {
@@ -339,6 +341,7 @@ impl App {
             speed_bpm_coarse: 1.0,
             speed_bpm_fine: 0.1,
             session_bpm: None,
+            db_path: None,
         }
     }
 
@@ -372,6 +375,7 @@ impl App {
             Action::SortAscending => self.sort_by_selected_column(true),
             Action::SortDescending => self.sort_by_selected_column(false),
             Action::RandomSort => self.random_sort(),
+            Action::SortBySimilarity => self.sort_by_similarity(),
             Action::TogglePlayback => self.toggle_playback(),
             Action::SeekForwardSmall => self.seek_relative(self.scrub_small),
             // B2: when a non-SOF marker is selected, large seek redirects to large nudge
@@ -1387,6 +1391,11 @@ impl App {
         self.sort_ascending = ascending;
         self.sort_column = Some(key.clone());
 
+        // Clear sim scores when switching away from similarity sort.
+        for row in &mut self.results {
+            row.sim = None;
+        }
+
         self.results.sort_by(|a, b| {
             let ka = column_sort_key(a, &key);
             let kb = column_sort_key(b, &key);
@@ -1405,6 +1414,10 @@ impl App {
         if n < 2 {
             return;
         }
+        // Clear sim scores.
+        for row in &mut self.results {
+            row.sim = None;
+        }
         // Minimal LCG RNG seeded from system time (no external rand crate needed).
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -1419,6 +1432,104 @@ impl App {
         self.sort_column = None;
         self.selected = self.selected.min(n.saturating_sub(1));
         self.set_status("Shuffled".to_string());
+    }
+
+    /// Sort results by embedding similarity to the currently selected file.
+    ///
+    /// Loads embeddings from the database, computes L2 distances, and
+    /// re-sorts results with the selected file pinned to position 0.
+    /// Populates the `sim` field on each `TableRow`.
+    pub fn sort_by_similarity(&mut self) {
+        use crate::engine::similarity;
+        use crate::engine::sqlite::Database;
+
+        // Need a DB and a selected file.
+        let db_path = match self.db_path.as_ref() {
+            Some(p) if p.exists() => p,
+            _ => {
+                self.set_status("No database — cannot compute similarity".to_string());
+                return;
+            }
+        };
+        if self.results.is_empty() {
+            return;
+        }
+
+        let selected_path = self.results[self.selected].meta.path.clone();
+
+        let db = match Database::open(db_path) {
+            Ok(db) => db,
+            Err(e) => {
+                self.set_status(format!("DB error: {e}"));
+                return;
+            }
+        };
+
+        let query_str = selected_path.to_string_lossy();
+        let query_embedding = match db.load_embedding(&query_str) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                self.set_status(format!("Not embedded: {}", selected_path.display()));
+                return;
+            }
+            Err(e) => {
+                self.set_status(format!("Embedding error: {e}"));
+                return;
+            }
+        };
+
+        let candidates = match db.load_all_embeddings() {
+            Ok(c) => c,
+            Err(e) => {
+                self.set_status(format!("Load error: {e}"));
+                return;
+            }
+        };
+
+        // Find query's row ID.
+        let query_id = candidates
+            .iter()
+            .find(|(_, p, _)| p.as_os_str() == selected_path.as_os_str())
+            .map(|(id, _, _)| *id)
+            .unwrap_or(-1);
+
+        let sim_results = similarity::search_similar(
+            query_id,
+            &query_embedding,
+            &candidates,
+            self.results.len(),
+        );
+
+        // Build a lookup: path → sim score.
+        let sim_map: std::collections::HashMap<&std::path::Path, f32> = sim_results
+            .iter()
+            .map(|r| (r.path.as_path(), r.sim))
+            .collect();
+
+        // Assign sim scores to rows.
+        for row in &mut self.results {
+            row.sim = sim_map.get(row.meta.path.as_path()).copied();
+        }
+
+        // Sort: rows with sim descending (highest first), None at bottom.
+        self.results.sort_by(|a, b| {
+            match (a.sim, b.sim) {
+                (Some(sa), Some(sb)) => sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+
+        self.sort_column = Some("sim".to_string());
+        self.sort_ascending = false;
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.selection_changed = true;
+        self.set_status(format!(
+            "Similarity to {}",
+            selected_path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default()
+        ));
     }
 
     // -------------------------------------------------------------------------
@@ -2299,6 +2410,12 @@ fn column_sort_key(row: &TableRow, key: &str) -> SortKey {
             return SortKey::Numeric(secs);
         }
     }
+    // Sim "0.87" → numeric (×1000 for integer sort key).
+    if key == "sim" {
+        if let Ok(f) = value.parse::<f64>() {
+            return SortKey::Numeric((f * 1000.0) as i64);
+        }
+    }
     // Sample rate "48k" → numeric.
     if key == "sample_rate" {
         if let Some(stripped) = value.strip_suffix('k') {
@@ -2462,6 +2579,7 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(theme);
+    app.db_path = db_path_for_peaks.clone();
     if let Some(ref cols) = config.columns {
         if !cols.is_empty() {
             app.columns = cols.clone();
@@ -2687,7 +2805,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             })
             .collect();
         app
@@ -2837,7 +2955,7 @@ mod tests {
             meta: UnifiedMetadata::default(),
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         }]);
         assert_eq!(app.selected, 0);
     }
@@ -2958,7 +3076,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         }];
         // All playback operations should be no-ops with no panic.
         app.toggle_playback();
@@ -3164,7 +3282,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -3174,7 +3292,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
         ];
         app.sort_by_selected_column(true);
@@ -3196,7 +3314,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -3206,7 +3324,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
         ];
         app.sort_by_selected_column(false);
@@ -3228,7 +3346,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -3238,7 +3356,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
         ];
         app.sort_by_selected_column(true);
@@ -3260,7 +3378,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -3270,7 +3388,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
         ];
         app.sort_by_selected_column(true);
@@ -3301,7 +3419,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         }];
 
         app.sort_by_selected_column(true);
@@ -3321,6 +3439,89 @@ mod tests {
         // No results — should not panic.
         app.sort_by_selected_column(true);
         assert!(app.sort_column.is_none());
+    }
+
+    // --- Similarity sort tests ---
+
+    #[test]
+    fn test_sim_column_blank_when_inactive() {
+        let row = TableRow {
+            meta: UnifiedMetadata::default(),
+            audio_info: None,
+            marked: false,
+            markers: None,
+            sim: None,
+        };
+        assert_eq!(widgets::column_value(&row, "sim"), "");
+    }
+
+    #[test]
+    fn test_sim_column_renders_float() {
+        let row = TableRow {
+            meta: UnifiedMetadata::default(),
+            audio_info: None,
+            marked: false,
+            markers: None,
+            sim: Some(0.8712),
+        };
+        assert_eq!(widgets::column_value(&row, "sim"), "0.87");
+    }
+
+    #[test]
+    fn test_sort_by_column_clears_sim() {
+        let mut app = App::new(Theme::default());
+        app.columns = vec!["vendor".to_string()];
+        app.selected_column = 0;
+        app.results = vec![
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/a.wav"),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+                markers: None,
+                sim: Some(0.95),
+            },
+            TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/b.wav"),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+                markers: None,
+                sim: Some(0.42),
+            },
+        ];
+
+        app.sort_by_selected_column(true);
+        // sim should be cleared.
+        for row in &app.results {
+            assert!(row.sim.is_none(), "sim should be None after column sort");
+        }
+    }
+
+    #[test]
+    fn test_random_sort_clears_sim() {
+        let mut app = App::new(Theme::default());
+        app.results = (0..5)
+            .map(|i| TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from(format!("/test/{i}.wav")),
+                    ..Default::default()
+                },
+                audio_info: None,
+                marked: false,
+                markers: None,
+                sim: Some(i as f32 * 0.2),
+            })
+            .collect();
+
+        app.random_sort();
+        for row in &app.results {
+            assert!(row.sim.is_none(), "sim should be None after random sort");
+        }
     }
 
     // --- S7-T2 tests: Input Mode Enum & State ---
@@ -3588,7 +3789,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         };
         app.on_search_results(vec![new_row]);
         assert_eq!(app.results.len(), 1, "old results should be replaced");
@@ -3608,7 +3809,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         };
         app.on_search_results(vec![row1]);
         assert_eq!(app.results.len(), 1);
@@ -3620,7 +3821,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         };
         app.on_search_results(vec![row2]);
         assert_eq!(app.results.len(), 2);
@@ -3783,6 +3984,7 @@ mod tests {
             audio_info: None,
             marked: false,
             markers: Some(markers),
+            sim: None,
         };
         assert!(row.markers.is_some());
         assert_eq!(row.markers.unwrap(), markers);
@@ -3873,6 +4075,7 @@ mod tests {
             audio_info: None,
             marked: false,
             markers: Some(custom),
+            sim: None,
         }];
         app.selected = 0;
         // No preview set → should use row markers.
@@ -4812,7 +5015,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         }).collect();
         let original_order: Vec<_> = app.results.iter().map(|r| r.meta.path.clone()).collect();
         app.random_sort();
@@ -4994,7 +5197,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         }];
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
         app.on_preview_ready(PreviewData {

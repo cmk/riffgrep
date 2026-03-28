@@ -168,6 +168,7 @@ pub const AVAILABLE_COLUMNS: &[&str] = &[
     "item",
     "format",
     "parent_folder",
+    "sim",
 ];
 
 /// Column display definition.
@@ -208,6 +209,7 @@ pub fn column_def(key: &str) -> Option<ColumnDef> {
         "item" => Some(ColumnDef { key: "item", label: "Item", min_width: 4, weight: 1 }),
         "format" => Some(ColumnDef { key: "format", label: "Format", min_width: 8, weight: 2 }),
         "parent_folder" => Some(ColumnDef { key: "parent_folder", label: "Folder", min_width: 8, weight: 3 }),
+        "sim" => Some(ColumnDef { key: "sim", label: "Sim", min_width: 5, weight: 1 }),
         _ => None,
     }
 }

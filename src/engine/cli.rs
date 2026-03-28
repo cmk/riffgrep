@@ -131,6 +131,10 @@ pub struct Opts {
     #[bpaf(long, argument("N"))]
     pub limit: Option<usize>,
 
+    /// Find files with similar audio embeddings to the given file
+    #[bpaf(long, argument("PATH"))]
+    pub similar: Option<PathBuf>,
+
     /// Search paths (default: current directory)
     #[bpaf(positional("PATH"))]
     pub paths: Vec<PathBuf>,
@@ -143,6 +147,7 @@ EXAMPLES:
   riffgrep --index ~/Samples           Build/update search index
   riffgrep --no-db ~/Samples           Search without database
   riffgrep --db-stats                  Show index health
+  riffgrep --similar kick.wav           Find similar-sounding files
   riffgrep --theme ableton             Launch TUI with theme
  .
 WORKFLOW (Lua ETL):
@@ -348,6 +353,22 @@ mod tests {
             .run_inner(&["--eval", "x()"])
             .unwrap();
         assert!(opts.is_workflow_mode());
+    }
+
+    #[test]
+    fn test_similar_flag_parsed() {
+        let opts = opts_with_help()
+            .run_inner(&["--similar", "/test/kick.wav"])
+            .unwrap();
+        assert_eq!(opts.similar, Some(PathBuf::from("/test/kick.wav")));
+    }
+
+    #[test]
+    fn test_similar_flag_absent() {
+        let opts = opts_with_help()
+            .run_inner(&[] as &[&str])
+            .unwrap();
+        assert!(opts.similar.is_none());
     }
 
     #[test]
