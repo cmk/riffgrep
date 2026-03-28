@@ -8,6 +8,7 @@ pub mod id3;
 pub mod marks;
 pub mod playback;
 pub mod riff_info;
+pub mod similarity;
 pub mod source;
 pub mod sqlite;
 pub mod wav;
@@ -37,6 +38,8 @@ pub struct TableRow {
     pub marked: bool,
     /// Marker configuration from BEXT (if packed schema present).
     pub markers: Option<bext::MarkerConfig>,
+    /// Similarity score from a similarity search (0.0–1.0, None when inactive).
+    pub sim: Option<f32>,
 }
 
 /// Merged metadata from BEXT and RIFF INFO chunks.
@@ -619,6 +622,9 @@ pub fn run(opts: cli::Opts) -> anyhow::Result<()> {
     if opts.is_workflow_mode() {
         return run_workflow(&opts);
     }
+    if opts.similar.is_some() {
+        return run_similar(&opts);
+    }
 
     use std::io::{BufWriter, Write};
     use std::thread;
@@ -692,6 +698,78 @@ pub fn run(opts: cli::Opts) -> anyhow::Result<()> {
     if count == 0 {
         std::process::exit(1);
     }
+
+    Ok(())
+}
+
+// --- Similarity search ---
+
+/// Run the `--similar <PATH>` subcommand.
+///
+/// Loads the query file's embedding from the DB, computes L2 distances to
+/// all other embedded files, and outputs ranked results.
+fn run_similar(opts: &cli::Opts) -> anyhow::Result<()> {
+    use std::io::{BufWriter, Write};
+
+    let query_path = opts.similar.as_ref().unwrap();
+
+    // We need the DB for embeddings.
+    let db_path = sqlite::resolve_db_path(opts.db_path.as_deref())?;
+    anyhow::ensure!(
+        db_path.exists(),
+        "no database found — run `rfg --index` first"
+    );
+    let db = sqlite::Database::open(&db_path)?;
+
+    // Resolve the query path to match how it's stored in the DB.
+    let query_str = query_path.to_string_lossy();
+    let query_embedding = db
+        .load_embedding(&query_str)?
+        .ok_or_else(|| anyhow::anyhow!("file not embedded: {query_str}"))?;
+
+    let candidates = db.load_all_embeddings()?;
+    let query_id = candidates
+        .iter()
+        .find(|(_, p, _)| p.as_os_str() == query_path.as_os_str())
+        .map(|(id, _, _)| *id)
+        .unwrap_or(-1); // -1 if path not found among candidates (subject still pinned)
+
+    let limit = opts.limit.unwrap_or(50);
+    let results = similarity::search_similar(query_id, &query_embedding, &candidates, limit);
+
+    let stdout = std::io::stdout().lock();
+    let mut out = BufWriter::new(stdout);
+    let mode = opts.output_mode();
+
+    for r in &results {
+        let result = match mode {
+            cli::OutputMode::Path => writeln!(out, "{}", r.path.display()),
+            cli::OutputMode::Verbose => {
+                writeln!(out, "{}\tsim={:.4}\tdist={:.4}", r.path.display(), r.sim, r.dist)
+            }
+            cli::OutputMode::Json => {
+                writeln!(
+                    out,
+                    "{{\"path\":{},\"sim\":{:.6},\"dist\":{:.6}}}",
+                    serde_json::to_string(&r.path)?,
+                    r.sim,
+                    r.dist
+                )
+            }
+            cli::OutputMode::Count => Ok(()),
+        };
+        if let Err(e) = result {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                break;
+            }
+            return Err(e.into());
+        }
+    }
+
+    if matches!(mode, cli::OutputMode::Count) {
+        let _ = writeln!(out, "{} similar files", results.len());
+    }
+    let _ = out.flush();
 
     Ok(())
 }
@@ -1636,6 +1714,7 @@ mod tests {
             workflow: None,
             commit: false,
             force: false,
+            similar: None,
             limit: None,
             paths: vec![],
         }

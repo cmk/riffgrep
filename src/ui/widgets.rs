@@ -585,6 +585,10 @@ pub fn column_value(row: &crate::engine::TableRow, key: &str) -> String {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        "sim" => row
+            .sim
+            .map(|s| format!("{s:.2}"))
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -1043,7 +1047,7 @@ mod tests {
             meta: UnifiedMetadata::default(),
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         }
     }
 
@@ -1604,7 +1608,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         }];
         let columns = vec!["name".to_string(), "vendor".to_string(), "category".to_string()];
 
@@ -1633,7 +1637,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1642,7 +1646,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
         ];
         app.selected = 1;
@@ -1736,7 +1740,7 @@ mod tests {
                 channels: 2,
             }),
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         };
         assert_eq!(column_value(&row, "name"), "kick");
         assert_eq!(column_value(&row, "vendor"), "Mars");
@@ -1754,7 +1758,7 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         };
         assert_eq!(column_value(&row, "duration"), "-");
         assert_eq!(column_value(&row, "sample_rate"), "-");
@@ -1810,7 +1814,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: true,
-                markers: None,
+                markers: None, sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1819,7 +1823,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None,
+                markers: None, sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1828,7 +1832,7 @@ mod tests {
                 },
                 audio_info: None,
                 marked: true,
-                markers: None,
+                markers: None, sim: None,
             },
         ];
         app.show_marked_only = true;
@@ -1896,7 +1900,7 @@ mod tests {
                 channels: 2,
             }),
             marked: false,
-            markers: None,
+            markers: None, sim: None,
         };
         assert_eq!(column_value(&row, "date"), "2024-01-15");
         assert_eq!(column_value(&row, "take"), "67");

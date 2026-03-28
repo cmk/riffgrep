@@ -14,7 +14,7 @@ use rusqlite::{Connection, params};
 use super::{MatchMode, Pattern, SearchQuery, UnifiedMetadata};
 
 /// Current schema version, tracked via `PRAGMA user_version`.
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 1;
 
 /// SQL for inserting/replacing a sample row (30 parameters).
 const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
@@ -600,6 +600,85 @@ impl Database {
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+
+    // --- Embedding methods ---
+
+    /// Store a 512×f32 embedding for a file (by path). The vector is
+    /// serialized as a little-endian f32 BLOB (2048 bytes).
+    pub fn insert_embedding(&self, path: &str, vector: &[f32]) -> anyhow::Result<()> {
+        let blob: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
+        self.conn.execute(
+            "UPDATE samples SET embedding = ? WHERE path = ?",
+            rusqlite::params![blob, path],
+        )?;
+        Ok(())
+    }
+
+    /// Load a 512×f32 embedding for a file (by path).
+    /// Returns `None` if the file has no embedding.
+    pub fn load_embedding(&self, path: &str) -> anyhow::Result<Option<Vec<f32>>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT embedding FROM samples WHERE path = ?"
+        )?;
+        let blob: Option<Vec<u8>> = stmt.query_row([path], |row| row.get(0))?;
+        match blob {
+            Some(b) if b.len() >= 4 => {
+                let vec: Vec<f32> = b.chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                Ok(Some(vec))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Load all embeddings as `(row_id, path, vector)` triples.
+    /// Skips rows where embedding is NULL.
+    pub fn load_all_embeddings(&self) -> anyhow::Result<Vec<(i64, std::path::PathBuf, Vec<f32>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, embedding FROM samples WHERE embedding IS NOT NULL"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let path: String = row.get(1)?;
+            let blob: Vec<u8> = row.get(2)?;
+            Ok((id, path, blob))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let (id, path, blob) = row?;
+            if blob.len() >= 4 {
+                let vec: Vec<f32> = blob.chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                results.push((id, std::path::PathBuf::from(path), vec));
+            }
+        }
+        Ok(results)
+    }
+
+    /// Store a blob in the metadata table (e.g., PQ codebook).
+    pub fn set_metadata(&self, key: &str, value: &[u8]) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Load a blob from the metadata table. Returns `None` if key not found.
+    pub fn get_metadata(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT value FROM metadata WHERE key = ?"
+        )?;
+        let result = stmt.query_row([key], |row| row.get::<_, Vec<u8>>(0));
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
 /// Database statistics.
@@ -661,7 +740,13 @@ fn create_schema(conn: &Connection) -> anyhow::Result<()> {
             take TEXT NOT NULL DEFAULT '',
             track TEXT NOT NULL DEFAULT '',
             item TEXT NOT NULL DEFAULT '',
-            markers_blob BLOB
+            markers_blob BLOB,
+            embedding BLOB
+        );
+
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value BLOB
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS samples_fts USING fts5(
@@ -701,67 +786,10 @@ fn create_schema(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check if a column exists in a table.
-fn has_column(conn: &Connection, column: &str) -> bool {
-    conn.prepare("PRAGMA table_info(samples)")
-        .ok()
-        .map(|mut stmt| {
-            stmt.query_map([], |row| row.get::<_, String>(1))
-                .ok()
-                .map(|mut rows| rows.any(|r| r.as_deref() == Ok(column)))
-                .unwrap_or(false)
-        })
-        .unwrap_or(false)
-}
-
-/// Idempotently add a column if it doesn't exist.
-fn add_column_if_missing(conn: &Connection, column: &str, typedef: &str) -> anyhow::Result<()> {
-    if !has_column(conn, column) {
-        conn.execute_batch(&format!(
-            "ALTER TABLE samples ADD COLUMN {column} {typedef};"
-        ))?;
-    }
-    Ok(())
-}
-
-/// Migrate from older schema versions to the current version.
+/// Migrate from older schema versions. Currently a no-op — the project is
+/// pre-1.0 and there are no deployed databases to migrate. If an old DB is
+/// found, just re-index (`rfg --index --force-reindex`).
 fn migrate(conn: &Connection) -> anyhow::Result<()> {
-    let version: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-
-    if version < 2 {
-        // v1 → v2: add peaks_source column.
-        add_column_if_missing(conn, "peaks_source", "TEXT NOT NULL DEFAULT 'none'")?;
-    }
-
-    if version < 3 {
-        // v2 → v3: add marked + audio info columns.
-        add_column_if_missing(conn, "marked", "INTEGER NOT NULL DEFAULT 0")?;
-        add_column_if_missing(conn, "duration", "REAL")?;
-        add_column_if_missing(conn, "sample_rate", "INTEGER")?;
-        add_column_if_missing(conn, "bit_depth", "INTEGER")?;
-        add_column_if_missing(conn, "channels", "INTEGER")?;
-    }
-
-    if version < 4 {
-        // v3 → v4: add date, take, track, item columns.
-        add_column_if_missing(conn, "date", "TEXT NOT NULL DEFAULT ''")?;
-        add_column_if_missing(conn, "take", "TEXT NOT NULL DEFAULT ''")?;
-        add_column_if_missing(conn, "track", "TEXT NOT NULL DEFAULT ''")?;
-        add_column_if_missing(conn, "item", "TEXT NOT NULL DEFAULT ''")?;
-    }
-
-    if version < 5 {
-        // v4 → v5: add markers_blob column.
-        add_column_if_missing(conn, "markers_blob", "BLOB")?;
-    }
-
-    if version < 6 {
-        // v5 → v6: add total_samples column (exact integer, replaces float round-trip).
-        // Existing rows get NULL; they fall back to duration*sample_rate on read
-        // until the index is rebuilt.
-        add_column_if_missing(conn, "total_samples", "INTEGER")?;
-    }
-
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -1098,6 +1126,7 @@ fn row_to_table_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::TableRow
         audio_info,
         marked: marked != 0,
         markers,
+        sim: None,
     })
 }
 
@@ -1290,7 +1319,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     // --- Ticket 2 tests: DB path resolution ---
@@ -2172,178 +2201,6 @@ mod tests {
 
     // --- Schema migration tests ---
 
-    #[test]
-    fn test_fresh_db_is_v4() {
-        let db = Database::open_in_memory().unwrap();
-        let version: u32 = db
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, 6);
-
-        let mut stmt = db.conn.prepare("PRAGMA table_info(samples)").unwrap();
-        let cols: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
-        assert!(cols.contains(&"peaks_source".to_string()));
-        assert!(cols.contains(&"marked".to_string()));
-        assert!(cols.contains(&"duration".to_string()));
-        assert!(cols.contains(&"sample_rate".to_string()));
-        assert!(cols.contains(&"bit_depth".to_string()));
-        assert!(cols.contains(&"channels".to_string()));
-        assert!(cols.contains(&"date".to_string()));
-        assert!(cols.contains(&"take".to_string()));
-        assert!(cols.contains(&"track".to_string()));
-        assert!(cols.contains(&"item".to_string()));
-        assert!(cols.contains(&"markers_blob".to_string()));
-    }
-
-    #[test]
-    fn test_migrate_v1_to_v4() {
-        let dir = std::env::temp_dir().join("riffgrep_test_migrate_v1v4");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("test.db");
-
-        // Create a v1 database manually (without peaks_source or v3/v4 columns).
-        {
-            let conn = Connection::open(&db_path).unwrap();
-            apply_pragmas(&conn).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS samples (
-                    id INTEGER PRIMARY KEY,
-                    path TEXT NOT NULL UNIQUE,
-                    name TEXT NOT NULL,
-                    parent_folder TEXT NOT NULL,
-                    vendor TEXT NOT NULL DEFAULT '',
-                    library TEXT NOT NULL DEFAULT '',
-                    category TEXT NOT NULL DEFAULT '',
-                    sound_id TEXT NOT NULL DEFAULT '',
-                    description TEXT NOT NULL DEFAULT '',
-                    comment TEXT NOT NULL DEFAULT '',
-                    key TEXT NOT NULL DEFAULT '',
-                    bpm INTEGER,
-                    rating TEXT NOT NULL DEFAULT '',
-                    subcategory TEXT NOT NULL DEFAULT '',
-                    genre_id TEXT NOT NULL DEFAULT '',
-                    usage_id TEXT NOT NULL DEFAULT '',
-                    umid TEXT NOT NULL DEFAULT '',
-                    file_id INTEGER NOT NULL DEFAULT 0,
-                    mtime INTEGER NOT NULL,
-                    peaks BLOB
-                );",
-            )
-            .unwrap();
-            conn.pragma_update(None, "user_version", 1u32).unwrap();
-            conn.execute(
-                "INSERT INTO samples (path, name, parent_folder, mtime) VALUES ('a.wav', 'a', '/test', 100)",
-                [],
-            ).unwrap();
-        }
-
-        let db = Database::open(&db_path).unwrap();
-        let version: u32 = db
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, 6);
-
-        // All new columns should exist.
-        let source: String = db
-            .conn
-            .query_row(
-                "SELECT peaks_source FROM samples WHERE path = 'a.wav'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(source, "none");
-
-        let marked: i32 = db
-            .conn
-            .query_row(
-                "SELECT marked FROM samples WHERE path = 'a.wav'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(marked, 0);
-
-        // v4 columns should exist.
-        assert!(has_column(&db.conn, "date"));
-        assert!(has_column(&db.conn, "take"));
-        assert!(has_column(&db.conn, "track"));
-        assert!(has_column(&db.conn, "item"));
-        // v5 column should exist.
-        assert!(has_column(&db.conn, "markers_blob"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_migrate_v2_to_v4() {
-        let dir = std::env::temp_dir().join("riffgrep_test_migrate_v2v4");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("test.db");
-
-        // Create a v2 database (has peaks_source, no v3/v4 columns).
-        {
-            let conn = Connection::open(&db_path).unwrap();
-            apply_pragmas(&conn).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS samples (
-                    id INTEGER PRIMARY KEY,
-                    path TEXT NOT NULL UNIQUE,
-                    name TEXT NOT NULL,
-                    parent_folder TEXT NOT NULL,
-                    vendor TEXT NOT NULL DEFAULT '',
-                    library TEXT NOT NULL DEFAULT '',
-                    category TEXT NOT NULL DEFAULT '',
-                    sound_id TEXT NOT NULL DEFAULT '',
-                    description TEXT NOT NULL DEFAULT '',
-                    comment TEXT NOT NULL DEFAULT '',
-                    key TEXT NOT NULL DEFAULT '',
-                    bpm INTEGER,
-                    rating TEXT NOT NULL DEFAULT '',
-                    subcategory TEXT NOT NULL DEFAULT '',
-                    genre_id TEXT NOT NULL DEFAULT '',
-                    usage_id TEXT NOT NULL DEFAULT '',
-                    umid TEXT NOT NULL DEFAULT '',
-                    file_id INTEGER NOT NULL DEFAULT 0,
-                    mtime INTEGER NOT NULL,
-                    peaks BLOB,
-                    peaks_source TEXT NOT NULL DEFAULT 'none'
-                );",
-            )
-            .unwrap();
-            conn.pragma_update(None, "user_version", 2u32).unwrap();
-            conn.execute(
-                "INSERT INTO samples (path, name, parent_folder, mtime) VALUES ('b.wav', 'b', '/test', 200)",
-                [],
-            ).unwrap();
-        }
-
-        let db = Database::open(&db_path).unwrap();
-        let version: u32 = db
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, 6);
-
-        // v3 columns should exist.
-        assert!(has_column(&db.conn, "marked"));
-        assert!(has_column(&db.conn, "duration"));
-        // v4 columns should exist.
-        assert!(has_column(&db.conn, "date"));
-        assert!(has_column(&db.conn, "take"));
-        // v5 column should exist.
-        assert!(has_column(&db.conn, "markers_blob"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     // --- Mark/unmark tests ---
 
@@ -2483,28 +2340,6 @@ mod tests {
             .map(|(_, c)| *c)
             .unwrap_or(0);
         assert_eq!(none_count, 1);
-    }
-
-    #[test]
-    fn test_migration_idempotent() {
-        let dir = std::env::temp_dir().join("riffgrep_test_migrate_idempotent");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("test.db");
-
-        // Create v5 DB.
-        let _db1 = Database::open(&db_path).unwrap();
-        drop(_db1);
-
-        // Open again — should not error.
-        let db2 = Database::open(&db_path).unwrap();
-        let version: u32 = db2
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, 6);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- S6-T5 tests: SQLite columnar filter ---
@@ -2709,4 +2544,118 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].markers, None);
     }
+
+    // --- Embedding tests ---
+
+    fn has_column(conn: &Connection, column: &str) -> bool {
+        conn.prepare("PRAGMA table_info(samples)")
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(1))
+                    .ok()
+                    .map(|mut rows| rows.any(|r| r.as_deref() == Ok(column)))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn test_schema_has_embedding_column() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(has_column(db.conn(), "embedding"));
+    }
+
+    #[test]
+    fn test_metadata_table_exists() {
+        let db = Database::open_in_memory().unwrap();
+        let count: i64 = db.conn()
+            .query_row("SELECT COUNT(*) FROM metadata", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_insert_and_load_embedding() {
+        let db = Database::open_in_memory().unwrap();
+        let meta = UnifiedMetadata {
+            path: PathBuf::from("/test/kick.wav"),
+            ..Default::default()
+        };
+        db.insert_batch(&[(meta, 100, None)]).unwrap();
+
+        let vec: Vec<f32> = (0..512).map(|i| i as f32 * 0.01).collect();
+        db.insert_embedding("/test/kick.wav", &vec).unwrap();
+
+        let loaded = db.load_embedding("/test/kick.wav").unwrap().unwrap();
+        assert_eq!(loaded.len(), 512);
+        for (a, b) in vec.iter().zip(loaded.iter()) {
+            assert!((a - b).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn test_load_embedding_null() {
+        let db = Database::open_in_memory().unwrap();
+        let meta = UnifiedMetadata {
+            path: PathBuf::from("/test/snare.wav"),
+            ..Default::default()
+        };
+        db.insert_batch(&[(meta, 100, None)]).unwrap();
+
+        let loaded = db.load_embedding("/test/snare.wav").unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_load_all_embeddings_skips_null() {
+        let db = Database::open_in_memory().unwrap();
+        let files = ["/test/a.wav", "/test/b.wav", "/test/c.wav"];
+        for f in &files {
+            let meta = UnifiedMetadata {
+                path: PathBuf::from(f),
+                ..Default::default()
+            };
+            db.insert_batch(&[(meta, 100, None)]).unwrap();
+        }
+
+        // Embed only a and c.
+        let vec_a: Vec<f32> = vec![1.0; 512];
+        let vec_c: Vec<f32> = vec![2.0; 512];
+        db.insert_embedding("/test/a.wav", &vec_a).unwrap();
+        db.insert_embedding("/test/c.wav", &vec_c).unwrap();
+
+        let all = db.load_all_embeddings().unwrap();
+        assert_eq!(all.len(), 2);
+        let ids: Vec<&str> = all.iter().map(|(_, p, _)| p.to_str().unwrap()).collect();
+        assert!(ids.contains(&"/test/a.wav"));
+        assert!(ids.contains(&"/test/c.wav"));
+        assert!(!ids.contains(&"/test/b.wav"));
+    }
+
+    #[test]
+    fn test_metadata_insert_load() {
+        let db = Database::open_in_memory().unwrap();
+        let data = vec![42u8; 1024];
+        db.set_metadata("pq_codebook", &data).unwrap();
+
+        let loaded = db.get_metadata("pq_codebook").unwrap().unwrap();
+        assert_eq!(loaded, data);
+    }
+
+    #[test]
+    fn test_metadata_missing_key() {
+        let db = Database::open_in_memory().unwrap();
+        let loaded = db.get_metadata("nonexistent").unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_metadata_overwrite() {
+        let db = Database::open_in_memory().unwrap();
+        db.set_metadata("key", &[1, 2, 3]).unwrap();
+        db.set_metadata("key", &[4, 5, 6]).unwrap();
+        let loaded = db.get_metadata("key").unwrap().unwrap();
+        assert_eq!(loaded, vec![4, 5, 6]);
+    }
+
 }

@@ -191,6 +191,7 @@ impl SearchHandleTable {
                             audio_info,
                             marked: false,
                             markers,
+                            sim: None,
                         };
                         if tx.blocking_send(row).is_err() {
                             break;

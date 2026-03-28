@@ -32,6 +32,8 @@ pub enum Action {
     SortDescending,
     /// Shuffle results randomly.
     RandomSort,
+    /// Sort by embedding similarity to the selected file.
+    SortBySimilarity,
 
     // Playback
     /// Toggle audio playback.
@@ -189,6 +191,7 @@ impl Action {
         Action::SortAscending,
         Action::SortDescending,
         Action::RandomSort,
+        Action::SortBySimilarity,
         Action::TogglePlayback,
         Action::SeekForwardSmall,
         Action::SeekForwardLarge,
@@ -267,6 +270,7 @@ impl Action {
             "sort_ascending" => Some(Action::SortAscending),
             "sort_descending" => Some(Action::SortDescending),
             "random_sort" => Some(Action::RandomSort),
+            "sort_by_similarity" => Some(Action::SortBySimilarity),
             "toggle_playback" => Some(Action::TogglePlayback),
             "seek_forward_small" => Some(Action::SeekForwardSmall),
             "seek_forward_large" => Some(Action::SeekForwardLarge),
@@ -347,6 +351,7 @@ impl Action {
             Action::SortAscending => "sort_ascending",
             Action::SortDescending => "sort_descending",
             Action::RandomSort => "random_sort",
+            Action::SortBySimilarity => "sort_by_similarity",
             Action::TogglePlayback => "toggle_playback",
             Action::SeekForwardSmall => "seek_forward_small",
             Action::SeekForwardLarge => "seek_forward_large",
@@ -434,6 +439,7 @@ impl Action {
             Action::SortAscending => "Sort column ascending",
             Action::SortDescending => "Sort column descending",
             Action::RandomSort => "Shuffle results randomly",
+            Action::SortBySimilarity => "Sort by similarity to selected",
             Action::TogglePlayback => "Play / pause",
             Action::SeekForwardSmall => "Seek forward (small)",
             Action::SeekForwardLarge => "Seek forward (large)",
@@ -510,7 +516,7 @@ impl Action {
             | Action::PageUp
             | Action::MoveColumnLeft
             | Action::MoveColumnRight => "Navigation",
-            Action::SortAscending | Action::SortDescending | Action::RandomSort => "Sort",
+            Action::SortAscending | Action::SortDescending | Action::RandomSort | Action::SortBySimilarity => "Sort",
             Action::TogglePlayback
             | Action::SeekForwardSmall
             | Action::SeekForwardLarge
@@ -1033,8 +1039,8 @@ mod tests {
 
     #[test]
     fn test_all_count_matches_variants() {
-        // 57 S12 + 1 RandomSort (Q1) + 15 audio controls (A1/A2/A3) = 73.
-        assert_eq!(Action::ALL.len(), 73);
+        // 57 S12 + 1 RandomSort (Q1) + 1 SortBySimilarity + 15 audio controls (A1/A2/A3) = 74.
+        assert_eq!(Action::ALL.len(), 74);
     }
 
     #[test]
@@ -1223,7 +1229,7 @@ mod tests {
 
     #[test]
     fn test_action_all_count_final() {
-        assert_eq!(Action::ALL.len(), 73, "Sprint 13: 73 = 57 + RandomSort + 15 audio controls");
+        assert_eq!(Action::ALL.len(), 74, "Sprint 13: 74 = 57 + RandomSort + SortBySimilarity + 15 audio controls");
     }
 
     #[test]
