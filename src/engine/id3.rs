@@ -90,6 +90,47 @@ fn parse_tag(tag: &Tag) -> Id3Tags {
     }
 }
 
+/// Merge ID3v2 tag data into a [`super::UnifiedMetadata`], filling only
+/// fields that are currently empty.
+pub fn merge_id3_into_unified(meta: &mut super::UnifiedMetadata, id3: &Id3Tags) {
+    if meta.vendor.is_empty() && !id3.vendor.is_empty() {
+        meta.vendor.clone_from(&id3.vendor);
+    }
+    if meta.library.is_empty() && !id3.library.is_empty() {
+        meta.library.clone_from(&id3.library);
+    }
+    if meta.category.is_empty() && !id3.category.is_empty() {
+        meta.category.clone_from(&id3.category);
+    }
+    if meta.sound_id.is_empty() && !id3.sound_id.is_empty() {
+        meta.sound_id.clone_from(&id3.sound_id);
+    }
+    if meta.usage_id.is_empty() && !id3.usage_id.is_empty() {
+        meta.usage_id.clone_from(&id3.usage_id);
+    }
+    if meta.description.is_empty() && !id3.description.is_empty() {
+        meta.description.clone_from(&id3.description);
+    }
+    if meta.bpm.is_none() && id3.bpm.is_some() {
+        meta.bpm = id3.bpm;
+    }
+    if meta.key.is_empty() && !id3.key.is_empty() {
+        meta.key.clone_from(&id3.key);
+    }
+    if meta.date.is_empty() && !id3.date.is_empty() {
+        meta.date.clone_from(&id3.date);
+    }
+    if meta.genre_id.is_empty() && !id3.genre_id.is_empty() {
+        meta.genre_id.clone_from(&id3.genre_id);
+    }
+    if meta.subcategory.is_empty() && !id3.subcategory.is_empty() {
+        meta.subcategory.clone_from(&id3.subcategory);
+    }
+    if meta.track.is_empty() && !id3.track.is_empty() {
+        meta.track.clone_from(&id3.track);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,46 +368,5 @@ mod tests {
             prop_assert_eq!(&meta.genre_id, &id3.genre_id);
             prop_assert_eq!(&meta.track, &id3.track);
         }
-    }
-}
-
-/// Merge ID3v2 tag data into a [`super::UnifiedMetadata`], filling only
-/// fields that are currently empty.
-pub fn merge_id3_into_unified(meta: &mut super::UnifiedMetadata, id3: &Id3Tags) {
-    if meta.vendor.is_empty() && !id3.vendor.is_empty() {
-        meta.vendor.clone_from(&id3.vendor);
-    }
-    if meta.library.is_empty() && !id3.library.is_empty() {
-        meta.library.clone_from(&id3.library);
-    }
-    if meta.category.is_empty() && !id3.category.is_empty() {
-        meta.category.clone_from(&id3.category);
-    }
-    if meta.sound_id.is_empty() && !id3.sound_id.is_empty() {
-        meta.sound_id.clone_from(&id3.sound_id);
-    }
-    if meta.usage_id.is_empty() && !id3.usage_id.is_empty() {
-        meta.usage_id.clone_from(&id3.usage_id);
-    }
-    if meta.description.is_empty() && !id3.description.is_empty() {
-        meta.description.clone_from(&id3.description);
-    }
-    if meta.bpm.is_none() && id3.bpm.is_some() {
-        meta.bpm = id3.bpm;
-    }
-    if meta.key.is_empty() && !id3.key.is_empty() {
-        meta.key.clone_from(&id3.key);
-    }
-    if meta.date.is_empty() && !id3.date.is_empty() {
-        meta.date.clone_from(&id3.date);
-    }
-    if meta.genre_id.is_empty() && !id3.genre_id.is_empty() {
-        meta.genre_id.clone_from(&id3.genre_id);
-    }
-    if meta.subcategory.is_empty() && !id3.subcategory.is_empty() {
-        meta.subcategory.clone_from(&id3.subcategory);
-    }
-    if meta.track.is_empty() && !id3.track.is_empty() {
-        meta.track.clone_from(&id3.track);
     }
 }

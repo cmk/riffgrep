@@ -69,3 +69,10 @@ codegen-units = 1
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+[lints.clippy]
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"
+field_reassign_with_default = "allow"
+new_without_default = "allow"

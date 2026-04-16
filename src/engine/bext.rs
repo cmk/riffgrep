@@ -606,7 +606,7 @@ impl MarkerBank {
     }
 
     /// Serialize to 16 bytes.
-    pub fn to_bytes(&self) -> [u8; 16] {
+    pub fn to_bytes(self) -> [u8; 16] {
         let mut buf = [0u8; 16];
         buf[0..4].copy_from_slice(&self.m1.to_le_bytes());
         buf[4..8].copy_from_slice(&self.m2.to_le_bytes());
@@ -691,7 +691,7 @@ impl MarkerConfig {
     }
 
     /// Serialize to 32 bytes (bank_a ++ bank_b).
-    pub fn to_bytes(&self) -> [u8; MARKER_BLOCK_SIZE] {
+    pub fn to_bytes(self) -> [u8; MARKER_BLOCK_SIZE] {
         let mut buf = [0u8; MARKER_BLOCK_SIZE];
         buf[0..16].copy_from_slice(&self.bank_a.to_bytes());
         buf[16..32].copy_from_slice(&self.bank_b.to_bytes());
@@ -1982,7 +1982,7 @@ mod tests {
                 let bank = &config.bank_a;
                 let segs = crate::ui::segment_bounds(bank, total);
                 prop_assert_eq!(segs.len(), 4);
-                for (i, seg) in segs.iter().enumerate() {
+                for seg in segs.iter() {
                     prop_assert!(seg.start < seg.end);
                     prop_assert!(!seg.reverse);
                     prop_assert_eq!(seg.rep, 1);

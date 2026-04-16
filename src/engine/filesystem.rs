@@ -108,7 +108,6 @@ impl FilesystemFinder {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use super::*;
 

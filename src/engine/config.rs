@@ -419,10 +419,7 @@ mod tests {
             Err(_) => return Config::default(),
         };
 
-        match toml::from_str::<Config>(&contents) {
-            Ok(config) => config,
-            Err(_) => Config::default(),
-        }
+        toml::from_str::<Config>(&contents).unwrap_or_default()
     }
 
     #[test]

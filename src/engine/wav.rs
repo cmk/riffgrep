@@ -779,8 +779,8 @@ impl PcmData {
 pub fn load_pcm_data(path: &std::path::Path) -> Result<PcmData, RiffError> {
     let registry = super::source::AudioRegistry::new();
     match registry.for_path(path) {
-        Some(src) => return src.load_pcm(path),
-        None => return Err(RiffError::NotRiffWave),
+        Some(src) => src.load_pcm(path),
+        None => Err(RiffError::NotRiffWave),
     }
 }
 
@@ -1189,7 +1189,7 @@ mod tests {
         let v_max: i32 = 0xFF | (0xFF << 8) | (0x7Fi32 << 16); // = 8388607
         assert_eq!((v_max >> 8) as i16, 32767i16);
         // 0x800001 (min) in sign-extended form:
-        let v_min: i32 = 0x01 | (0x00 << 8) | ((0x80u8 as i8 as i32) << 16); // = -8388607
+        let v_min: i32 = 0x01 | ((0x80u8 as i8 as i32) << 16); // = -8388607
         assert!(((v_min >> 8) as i16) < 0, "min 24-bit should be negative");
     }
 
@@ -1414,14 +1414,14 @@ mod tests {
         chunks.extend_from_slice(b"fmt ");
         chunks.extend_from_slice(&(fmt_data.len() as u32).to_le_bytes());
         chunks.extend_from_slice(fmt_data);
-        if fmt_data.len() % 2 != 0 {
+        if !fmt_data.len().is_multiple_of(2) {
             chunks.push(0);
         }
         // data chunk
         chunks.extend_from_slice(b"data");
         chunks.extend_from_slice(&(audio_data.len() as u32).to_le_bytes());
         chunks.extend_from_slice(audio_data);
-        if audio_data.len() % 2 != 0 {
+        if !audio_data.len().is_multiple_of(2) {
             chunks.push(0);
         }
 
@@ -1605,10 +1605,7 @@ mod tests {
     #[test]
     fn test_stream_24bit_mono() {
         // 24-bit max positive: 0x7FFFFF = 8388607
-        let mut audio = Vec::new();
-        audio.push(0xFF);
-        audio.push(0xFF);
-        audio.push(0x7F);
+        let audio = vec![0xFF, 0xFF, 0x7F];
 
         let wav = make_wav(&make_fmt_pcm24_mono(), &audio);
         let mut cursor = Cursor::new(wav);
@@ -1767,7 +1764,7 @@ mod tests {
 
     #[test]
     fn test_compute_peaks_silent_file() {
-        let audio = vec![0u8; 8820]; // 10 frames per bin × 180 bins × 4 bytes/frame (stereo 16)
+        let _audio = vec![0u8; 8820]; // 10 frames per bin × 180 bins × 4 bytes/frame (stereo 16)
         // Actually: need enough samples. 180 bins, each with >0 samples.
         // 180 mono samples → one per bin (stereo so 360 samples = 720 bytes)
         let audio = vec![0u8; 720];
@@ -1825,7 +1822,7 @@ mod tests {
             compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
         assert_eq!(peaks.len(), PEAK_COUNT);
         assert!(
-            peaks.iter().any(|&v| v == 255),
+            peaks.contains(&255),
             "loudest bin should be 255, max was {}",
             peaks.iter().max().unwrap_or(&0)
         );
@@ -2150,7 +2147,7 @@ mod tests {
         let right = &peaks[PEAK_COUNT..];
 
         // Left should hit 255 (normalized max).
-        assert!(left.iter().any(|&v| v == 255), "left should peak at 255");
+        assert!(left.contains(&255), "left should peak at 255");
         // Right should be < 255 (proportionally scaled).
         let right_max = *right.iter().max().unwrap();
         assert!(

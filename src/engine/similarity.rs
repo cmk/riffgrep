@@ -8,12 +8,14 @@
 use std::path::PathBuf;
 
 /// Embedding dimensionality (LAION-CLAP output size).
+#[allow(dead_code)]
 pub const EMBEDDING_DIM: usize = 512;
 
 /// A single similarity search result.
 #[derive(Debug, Clone)]
 pub struct SimilarityResult {
     /// Database row ID.
+    #[allow(dead_code)]
     pub id: i64,
     /// File path.
     pub path: PathBuf,
@@ -403,7 +405,7 @@ mod tests {
                 max_dist in 0.01f32..100.0,
             ) {
                 let s = similarity_score(dist, max_dist);
-                prop_assert!(s >= 0.0 && s <= 1.0, "sim={s}");
+                prop_assert!((0.0..=1.0).contains(&s), "sim={s}");
             }
 
             /// Closer distance → higher sim (monotonic).

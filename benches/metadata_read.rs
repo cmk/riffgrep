@@ -1,4 +1,5 @@
 //! Criterion benchmarks for metadata reading.
+#![allow(missing_docs)]
 
 use std::io::Cursor;
 use std::path::Path;
@@ -89,10 +90,10 @@ fn bench_filesystem_vs_sqlite(c: &mut Criterion) {
     for entry in std::fs::read_dir(&test_dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "wav") {
-            if let Ok(meta) = riffgrep::engine::read_metadata(&path) {
-                db.insert_batch(&[(meta, 0, None)]).unwrap();
-            }
+        if path.extension().is_some_and(|e| e == "wav")
+            && let Ok(meta) = riffgrep::engine::read_metadata(&path)
+        {
+            db.insert_batch(&[(meta, 0, None)]).unwrap();
         }
     }
 

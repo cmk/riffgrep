@@ -259,7 +259,7 @@ fn render_segment_labels(
         };
 
         // Only render if span is wide enough.
-        if span as usize >= label.chars().count() + 1 {
+        if span as usize > label.chars().count() {
             let mid = col_start + (span - label.chars().count() as u16) / 2;
             buf.set_string(x_start + mid, y_start, &label, style);
         }
@@ -295,12 +295,12 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
     let width = area.width as usize;
 
     // Transient status message (auto-clears after 2s).
-    if let (Some(msg), Some(time)) = (&app.status_message, &app.status_message_time) {
-        if time.elapsed().as_secs() < 2 {
-            let truncated: String = msg.chars().take(width).collect();
-            buf.set_string(area.x, area.y, &truncated, theme.playback_accent);
-            return;
-        }
+    if let (Some(msg), Some(time)) = (&app.status_message, &app.status_message_time)
+        && time.elapsed().as_secs() < 2
+    {
+        let truncated: String = msg.chars().take(width).collect();
+        buf.set_string(area.x, area.y, &truncated, theme.playback_accent);
+        return;
     }
 
     // Left side: playback state with progress bar.
@@ -534,7 +534,7 @@ pub fn render_metadata_table(app: &App, area: Rect, buf: &mut Buffer, columns: &
         // Fill rest of line for selected row.
         if is_selected && cx < area.x + area.width {
             let remaining = (area.x + area.width - cx) as usize;
-            buf.set_string(cx, y, &" ".repeat(remaining), style);
+            buf.set_string(cx, y, " ".repeat(remaining), style);
         }
     }
 }
@@ -715,44 +715,43 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     }
 
     // Marker lines and segment labels overlay (gated by markers_visible).
-    if app.markers_visible {
-        if let Some(markers) = &preview.markers {
-            if !markers.is_empty() {
-                let total_samples = preview
-                    .audio_info
-                    .as_ref()
-                    .map_or(0u32, |ai| ai.total_samples);
-                if total_samples > 0 && effective_total_samples > 0 {
-                    render_marker_lines(
-                        markers,
-                        viewport_start_samples,
-                        effective_total_samples,
-                        area.x,
-                        area.y,
-                        wave_width as u16,
-                        wave_rows as u16,
-                        buf,
-                        theme,
-                    );
+    if app.markers_visible
+        && let Some(markers) = &preview.markers
+        && !markers.is_empty()
+    {
+        let total_samples = preview
+            .audio_info
+            .as_ref()
+            .map_or(0u32, |ai| ai.total_samples);
+        if total_samples > 0 && effective_total_samples > 0 {
+            render_marker_lines(
+                markers,
+                viewport_start_samples,
+                effective_total_samples,
+                area.x,
+                area.y,
+                wave_width as u16,
+                wave_rows as u16,
+                buf,
+                theme,
+            );
 
-                    // Segment labels for the active bank.
-                    let (bank, color) = match app.active_bank {
-                        super::Bank::A => (&markers.bank_a, theme.marker_a),
-                        super::Bank::B => (&markers.bank_b, theme.marker_b),
-                    };
-                    render_segment_labels(
-                        bank,
-                        total_samples,
-                        viewport_start_samples,
-                        effective_total_samples,
-                        area.x,
-                        area.y,
-                        wave_width as u16,
-                        buf,
-                        Style::default().fg(color),
-                    );
-                }
-            }
+            // Segment labels for the active bank.
+            let (bank, color) = match app.active_bank {
+                super::Bank::A => (&markers.bank_a, theme.marker_a),
+                super::Bank::B => (&markers.bank_b, theme.marker_b),
+            };
+            render_segment_labels(
+                bank,
+                total_samples,
+                viewport_start_samples,
+                effective_total_samples,
+                area.x,
+                area.y,
+                wave_width as u16,
+                buf,
+                Style::default().fg(color),
+            );
         }
     } // markers_visible
 
@@ -1030,8 +1029,7 @@ pub fn render_help_overlay(app: &App, area: Rect, buf: &mut Buffer) {
         })
         .max()
         .unwrap_or(12)
-        .max(12)
-        .min(32); // safety cap against extreme overflow
+        .clamp(12, 32);
 
     let mut lines: Vec<Line<'_>> = Vec::new();
 
@@ -1324,7 +1322,7 @@ mod tests {
     fn test_braille_stereo_asymmetric() {
         // Stereo: L=max, R=0 → top half should have dots, bottom should be blank.
         let mut peaks = vec![255u8; 180]; // Left = max
-        peaks.extend_from_slice(&vec![0u8; 180]); // Right = silent
+        peaks.extend_from_slice(&[0u8; 180]); // Right = silent
         assert_eq!(peaks.len(), 360);
 
         let rows = render_braille_waveform_height(&peaks, 90, 16);
@@ -1790,7 +1788,7 @@ mod tests {
         let out = buffer_to_string(terminal.backend().buffer());
         // Should contain Braille characters (waveform rendered).
         assert!(
-            out.contains('\u{2800}') || out.chars().any(|c| c >= '\u{2800}' && c <= '\u{28FF}'),
+            out.contains('\u{2800}') || out.chars().any(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
             "waveform panel should contain Braille chars: {out}"
         );
     }
@@ -2151,15 +2149,7 @@ mod tests {
                     bank_b: crate::engine::bext::MarkerBank::empty(),
                 };
                 render_marker_lines(
-                    &markers,
-                    0,
-                    48000 as u64,
-                    area.x,
-                    area.y,
-                    area.width,
-                    8,
-                    buf,
-                    &theme,
+                    &markers, 0, 48000_u64, area.x, area.y, area.width, 8, buf, &theme,
                 );
 
                 // m1=0 should be at column 0.
@@ -2198,15 +2188,7 @@ mod tests {
                     bank_b: crate::engine::bext::MarkerBank::empty(),
                 };
                 render_marker_lines(
-                    &markers,
-                    0,
-                    48000 as u64,
-                    area.x,
-                    area.y,
-                    area.width,
-                    8,
-                    buf,
-                    &theme,
+                    &markers, 0, 48000_u64, area.x, area.y, area.width, 8, buf, &theme,
                 );
 
                 // m1=24000 → col 10 (midpoint of 20-wide).
@@ -2249,15 +2231,7 @@ mod tests {
                     },
                 };
                 render_marker_lines(
-                    &markers,
-                    0,
-                    48000 as u64,
-                    area.x,
-                    area.y,
-                    area.width,
-                    8,
-                    buf,
-                    &theme,
+                    &markers, 0, 48000_u64, area.x, area.y, area.width, 8, buf, &theme,
                 );
 
                 // m1=24000 → col 10.
@@ -2297,15 +2271,7 @@ mod tests {
                     .map(|(x, y)| buf.cell((x, y)).unwrap().bg)
                     .collect();
                 render_marker_lines(
-                    &markers,
-                    0,
-                    48000 as u64,
-                    area.x,
-                    area.y,
-                    area.width,
-                    8,
-                    buf,
-                    &theme,
+                    &markers, 0, 48000_u64, area.x, area.y, area.width, 8, buf, &theme,
                 );
                 // Snapshot buffer state after — should be unchanged.
                 let after: Vec<_> = (0..20u16)
@@ -2329,7 +2295,7 @@ mod tests {
                 let markers = crate::engine::bext::MarkerConfig::preset_shot();
                 // Should not panic with total_samples=0.
                 render_marker_lines(
-                    &markers, 0, 0 as u64, area.x, area.y, area.width, 8, buf, &theme,
+                    &markers, 0, 0_u64, area.x, area.y, area.width, 8, buf, &theme,
                 );
             })
             .unwrap();
@@ -2351,17 +2317,7 @@ mod tests {
                 bank.m2 = 24000;
                 bank.m3 = 36000;
                 bank.reps = [2, 3, 1, 1];
-                render_segment_labels(
-                    &bank,
-                    48000,
-                    0,
-                    48000 as u64,
-                    area.x,
-                    area.y,
-                    80,
-                    buf,
-                    style,
-                );
+                render_segment_labels(&bank, 48000, 0, 48000_u64, area.x, area.y, 80, buf, style);
 
                 // Check that content was rendered in the top row.
                 let top_row: String = (0..80)
@@ -2403,17 +2359,7 @@ mod tests {
                 let mut bank = crate::engine::bext::MarkerBank::empty();
                 bank.m1 = 24000;
                 bank.reps = [0, 1, 0, 0]; // Segment 1 is skipped (rep=0).
-                render_segment_labels(
-                    &bank,
-                    48000,
-                    0,
-                    48000 as u64,
-                    area.x,
-                    area.y,
-                    80,
-                    buf,
-                    style,
-                );
+                render_segment_labels(&bank, 48000, 0, 48000_u64, area.x, area.y, 80, buf, style);
 
                 let top_row: String = (0..80)
                     .map(|x| {
@@ -2441,17 +2387,7 @@ mod tests {
                 let mut bank = crate::engine::bext::MarkerBank::empty();
                 bank.m1 = 24000;
                 bank.reps = [15, 1, 0, 0]; // Segment 1 is infinite (rep=15).
-                render_segment_labels(
-                    &bank,
-                    48000,
-                    0,
-                    48000 as u64,
-                    area.x,
-                    area.y,
-                    80,
-                    buf,
-                    style,
-                );
+                render_segment_labels(&bank, 48000, 0, 48000_u64, area.x, area.y, 80, buf, style);
 
                 let top_row: String = (0..80)
                     .map(|x| {
@@ -2485,17 +2421,7 @@ mod tests {
                 bank.m3 = 36000;
                 bank.reps = [1, 1, 1, 1];
                 // Should not panic, labels just skipped.
-                render_segment_labels(
-                    &bank,
-                    48000,
-                    0,
-                    48000 as u64,
-                    area.x,
-                    area.y,
-                    10,
-                    buf,
-                    style,
-                );
+                render_segment_labels(&bank, 48000, 0, 48000_u64, area.x, area.y, 10, buf, style);
             })
             .unwrap();
     }
@@ -2510,7 +2436,7 @@ mod tests {
                 let style = Style::default();
                 let bank = crate::engine::bext::MarkerBank::empty();
                 // Should not panic.
-                render_segment_labels(&bank, 0, 0, 0 as u64, 0, 0, 40, buf, style);
+                render_segment_labels(&bank, 0, 0, 0_u64, 0, 0, 40, buf, style);
             })
             .unwrap();
     }

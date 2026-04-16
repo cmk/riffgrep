@@ -449,24 +449,24 @@ impl SearchQuery {
         }
 
         // Free-text: OR across all text fields (case-insensitive substring).
-        if let Some(text) = &self.freetext {
-            if !text.is_empty() {
-                let lower = text.to_ascii_lowercase();
-                let any_match = meta.vendor.to_ascii_lowercase().contains(&lower)
-                    || meta.library.to_ascii_lowercase().contains(&lower)
-                    || meta.category.to_ascii_lowercase().contains(&lower)
-                    || meta.sound_id.to_ascii_lowercase().contains(&lower)
-                    || meta.description.to_ascii_lowercase().contains(&lower)
-                    || meta.comment.to_ascii_lowercase().contains(&lower)
-                    || meta.key.to_ascii_lowercase().contains(&lower)
-                    || meta
-                        .path
-                        .to_string_lossy()
-                        .to_ascii_lowercase()
-                        .contains(&lower);
-                if !any_match {
-                    return false;
-                }
+        if let Some(text) = &self.freetext
+            && !text.is_empty()
+        {
+            let lower = text.to_ascii_lowercase();
+            let any_match = meta.vendor.to_ascii_lowercase().contains(&lower)
+                || meta.library.to_ascii_lowercase().contains(&lower)
+                || meta.category.to_ascii_lowercase().contains(&lower)
+                || meta.sound_id.to_ascii_lowercase().contains(&lower)
+                || meta.description.to_ascii_lowercase().contains(&lower)
+                || meta.comment.to_ascii_lowercase().contains(&lower)
+                || meta.key.to_ascii_lowercase().contains(&lower)
+                || meta
+                    .path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains(&lower);
+            if !any_match {
+                return false;
             }
         }
 
@@ -847,10 +847,10 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
     let mut changed: usize = 0;
 
     for mut meta in rx {
-        if let Some(max) = opts.limit {
-            if scanned >= max {
-                break;
-            }
+        if let Some(max) = opts.limit
+            && scanned >= max
+        {
+            break;
         }
 
         scanned += 1;
@@ -1010,10 +1010,10 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
 
             // Check mtime for incremental indexing.
             let mtime = sqlite::file_mtime(&path).unwrap_or(0);
-            if let Some(&stored_mtime) = existing_mtimes_ref.get(&path) {
-                if stored_mtime == mtime {
-                    return ignore::WalkState::Continue; // unchanged
-                }
+            if let Some(&stored_mtime) = existing_mtimes_ref.get(&path)
+                && stored_mtime == mtime
+            {
+                return ignore::WalkState::Continue; // unchanged
             }
 
             match read_metadata_with_peaks_format(&path) {

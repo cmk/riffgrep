@@ -254,7 +254,7 @@ mod tests {
             chunks.extend_from_slice(b"LIST");
             chunks.extend_from_slice(&(list_data.len() as u32).to_le_bytes());
             chunks.extend_from_slice(list_data);
-            if list_data.len() % 2 != 0 {
+            if !list_data.len().is_multiple_of(2) {
                 chunks.push(0);
             }
             let mut buf = Vec::with_capacity(12 + chunks.len());
