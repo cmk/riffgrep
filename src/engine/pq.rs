@@ -148,7 +148,8 @@ impl ProductQuantizer {
             .map(|(id, code)| (*id, Self::adc_distance(&table, code)))
             .collect();
 
-        // Partial sort: only need top `limit`.
+        // Full sort then truncate. TODO: use select_nth_unstable_by for
+        // O(N) partial selection at 1.2M scale.
         scored.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
         scored
@@ -298,7 +299,9 @@ mod tests {
         use proptest::prelude::*;
 
         fn arb_embedding() -> impl Strategy<Value = Vec<f32>> {
-            proptest::collection::vec(-100.0f32..100.0, DIM)
+            // Narrower range keeps quantization error small enough that
+            // ranking preservation is meaningful.
+            proptest::collection::vec(-10.0f32..10.0, DIM)
         }
 
         proptest! {

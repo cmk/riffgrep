@@ -84,8 +84,11 @@ rfg_timbral_stats(folder)
 - 128 sub-spaces × 256 centroids, trained via k-means
 - Each 512-dim f32 vector compressed to 128-byte PQ code
 - Search via Asymmetric Distance Computation (lookup table)
-- Memory: ~160MB for 1.2M codes (fits in L3 cache)
-- Latency: ~15-30ms at 1.2M (rayon parallel scan)
+- **Current:** codes are built in memory from full-precision vectors on
+  each query (peak RAM = full vectors + codes). This is a Phase 2a
+  limitation — Phase 2b persists codes in a `pq_code BLOB` column so
+  only codes are loaded at search time (~160MB for 1.2M files).
+- Latency: ~15-30ms at 1.2M (rayon parallel scan, once codes are loaded)
 
 ```rust
 // ADC inner loop — 128 table lookups per sample
