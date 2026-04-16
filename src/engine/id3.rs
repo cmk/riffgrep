@@ -57,9 +57,8 @@ pub fn read_id3_tags(path: &Path) -> anyhow::Result<Id3Tags> {
 }
 
 fn parse_tag(tag: &Tag) -> Id3Tags {
-    let get = |key: &ItemKey| -> String {
-        tag.get_string(key).unwrap_or_default().trim().to_string()
-    };
+    let get =
+        |key: &ItemKey| -> String { tag.get_string(key).unwrap_or_default().trim().to_string() };
 
     let bpm = tag
         .get_string(&ItemKey::Bpm)
@@ -123,9 +122,7 @@ mod tests {
         }
         let tags = read_id3_tags(Path::new("test_files/id3-only.wav")).unwrap();
         assert!(
-            !tags.vendor.is_empty()
-                || !tags.category.is_empty()
-                || !tags.sound_id.is_empty(),
+            !tags.vendor.is_empty() || !tags.category.is_empty() || !tags.sound_id.is_empty(),
             "id3-only.wav should have at least one ID3 field: {tags:?}"
         );
     }
@@ -233,7 +230,11 @@ mod tests {
         ];
         for path in &id3_files {
             let result = read_id3_tags(Path::new(path));
-            assert!(result.is_ok(), "failed to read ID3 from {path}: {}", result.unwrap_err());
+            assert!(
+                result.is_ok(),
+                "failed to read ID3 from {path}: {}",
+                result.unwrap_err()
+            );
         }
     }
 
@@ -255,8 +256,34 @@ mod tests {
             any::<String>(),
         )
             .prop_map(
-                |(vendor, library, category, sound_id, usage_id, description, bpm, key, date, subcategory, genre_id, track)| {
-                    Id3Tags { vendor, library, category, sound_id, usage_id, description, bpm, key, date, subcategory, genre_id, track }
+                |(
+                    vendor,
+                    library,
+                    category,
+                    sound_id,
+                    usage_id,
+                    description,
+                    bpm,
+                    key,
+                    date,
+                    subcategory,
+                    genre_id,
+                    track,
+                )| {
+                    Id3Tags {
+                        vendor,
+                        library,
+                        category,
+                        sound_id,
+                        usage_id,
+                        description,
+                        bpm,
+                        key,
+                        date,
+                        subcategory,
+                        genre_id,
+                        track,
+                    }
                 },
             )
     }

@@ -126,13 +126,23 @@ pub fn read_metadata_riff(path: &Path) -> Result<UnifiedMetadata, RiffError> {
 /// return minimal metadata with empty peaks and no markers.
 pub fn read_metadata_with_peaks_format(
     path: &Path,
-) -> Result<(UnifiedMetadata, Vec<u8>, bext::PeaksFormat, Option<bext::MarkerConfig>), RiffError> {
+) -> Result<
+    (
+        UnifiedMetadata,
+        Vec<u8>,
+        bext::PeaksFormat,
+        Option<bext::MarkerConfig>,
+    ),
+    RiffError,
+> {
     let registry = source::AudioRegistry::new();
-    let is_riff = registry.for_path(path)
+    let is_riff = registry
+        .for_path(path)
         .is_some_and(|s| s.extensions().contains(&"wav"));
 
     if !is_riff {
-        let meta = registry.for_path(path)
+        let meta = registry
+            .for_path(path)
             .map(|s| s.read_metadata(path))
             .unwrap_or_else(|| Err(RiffError::NotRiffWave))?;
         return Ok((meta, Vec::new(), bext::PeaksFormat::Empty, None));
@@ -148,7 +158,12 @@ pub fn read_metadata_with_peaks_format(
     let markers = bext.markers;
     let info = riff_info::parse_riff_info(&mut reader, &map)?;
 
-    Ok((merge_metadata(path, bext, info), peaks, peaks_format, markers))
+    Ok((
+        merge_metadata(path, bext, info),
+        peaks,
+        peaks_format,
+        markers,
+    ))
 }
 
 /// Merge BEXT and INFO fields. BEXT takes priority; INFO fills empty fields.
@@ -444,7 +459,11 @@ impl SearchQuery {
                     || meta.description.to_ascii_lowercase().contains(&lower)
                     || meta.comment.to_ascii_lowercase().contains(&lower)
                     || meta.key.to_ascii_lowercase().contains(&lower)
-                    || meta.path.to_string_lossy().to_ascii_lowercase().contains(&lower);
+                    || meta
+                        .path
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .contains(&lower);
                 if !any_match {
                     return false;
                 }
@@ -456,9 +475,9 @@ impl SearchQuery {
             self.library.as_ref().map(|p| p.matches(&meta.library)),
             self.category.as_ref().map(|p| p.matches(&meta.category)),
             self.sound_id.as_ref().map(|p| p.matches(&meta.sound_id)),
-            self.description.as_ref().map(|p| {
-                p.matches(&meta.description) || p.matches(&meta.comment)
-            }),
+            self.description
+                .as_ref()
+                .map(|p| p.matches(&meta.description) || p.matches(&meta.comment)),
             self.bpm.as_ref().map(|r| r.matches(meta.bpm)),
             self.key.as_ref().map(|p| p.matches(&meta.key)),
         ];
@@ -485,7 +504,9 @@ impl SearchQuery {
                     value == *fv
                 } else {
                     // Case-insensitive substring.
-                    value.to_ascii_lowercase().contains(&fv.to_ascii_lowercase())
+                    value
+                        .to_ascii_lowercase()
+                        .contains(&fv.to_ascii_lowercase())
                 }
             });
             if !filter_match {
@@ -512,10 +533,7 @@ pub fn meta_field_value(meta: &UnifiedMetadata, field: &str) -> String {
         "description" => meta.description.clone(),
         "comment" => meta.comment.clone(),
         "key" => meta.key.clone(),
-        "bpm" => meta
-            .bpm
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
+        "bpm" => meta.bpm.map(|v| v.to_string()).unwrap_or_default(),
         "rating" => meta.rating.clone(),
         "subcategory" => meta.subcategory.clone(),
         "genre_id" => meta.genre_id.clone(),
@@ -722,7 +740,9 @@ fn run_similar(opts: &cli::Opts) -> anyhow::Result<()> {
     let db = sqlite::Database::open(&db_path)?;
 
     // Canonicalize so the path matches how it was stored during indexing.
-    let query_path = query_path.canonicalize().unwrap_or_else(|_| query_path.to_path_buf());
+    let query_path = query_path
+        .canonicalize()
+        .unwrap_or_else(|_| query_path.to_path_buf());
     let query_str = query_path.to_string_lossy();
     let query_embedding = db
         .load_embedding(&query_str)?
@@ -746,7 +766,13 @@ fn run_similar(opts: &cli::Opts) -> anyhow::Result<()> {
         let result = match mode {
             cli::OutputMode::Path => writeln!(out, "{}", r.path.display()),
             cli::OutputMode::Verbose => {
-                writeln!(out, "{}\tsim={:.4}\tdist={:.4}", r.path.display(), r.sim, r.dist)
+                writeln!(
+                    out,
+                    "{}\tsim={:.4}\tdist={:.4}",
+                    r.path.display(),
+                    r.sim,
+                    r.dist
+                )
             }
             cli::OutputMode::Json => {
                 writeln!(
@@ -785,11 +811,8 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
     use std::io::{BufWriter, Write};
     use std::thread;
 
-    let script = workflow::load_workflow_script(
-        opts.eval.as_deref(),
-        opts.workflow.as_deref(),
-    )?
-    .unwrap_or_default();
+    let script = workflow::load_workflow_script(opts.eval.as_deref(), opts.workflow.as_deref())?
+        .unwrap_or_default();
 
     let query = build_query(opts)?;
     let (tx, rx) = crossbeam_channel::bounded::<UnifiedMetadata>(2048);
@@ -854,13 +877,14 @@ fn run_workflow(opts: &cli::Opts) -> anyhow::Result<()> {
             id3::merge_id3_into_unified(&mut meta, &id3);
         }
 
-        let new_meta = match workflow::run_lua_script(&script, meta.clone(), opts.force, opts.commit) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("riffgrep: lua error on {}: {e}", path.display());
-                continue;
-            }
-        };
+        let new_meta =
+            match workflow::run_lua_script(&script, meta.clone(), opts.force, opts.commit) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("riffgrep: lua error on {}: {e}", path.display());
+                    continue;
+                }
+            };
 
         // Diff / write against the BEXT baseline (pre-ID3), not the merged view.
         let diff = workflow::compute_meta_diff(&meta_bext, &new_meta);
@@ -999,9 +1023,7 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
                     // with bext_version >= 1). All other cases (Empty, BwfReserved)
                     // must compute peaks from the actual audio data.
                     let (peaks, source) =
-                        if !regenerate_peaks
-                            && peaks_format == bext::PeaksFormat::RiffgrepU8
-                        {
+                        if !regenerate_peaks && peaks_format == bext::PeaksFormat::RiffgrepU8 {
                             (bext_peaks, peaks_format.source_str().to_string())
                         } else {
                             match wav::compute_peaks_stereo_from_path(&path) {
@@ -1027,7 +1049,10 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
                         Some(wav::AudioInfo::from_fmt(&fmt, map.data_size))
                     })();
 
-                    if tx.send((meta, mtime, compressed_peaks, source, audio_info, markers)).is_err() {
+                    if tx
+                        .send((meta, mtime, compressed_peaks, source, audio_info, markers))
+                        .is_err()
+                    {
                         return ignore::WalkState::Quit;
                     }
                 }
@@ -1044,7 +1069,9 @@ fn run_index(opts: &cli::Opts) -> anyhow::Result<()> {
     drop(tx);
     drop(path_tx);
 
-    let indexed = writer.join().map_err(|_| anyhow::anyhow!("writer thread panicked"))??;
+    let indexed = writer
+        .join()
+        .map_err(|_| anyhow::anyhow!("writer thread panicked"))??;
 
     // Collect discovered paths for deletion detection.
     let discovered: HashSet<PathBuf> = path_rx.iter().collect();
@@ -1087,9 +1114,7 @@ fn run_db_stats(opts: &cli::Opts) -> anyhow::Result<()> {
     let stats = db.stats()?;
     let (stale, sampled) = db.check_staleness(100)?;
 
-    let file_size = std::fs::metadata(&db_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
     let stdout = std::io::stdout().lock();
     let mut out = std::io::BufWriter::new(stdout);
@@ -1615,7 +1640,10 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(query.matches(&meta), "text filter should be case-insensitive");
+        assert!(
+            query.matches(&meta),
+            "text filter should be case-insensitive"
+        );
     }
 
     #[test]

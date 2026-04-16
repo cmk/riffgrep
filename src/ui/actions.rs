@@ -516,7 +516,10 @@ impl Action {
             | Action::PageUp
             | Action::MoveColumnLeft
             | Action::MoveColumnRight => "Navigation",
-            Action::SortAscending | Action::SortDescending | Action::RandomSort | Action::SortBySimilarity => "Sort",
+            Action::SortAscending
+            | Action::SortDescending
+            | Action::RandomSort
+            | Action::SortBySimilarity => "Sort",
             Action::TogglePlayback
             | Action::SeekForwardSmall
             | Action::SeekForwardLarge
@@ -695,7 +698,10 @@ pub fn parse_key(s: &str) -> Option<KeyEvent> {
                 "Down" => KeyCode::Down,
                 _ => return None,
             };
-            return Some(KeyEvent::new(inner, KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+            return Some(KeyEvent::new(
+                inner,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ));
         }
     }
 
@@ -856,11 +862,17 @@ impl Keymap {
         bindings.insert((KeyCode::Char('k'), ctrl), Action::IncrementRep);
         // DecrementRep: Ctrl-J omitted (terminals send it as Enter/0x0A). Use Opt-j instead
         // (requires terminal Option=Meta; pairs naturally with Ctrl-K for increment).
-        bindings.insert((KeyCode::Char('j'), KeyModifiers::ALT), Action::DecrementRep);
+        bindings.insert(
+            (KeyCode::Char('j'), KeyModifiers::ALT),
+            Action::DecrementRep,
+        );
         // SelectNextMarker → Ctrl-L
         bindings.insert((KeyCode::Char('l'), ctrl), Action::SelectNextMarker);
         // SelectPrevMarker → Opt-H  (Ctrl-H = Backspace in terminals; Opt requires Option=Meta)
-        bindings.insert((KeyCode::Char('h'), KeyModifiers::ALT), Action::SelectPrevMarker);
+        bindings.insert(
+            (KeyCode::Char('h'), KeyModifiers::ALT),
+            Action::SelectPrevMarker,
+        );
         // ToggleInfiniteLoop → Ctrl-o
         bindings.insert((KeyCode::Char('o'), ctrl), Action::ToggleInfiniteLoop);
         bindings.insert((KeyCode::Char('p'), ctrl), Action::TogglePreviewLoop);
@@ -873,8 +885,14 @@ impl Keymap {
         // Note: Cmd-Ctrl-* won't work in any standard macOS terminal (SUPER not forwarded).
         bindings.insert((KeyCode::Right, ctrl), Action::NudgeMarkerForwardSmall);
         bindings.insert((KeyCode::Left, ctrl), Action::NudgeMarkerBackwardSmall);
-        bindings.insert((KeyCode::Right, ctrl_shift), Action::NudgeMarkerForwardLarge);
-        bindings.insert((KeyCode::Left, ctrl_shift), Action::NudgeMarkerBackwardLarge);
+        bindings.insert(
+            (KeyCode::Right, ctrl_shift),
+            Action::NudgeMarkerForwardLarge,
+        );
+        bindings.insert(
+            (KeyCode::Left, ctrl_shift),
+            Action::NudgeMarkerBackwardLarge,
+        );
         bindings.insert((KeyCode::Char(']'), ctrl), Action::SnapZeroCrossingForward);
         bindings.insert((KeyCode::Char('['), ctrl), Action::SnapZeroCrossingBackward);
         bindings.insert((KeyCode::Char('r'), ctrl), Action::MarkerReset);
@@ -884,7 +902,10 @@ impl Keymap {
         // Note: Ctrl-m = 0x0D (carriage return) — terminals convert it to Enter,
         // so Ctrl-Alt-m would arrive as Alt+Enter and never match.
         bindings.insert(
-            (KeyCode::Char('d'), KeyModifiers::CONTROL | KeyModifiers::ALT),
+            (
+                KeyCode::Char('d'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
             Action::ToggleMarkerDisplay,
         );
 
@@ -1003,7 +1024,17 @@ impl Keymap {
         }
 
         // Return in a stable category order.
-        let order = ["Navigation", "Sort", "Playback", "Marks", "Markers", "Waveform", "Mode", "Selection", "App"];
+        let order = [
+            "Navigation",
+            "Sort",
+            "Playback",
+            "Marks",
+            "Markers",
+            "Waveform",
+            "Mode",
+            "Selection",
+            "App",
+        ];
         let mut result = Vec::new();
         for &cat in &order {
             if let Some(entries) = groups.remove(cat) {
@@ -1142,7 +1173,11 @@ mod tests {
         overrides.insert("j".to_string(), "move_up".to_string());
         let km = Keymap::with_overrides(&overrides);
         let j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(km.resolve(j), Some(Action::MoveUp), "j should be overridden to MoveUp");
+        assert_eq!(
+            km.resolve(j),
+            Some(Action::MoveUp),
+            "j should be overridden to MoveUp"
+        );
     }
 
     #[test]
@@ -1229,7 +1264,11 @@ mod tests {
 
     #[test]
     fn test_action_all_count_final() {
-        assert_eq!(Action::ALL.len(), 74, "Sprint 13: 74 = 57 + RandomSort + SortBySimilarity + 15 audio controls");
+        assert_eq!(
+            Action::ALL.len(),
+            74,
+            "Sprint 13: 74 = 57 + RandomSort + SortBySimilarity + 15 audio controls"
+        );
     }
 
     #[test]
@@ -1288,7 +1327,11 @@ mod tests {
     fn test_zoom_actions_roundtrip() {
         for action in [Action::ZoomIn, Action::ZoomOut, Action::ZoomReset] {
             let name = action.name();
-            assert_eq!(Action::from_name(name), Some(action), "round-trip failed for {name}");
+            assert_eq!(
+                Action::from_name(name),
+                Some(action),
+                "round-trip failed for {name}"
+            );
         }
     }
 
@@ -1326,7 +1369,11 @@ mod tests {
     fn test_old_tab_binding_unbound() {
         let km = Keymap::default_keymap();
         let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(km.resolve(tab), None, "TAB should no longer fire SelectNextMarker");
+        assert_eq!(
+            km.resolve(tab),
+            None,
+            "TAB should no longer fire SelectNextMarker"
+        );
     }
 
     #[test]
@@ -1379,11 +1426,17 @@ mod tests {
         // Ctrl-m = 0x0D (CR); terminals canonicalize it to Enter, so Ctrl-Alt-m
         // arrives as Alt+Enter and never matches the (Char('m'), CTRL|ALT) entry.
         let km = Keymap::default_keymap();
-        let ctrl_alt_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let ctrl_alt_d = KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
         assert_eq!(km.resolve(ctrl_alt_d), Some(Action::ToggleMarkerDisplay));
 
         // Ctrl-Alt-m must NOT be bound (would be unreachable anyway).
-        let ctrl_alt_m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let ctrl_alt_m = KeyEvent::new(
+            KeyCode::Char('m'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
         assert_eq!(km.resolve(ctrl_alt_m), None);
     }
 
@@ -1478,7 +1531,11 @@ mod tests {
     fn test_random_sort_bound_to_r() {
         let km = Keymap::default_keymap();
         let r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-        assert_eq!(km.resolve(r), Some(Action::RandomSort), "'r' should be bound to RandomSort");
+        assert_eq!(
+            km.resolve(r),
+            Some(Action::RandomSort),
+            "'r' should be bound to RandomSort"
+        );
     }
 
     #[test]
@@ -1502,7 +1559,11 @@ mod tests {
         // Old Cmd-Ctrl-h/l bindings no longer in default keymap.
         let cmd_ctrl = KeyModifiers::SUPER | KeyModifiers::CONTROL;
         let old_l = KeyEvent::new(KeyCode::Char('l'), cmd_ctrl);
-        assert_eq!(km.resolve(old_l), None, "Cmd-Ctrl-l should no longer be nudge (SUPER not forwarded by terminals)");
+        assert_eq!(
+            km.resolve(old_l),
+            None,
+            "Cmd-Ctrl-l should no longer be nudge (SUPER not forwarded by terminals)"
+        );
     }
 
     #[test]
@@ -1552,11 +1613,17 @@ mod tests {
         // Uppercase → SUPER | CONTROL | SHIFT
         let big_h = parse_key("Cmd-Ctrl-H").unwrap();
         assert_eq!(big_h.code, KeyCode::Char('H'));
-        assert_eq!(big_h.modifiers, KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(
+            big_h.modifiers,
+            KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        );
 
         let big_l = parse_key("Cmd-Ctrl-L").unwrap();
         assert_eq!(big_l.code, KeyCode::Char('L'));
-        assert_eq!(big_l.modifiers, KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(
+            big_l.modifiers,
+            KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        );
     }
 
     #[test]
@@ -1571,26 +1638,65 @@ mod tests {
     fn test_config_keymap_all_action_names_valid() {
         // Verify all canonical action names used in config round-trip through from_name().
         let names = [
-            "move_down", "move_up", "move_to_bottom", "page_down", "page_up",
-            "move_column_left", "move_column_right", "sort_ascending", "sort_descending",
+            "move_down",
+            "move_up",
+            "move_to_bottom",
+            "page_down",
+            "page_up",
+            "move_column_left",
+            "move_column_right",
+            "sort_ascending",
+            "sort_descending",
             "random_sort",
-            "toggle_playback", "seek_forward_small", "seek_backward_small",
-            "seek_forward_large", "seek_backward_large", "rewind_to_start",
-            "toggle_auto_advance", "toggle_time_display", "toggle_global_loop",
-            "toggle_preview_loop", "toggle_mark", "clear_marks", "toggle_marked_filter",
-            "toggle_bank", "toggle_bank_sync", "set_marker_1", "set_marker_2", "set_marker_3",
-            "clear_nearest_marker", "clear_bank_markers", "save_markers",
-            "increment_rep", "decrement_rep", "select_next_marker", "select_prev_marker",
-            "toggle_infinite_loop", "toggle_marker_display",
-            "nudge_marker_forward_small", "nudge_marker_backward_small",
-            "nudge_marker_forward_large", "nudge_marker_backward_large",
-            "snap_zero_crossing_forward", "snap_zero_crossing_backward",
-            "marker_reset", "export_markers_csv", "import_markers_csv",
-            "zoom_in", "zoom_out", "zoom_reset",
-            "enter_insert_mode", "open_selected", "show_help", "quit",
+            "toggle_playback",
+            "seek_forward_small",
+            "seek_backward_small",
+            "seek_forward_large",
+            "seek_backward_large",
+            "rewind_to_start",
+            "toggle_auto_advance",
+            "toggle_time_display",
+            "toggle_global_loop",
+            "toggle_preview_loop",
+            "toggle_mark",
+            "clear_marks",
+            "toggle_marked_filter",
+            "toggle_bank",
+            "toggle_bank_sync",
+            "set_marker_1",
+            "set_marker_2",
+            "set_marker_3",
+            "clear_nearest_marker",
+            "clear_bank_markers",
+            "save_markers",
+            "increment_rep",
+            "decrement_rep",
+            "select_next_marker",
+            "select_prev_marker",
+            "toggle_infinite_loop",
+            "toggle_marker_display",
+            "nudge_marker_forward_small",
+            "nudge_marker_backward_small",
+            "nudge_marker_forward_large",
+            "nudge_marker_backward_large",
+            "snap_zero_crossing_forward",
+            "snap_zero_crossing_backward",
+            "marker_reset",
+            "export_markers_csv",
+            "import_markers_csv",
+            "zoom_in",
+            "zoom_out",
+            "zoom_reset",
+            "enter_insert_mode",
+            "open_selected",
+            "show_help",
+            "quit",
         ];
         for name in names {
-            assert!(Action::from_name(name).is_some(), "unknown action name in config: {name}");
+            assert!(
+                Action::from_name(name).is_some(),
+                "unknown action name in config: {name}"
+            );
         }
     }
 }

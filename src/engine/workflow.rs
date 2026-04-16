@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use mlua::prelude::*;
 use rusqlite::Connection;
 
-use super::bext;
 use super::UnifiedMetadata;
+use super::bext;
 
 /// Convert mlua::Error (not Send+Sync) to anyhow via Display.
 fn lua_err(e: mlua::Error) -> anyhow::Error {
@@ -178,13 +178,13 @@ impl LuaUserData for LuaDatabase {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("query_one", |lua, this, (sql, arg): (String, LuaValue)| {
             let guard = this.conn.lock().expect("lua db lock poisoned");
-            let conn = guard.as_ref().ok_or_else(|| {
-                mlua::Error::RuntimeError("database is closed".to_string())
-            })?;
+            let conn = guard
+                .as_ref()
+                .ok_or_else(|| mlua::Error::RuntimeError("database is closed".to_string()))?;
 
-            let mut stmt = conn.prepare(&sql).map_err(|e| {
-                mlua::Error::RuntimeError(format!("SQL prepare: {e}"))
-            })?;
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| mlua::Error::RuntimeError(format!("SQL prepare: {e}")))?;
 
             let col_count = stmt.column_count();
             let col_names: Vec<String> = (0..col_count)
@@ -193,22 +193,23 @@ impl LuaUserData for LuaDatabase {
 
             // Bind the single parameter (if provided) and execute.
             let arg_owned: String = match &arg {
-                LuaValue::String(s) => s.to_str()
+                LuaValue::String(s) => s
+                    .to_str()
                     .map_err(|e| mlua::Error::RuntimeError(format!("UTF-8 error: {e}")))?
                     .to_string(),
                 _ => String::new(),
             };
 
             let mut rows = match &arg {
-                LuaValue::Nil => stmt.query([]).map_err(|e| {
-                    mlua::Error::RuntimeError(format!("SQL query: {e}"))
-                })?,
-                LuaValue::String(_) => stmt.query([&arg_owned as &dyn rusqlite::types::ToSql]).map_err(|e| {
-                    mlua::Error::RuntimeError(format!("SQL query: {e}"))
-                })?,
-                LuaValue::Integer(n) => stmt.query([*n]).map_err(|e| {
-                    mlua::Error::RuntimeError(format!("SQL query: {e}"))
-                })?,
+                LuaValue::Nil => stmt
+                    .query([])
+                    .map_err(|e| mlua::Error::RuntimeError(format!("SQL query: {e}")))?,
+                LuaValue::String(_) => stmt
+                    .query([&arg_owned as &dyn rusqlite::types::ToSql])
+                    .map_err(|e| mlua::Error::RuntimeError(format!("SQL query: {e}")))?,
+                LuaValue::Integer(n) => stmt
+                    .query([*n])
+                    .map_err(|e| mlua::Error::RuntimeError(format!("SQL query: {e}")))?,
                 _ => {
                     return Err(mlua::Error::RuntimeError(
                         "query_one: unsupported parameter type".to_string(),
@@ -264,9 +265,8 @@ fn create_sqlite_module(lua: &Lua) -> Result<LuaTable, mlua::Error> {
             } else {
                 rusqlite::OpenFlags::default()
             };
-            let conn = Connection::open_with_flags(&path, flags).map_err(|e| {
-                mlua::Error::RuntimeError(format!("sqlite.open: {e}"))
-            })?;
+            let conn = Connection::open_with_flags(&path, flags)
+                .map_err(|e| mlua::Error::RuntimeError(format!("sqlite.open: {e}")))?;
             Ok(LuaDatabase {
                 conn: Arc::new(Mutex::new(Some(conn))),
             })
@@ -300,7 +300,9 @@ pub fn run_lua_script(
     lua.globals().set("sqlite", sqlite_mod).map_err(lua_err)?;
 
     // Expose `sample` userdata.
-    let ud = lua.create_userdata(SampleUserData { meta }).map_err(lua_err)?;
+    let ud = lua
+        .create_userdata(SampleUserData { meta })
+        .map_err(lua_err)?;
     lua.globals().set("sample", ud.clone()).map_err(lua_err)?;
 
     lua.load(&script.source).exec().map_err(lua_err)?;
@@ -506,7 +508,11 @@ mod tests {
             .to_string(),
         };
         let result = run_lua_script(&script, sample_meta(), false, false);
-        assert!(result.is_ok(), "Lua assertions failed: {}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "Lua assertions failed: {}",
+            result.unwrap_err()
+        );
     }
 
     #[test]
@@ -519,7 +525,11 @@ mod tests {
             .to_string(),
         };
         let result = run_lua_script(&script, sample_meta(), true, false);
-        assert!(result.is_ok(), "riffgrep globals check failed: {}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "riffgrep globals check failed: {}",
+            result.unwrap_err()
+        );
     }
 
     #[test]
@@ -633,8 +643,9 @@ mod tests {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
             conn.execute_batch(
                 "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);
-                 INSERT INTO t VALUES (1, 'hello');"
-            ).unwrap();
+                 INSERT INTO t VALUES (1, 'hello');",
+            )
+            .unwrap();
         }
 
         let script = WorkflowScript {
@@ -651,7 +662,11 @@ mod tests {
         };
         let result = run_lua_script(&script, sample_meta(), false, false);
         let _ = std::fs::remove_file(&db_path);
-        assert!(result.is_ok(), "Lua sqlite test failed: {}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "Lua sqlite test failed: {}",
+            result.unwrap_err()
+        );
     }
 
     #[test]
@@ -660,7 +675,8 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
-            conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);").unwrap();
+            conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);")
+                .unwrap();
         }
 
         let script = WorkflowScript {
@@ -676,7 +692,11 @@ mod tests {
         };
         let result = run_lua_script(&script, sample_meta(), false, false);
         let _ = std::fs::remove_file(&db_path);
-        assert!(result.is_ok(), "Lua sqlite nil test failed: {}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "Lua sqlite nil test failed: {}",
+            result.unwrap_err()
+        );
     }
 
     #[test]
@@ -687,8 +707,9 @@ mod tests {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
             conn.execute_batch(
                 "CREATE TABLE files (path TEXT PRIMARY KEY, cat TEXT);
-                 INSERT INTO files VALUES ('/test/kick.wav', 'DRUMS');"
-            ).unwrap();
+                 INSERT INTO files VALUES ('/test/kick.wav', 'DRUMS');",
+            )
+            .unwrap();
         }
 
         let script = WorkflowScript {
@@ -704,7 +725,11 @@ mod tests {
         };
         let result = run_lua_script(&script, sample_meta(), false, false);
         let _ = std::fs::remove_file(&db_path);
-        assert!(result.is_ok(), "Lua sqlite string param failed: {}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "Lua sqlite string param failed: {}",
+            result.unwrap_err()
+        );
     }
 }
 

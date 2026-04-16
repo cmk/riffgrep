@@ -104,7 +104,12 @@ pub fn search_similar(
 
     for (id, path, dist) in scored {
         let sim = similarity_score(dist, max_dist);
-        results.push(SimilarityResult { id, path, dist, sim });
+        results.push(SimilarityResult {
+            id,
+            path,
+            dist,
+            sim,
+        });
     }
 
     results
@@ -271,8 +276,8 @@ mod tests {
     /// load them back out, and verify search_similar returns correct ordering.
     #[test]
     fn test_inject_and_search() {
-        use crate::engine::sqlite::Database;
         use crate::engine::UnifiedMetadata;
+        use crate::engine::sqlite::Database;
 
         let db = Database::open_in_memory().unwrap();
 
@@ -304,14 +309,17 @@ mod tests {
         assert_eq!(candidates.len(), 10);
 
         // Query = file 0's vector.
-        let query = vec![1.0f32; 1].into_iter()
+        let query = vec![1.0f32; 1]
+            .into_iter()
             .chain(std::iter::repeat(0.0f32))
             .take(EMBEDDING_DIM)
             .collect::<Vec<_>>();
 
-        let query_id = candidates.iter()
+        let query_id = candidates
+            .iter()
             .find(|(_, p, _)| p.to_str() == Some("/test/0.wav"))
-            .unwrap().0;
+            .unwrap()
+            .0;
 
         let results = search_similar(query_id, &query, &candidates, 10);
 
@@ -324,7 +332,9 @@ mod tests {
             assert!(
                 results[i].dist <= results[i + 1].dist,
                 "results not sorted: dist[{i}]={} > dist[{}]={}",
-                results[i].dist, i + 1, results[i + 1].dist
+                results[i].dist,
+                i + 1,
+                results[i + 1].dist
             );
         }
 

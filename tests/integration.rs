@@ -190,12 +190,7 @@ fn sqlite_search_after_index() {
 
     // Search using SQLite mode.
     riffgrep()
-        .args([
-            "--vendor",
-            "IART",
-            "--db-path",
-            db_path.to_str().unwrap(),
-        ])
+        .args(["--vendor", "IART", "--db-path", db_path.to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("all_riff_info_tags_with_numbers"));
@@ -219,11 +214,7 @@ fn sqlite_count_mode() {
         .success();
 
     riffgrep()
-        .args([
-            "--count",
-            "--db-path",
-            db_path.to_str().unwrap(),
-        ])
+        .args(["--count", "--db-path", db_path.to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("10 matches"));
@@ -278,11 +269,7 @@ fn db_stats_after_index() {
         .success();
 
     riffgrep()
-        .args([
-            "--db-stats",
-            "--db-path",
-            db_path.to_str().unwrap(),
-        ])
+        .args(["--db-stats", "--db-path", db_path.to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("Files:    10"));
@@ -296,11 +283,7 @@ fn db_stats_no_db_error() {
     let _ = std::fs::remove_file(&db_path);
 
     riffgrep()
-        .args([
-            "--db-stats",
-            "--db-path",
-            db_path.to_str().unwrap(),
-        ])
+        .args(["--db-stats", "--db-path", db_path.to_str().unwrap()])
         .assert()
         .code(2)
         .stderr(predicate::str::contains("database not found"));

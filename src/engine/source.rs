@@ -10,9 +10,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::UnifiedMetadata;
 use super::bext::RiffError;
 use super::wav::{AudioInfo, PcmData};
-use super::UnifiedMetadata;
 
 /// Operations riffgrep needs from any audio format.
 ///
@@ -97,7 +97,9 @@ impl AudioSource for RiffSource {
         after: &UnifiedMetadata,
         force: bool,
     ) -> Option<anyhow::Result<()>> {
-        Some(super::workflow::write_metadata_changes(path, before, after, force))
+        Some(super::workflow::write_metadata_changes(
+            path, before, after, force,
+        ))
     }
 }
 
@@ -138,8 +140,7 @@ impl AudioSource for DecoderSource {
         use rodio::Source;
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
-        let decoder = rodio::Decoder::new(reader)
-            .map_err(|_| RiffError::NotRiffWave)?;
+        let decoder = rodio::Decoder::new(reader).map_err(|_| RiffError::NotRiffWave)?;
         let channels = decoder.channels();
         let sample_rate = decoder.sample_rate();
         let total_i16: usize = decoder.count();
@@ -171,10 +172,8 @@ pub struct AudioRegistry {
 impl AudioRegistry {
     /// Create a registry with the default sources (RiffSource + DecoderSource).
     pub fn new() -> Self {
-        let sources: Vec<Box<dyn AudioSource>> = vec![
-            Box::new(RiffSource),
-            Box::new(DecoderSource),
-        ];
+        let sources: Vec<Box<dyn AudioSource>> =
+            vec![Box::new(RiffSource), Box::new(DecoderSource)];
         let mut ext_map = HashMap::new();
         for (i, source) in sources.iter().enumerate() {
             for ext in source.extensions() {
@@ -249,7 +248,11 @@ mod tests {
     fn decoder_source_is_readonly() {
         let source = DecoderSource;
         let meta = UnifiedMetadata::default();
-        assert!(source.write_metadata(Path::new("x.aiff"), &meta, &meta, false).is_none());
+        assert!(
+            source
+                .write_metadata(Path::new("x.aiff"), &meta, &meta, false)
+                .is_none()
+        );
     }
 
     #[test]
@@ -257,7 +260,11 @@ mod tests {
         let source = RiffSource;
         let meta = UnifiedMetadata::default();
         // write_metadata returns Some (even if the write itself fails on a nonexistent file).
-        assert!(source.write_metadata(Path::new("/nonexistent.wav"), &meta, &meta, false).is_some());
+        assert!(
+            source
+                .write_metadata(Path::new("/nonexistent.wav"), &meta, &meta, false)
+                .is_some()
+        );
     }
 
     // --- Integration tests with real files ---
@@ -268,42 +275,60 @@ mod tests {
 
     #[test]
     fn riff_source_read_metadata() {
-        if !test_files_exist() { return; }
+        if !test_files_exist() {
+            return;
+        }
         let source = RiffSource;
-        let meta = source.read_metadata(Path::new("test_files/clean_base.wav")).unwrap();
+        let meta = source
+            .read_metadata(Path::new("test_files/clean_base.wav"))
+            .unwrap();
         assert_eq!(meta.path, Path::new("test_files/clean_base.wav"));
         assert!(meta.description.contains("Yamaha"));
     }
 
     #[test]
     fn riff_source_peaks_length() {
-        if !test_files_exist() { return; }
+        if !test_files_exist() {
+            return;
+        }
         let source = RiffSource;
-        let peaks = source.compute_peaks_stereo(Path::new("test_files/clean_base.wav")).unwrap();
+        let peaks = source
+            .compute_peaks_stereo(Path::new("test_files/clean_base.wav"))
+            .unwrap();
         assert_eq!(peaks.len(), 360);
     }
 
     #[test]
     fn riff_source_audio_info() {
-        if !test_files_exist() { return; }
+        if !test_files_exist() {
+            return;
+        }
         let source = RiffSource;
-        let info = source.audio_info(Path::new("test_files/clean_base.wav")).unwrap();
+        let info = source
+            .audio_info(Path::new("test_files/clean_base.wav"))
+            .unwrap();
         assert!(info.sample_rate > 0);
         assert!(info.total_samples > 0);
     }
 
     #[test]
     fn riff_source_load_pcm() {
-        if !test_files_exist() { return; }
+        if !test_files_exist() {
+            return;
+        }
         let source = RiffSource;
-        let pcm = source.load_pcm(Path::new("test_files/clean_base.wav")).unwrap();
+        let pcm = source
+            .load_pcm(Path::new("test_files/clean_base.wav"))
+            .unwrap();
         assert!(!pcm.samples.is_empty());
     }
 
     #[test]
     fn decoder_source_metadata_has_path() {
         let source = DecoderSource;
-        let meta = source.read_metadata(Path::new("test_files/clean_base.wav")).unwrap();
+        let meta = source
+            .read_metadata(Path::new("test_files/clean_base.wav"))
+            .unwrap();
         assert_eq!(meta.path, Path::new("test_files/clean_base.wav"));
         // DecoderSource returns minimal metadata — no description.
         assert!(meta.description.is_empty());
@@ -311,9 +336,13 @@ mod tests {
 
     #[test]
     fn decoder_source_peaks_on_wav() {
-        if !test_files_exist() { return; }
+        if !test_files_exist() {
+            return;
+        }
         let source = DecoderSource;
-        let peaks = source.compute_peaks_stereo(Path::new("test_files/clean_base.wav")).unwrap();
+        let peaks = source
+            .compute_peaks_stereo(Path::new("test_files/clean_base.wav"))
+            .unwrap();
         assert_eq!(peaks.len(), 360);
     }
 }

@@ -192,11 +192,12 @@ CONFIG:
 
 /// Build the CLI parser with rich help output.
 pub fn opts_with_help() -> bpaf::OptionParser<Opts> {
-    opts().header(
-        "riffgrep — high-performance WAV sample library search\n\
+    opts()
+        .header(
+            "riffgrep — high-performance WAV sample library search\n\
          Search, browse, and play WAV files with BEXT/RIFF/ID3 metadata.",
-    )
-    .footer(HELP_FOOTER)
+        )
+        .footer(HELP_FOOTER)
 }
 
 impl Opts {
@@ -287,9 +288,7 @@ mod tests {
 
     #[test]
     fn test_eval_flag_parsed() {
-        let opts = opts_with_help()
-            .run_inner(&["--eval", "print(1)"])
-            .unwrap();
+        let opts = opts_with_help().run_inner(&["--eval", "print(1)"]).unwrap();
         assert_eq!(opts.eval, Some("print(1)".to_string()));
     }
 
@@ -303,41 +302,31 @@ mod tests {
 
     #[test]
     fn test_commit_flag_default_false() {
-        let opts = opts_with_help()
-            .run_inner(&[] as &[&str])
-            .unwrap();
+        let opts = opts_with_help().run_inner(&[] as &[&str]).unwrap();
         assert!(!opts.commit);
     }
 
     #[test]
     fn test_commit_flag_parsed() {
-        let opts = opts_with_help()
-            .run_inner(&["--commit"])
-            .unwrap();
+        let opts = opts_with_help().run_inner(&["--commit"]).unwrap();
         assert!(opts.commit);
     }
 
     #[test]
     fn test_force_flag_default_false() {
-        let opts = opts_with_help()
-            .run_inner(&[] as &[&str])
-            .unwrap();
+        let opts = opts_with_help().run_inner(&[] as &[&str]).unwrap();
         assert!(!opts.force);
     }
 
     #[test]
     fn test_force_flag_parsed() {
-        let opts = opts_with_help()
-            .run_inner(&["--force"])
-            .unwrap();
+        let opts = opts_with_help().run_inner(&["--force"]).unwrap();
         assert!(opts.force);
     }
 
     #[test]
     fn test_limit_flag_parsed() {
-        let opts = opts_with_help()
-            .run_inner(&["--limit", "42"])
-            .unwrap();
+        let opts = opts_with_help().run_inner(&["--limit", "42"]).unwrap();
         assert_eq!(opts.limit, Some(42));
     }
 
@@ -349,9 +338,7 @@ mod tests {
 
     #[test]
     fn test_is_workflow_mode_eval() {
-        let opts = opts_with_help()
-            .run_inner(&["--eval", "x()"])
-            .unwrap();
+        let opts = opts_with_help().run_inner(&["--eval", "x()"]).unwrap();
         assert!(opts.is_workflow_mode());
     }
 
@@ -365,17 +352,13 @@ mod tests {
 
     #[test]
     fn test_similar_flag_absent() {
-        let opts = opts_with_help()
-            .run_inner(&[] as &[&str])
-            .unwrap();
+        let opts = opts_with_help().run_inner(&[] as &[&str]).unwrap();
         assert!(opts.similar.is_none());
     }
 
     #[test]
     fn test_is_workflow_mode_false_by_default() {
-        let opts = opts_with_help()
-            .run_inner(&[] as &[&str])
-            .unwrap();
+        let opts = opts_with_help().run_inner(&[] as &[&str]).unwrap();
         assert!(!opts.is_workflow_mode());
     }
 }

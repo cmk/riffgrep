@@ -5,22 +5,36 @@ use std::path::PathBuf;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use riffgrep::engine::sqlite::{self, Database};
-use riffgrep::engine::{
-    BpmRange, MatchMode, Pattern, SearchQuery, UnifiedMetadata,
-};
+use riffgrep::engine::{BpmRange, MatchMode, Pattern, SearchQuery, UnifiedMetadata};
 
 fn make_test_meta(i: usize) -> UnifiedMetadata {
     UnifiedMetadata {
-        path: PathBuf::from(format!("/samples/vendor_{}/lib_{}/file_{i}.wav", i % 50, i % 200)),
+        path: PathBuf::from(format!(
+            "/samples/vendor_{}/lib_{}/file_{i}.wav",
+            i % 50,
+            i % 200
+        )),
         vendor: format!("Vendor {}", i % 50),
         library: format!("Library {}", i % 200),
         category: format!("Category {}", i % 10),
         sound_id: format!("SID{i:06}"),
         description: format!("This is a sample description for file number {i}"),
         comment: format!("Comment {i}"),
-        key: if i % 12 == 0 { "C".to_string() } else { "".to_string() },
-        bpm: if i % 3 == 0 { Some((80 + (i % 100)) as u16) } else { None },
-        rating: if i % 4 == 0 { "****".to_string() } else { "".to_string() },
+        key: if i % 12 == 0 {
+            "C".to_string()
+        } else {
+            "".to_string()
+        },
+        bpm: if i % 3 == 0 {
+            Some((80 + (i % 100)) as u16)
+        } else {
+            None
+        },
+        rating: if i % 4 == 0 {
+            "****".to_string()
+        } else {
+            "".to_string()
+        },
         ..Default::default()
     }
 }
@@ -57,9 +71,8 @@ fn bench_batch_insert_1000(c: &mut Criterion) {
     c.bench_function("batch_insert/1000_rows", |b| {
         b.iter(|| {
             let db = Database::open_in_memory().unwrap();
-            let records: Vec<(UnifiedMetadata, i64, Option<Vec<u8>>)> = (0..1000)
-                .map(|i| (make_test_meta(i), 100, None))
-                .collect();
+            let records: Vec<(UnifiedMetadata, i64, Option<Vec<u8>>)> =
+                (0..1000).map(|i| (make_test_meta(i), 100, None)).collect();
             db.insert_batch(black_box(&records)).unwrap()
         })
     });

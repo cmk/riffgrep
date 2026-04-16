@@ -73,10 +73,10 @@ fn bench_search_query_matches(c: &mut Criterion) {
 }
 
 fn bench_filesystem_vs_sqlite(c: &mut Criterion) {
-    use std::path::PathBuf;
-    use riffgrep::engine::{Pattern, SearchQuery, UnifiedMetadata};
     use riffgrep::engine::filesystem::FilesystemFinder;
     use riffgrep::engine::sqlite::Database;
+    use riffgrep::engine::{Pattern, SearchQuery, UnifiedMetadata};
+    use std::path::PathBuf;
 
     let test_dir = PathBuf::from("test_files");
     if !test_dir.exists() {

@@ -50,7 +50,9 @@ fn json_on_sm_file() {
         .args(["--json", "./test_files/clean_base.wav"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"description\":\"Yamaha DX-100\""));
+        .stdout(predicate::str::contains(
+            "\"description\":\"Yamaha DX-100\"",
+        ));
 }
 
 #[test]
@@ -60,8 +62,10 @@ fn or_mode() {
     let output = riffgrep()
         .args([
             "--or",
-            "--vendor", "IART-Artist",
-            "--description", "Yamaha",
+            "--vendor",
+            "IART-Artist",
+            "--description",
+            "Yamaha",
             "./test_files/",
         ])
         .assert()

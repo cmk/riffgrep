@@ -4,7 +4,7 @@
 //! by `SegmentSource`, eliminating pops from rodio's mixer buffering.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -213,7 +213,11 @@ impl SegmentSource {
             } else {
                 frame >= boundary.saturating_sub(fade_len) && frame < boundary
             };
-            let past_boundary = if rev { frame <= boundary } else { frame >= boundary };
+            let past_boundary = if rev {
+                frame <= boundary
+            } else {
+                frame >= boundary
+            };
 
             if self.fade_out == 0 && self.will_loop() && at_boundary {
                 self.fade_out = if rev {
@@ -373,8 +377,7 @@ impl rodio::Source for SegmentSource {
 fn pre_decode(path: &Path) -> Result<(Vec<f32>, u16, u32), anyhow::Error> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
-    let decoder = rodio::Decoder::new(reader)
-        .map_err(|e| anyhow::anyhow!("decode error: {e}"))?;
+    let decoder = rodio::Decoder::new(reader).map_err(|e| anyhow::anyhow!("decode error: {e}"))?;
     let channels = decoder.channels();
     let sample_rate = decoder.sample_rate();
     let samples: Vec<f32> = decoder.map(|s| s as f32 / 32768.0).collect();
@@ -413,8 +416,8 @@ pub struct PlaybackEngine {
 impl PlaybackEngine {
     /// Try to create a new playback engine. Returns Err if no audio device.
     pub fn try_new() -> Result<Self, anyhow::Error> {
-        let (stream, stream_handle) = OutputStream::try_default()
-            .map_err(|e| anyhow::anyhow!("no audio device: {e}"))?;
+        let (stream, stream_handle) =
+            OutputStream::try_default().map_err(|e| anyhow::anyhow!("no audio device: {e}"))?;
 
         Ok(Self {
             _stream: stream,
@@ -482,7 +485,8 @@ impl PlaybackEngine {
         *self.current_path.lock().expect("playback lock poisoned") = Some(path.to_path_buf());
         *self.drain_start.lock().expect("playback lock poisoned") = None;
         *self.sample_offset.lock().expect("playback lock poisoned") = 0;
-        self.state.store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
+        self.state
+            .store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
 
         Ok(())
     }
@@ -586,7 +590,8 @@ impl PlaybackEngine {
         *self.current_path.lock().expect("playback lock poisoned") = Some(path.to_path_buf());
         *self.drain_start.lock().expect("playback lock poisoned") = None;
         *self.sample_offset.lock().expect("playback lock poisoned") = first_start;
-        self.state.store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
+        self.state
+            .store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
 
         Ok(())
     }
@@ -603,14 +608,16 @@ impl PlaybackEngine {
                 let elapsed = self.compute_elapsed();
                 *self.paused_elapsed.lock().expect("playback lock poisoned") = elapsed;
                 *self.play_start.lock().expect("playback lock poisoned") = None;
-                self.state.store(PlaybackState::Paused.to_u8(), Ordering::Relaxed);
+                self.state
+                    .store(PlaybackState::Paused.to_u8(), Ordering::Relaxed);
             }
             PlaybackState::Paused => {
                 if let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned") {
                     sink.play();
                 }
                 *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
-                self.state.store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
+                self.state
+                    .store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
             }
             PlaybackState::Stopped => {}
         }
@@ -628,7 +635,8 @@ impl PlaybackEngine {
         *self.duration.lock().expect("playback lock poisoned") = None;
         *self.drain_start.lock().expect("playback lock poisoned") = None;
         *self.sample_offset.lock().expect("playback lock poisoned") = 0;
-        self.state.store(PlaybackState::Stopped.to_u8(), Ordering::Relaxed);
+        self.state
+            .store(PlaybackState::Stopped.to_u8(), Ordering::Relaxed);
     }
 
     /// Get the current playback state.
@@ -671,7 +679,10 @@ impl PlaybackEngine {
 
     /// Path of the currently loaded file.
     pub fn current_path(&self) -> Option<PathBuf> {
-        self.current_path.lock().expect("playback lock poisoned").clone()
+        self.current_path
+            .lock()
+            .expect("playback lock poisoned")
+            .clone()
     }
 
     /// Current playback position in frames.
@@ -1072,8 +1083,14 @@ mod tests {
             return;
         }
         engine.play(path).unwrap();
-        assert!(engine.total_samples() > 0, "total_samples should be set after play");
-        assert!(engine.sample_rate() > 0, "sample_rate should be set after play");
+        assert!(
+            engine.total_samples() > 0,
+            "total_samples should be set after play"
+        );
+        assert!(
+            engine.sample_rate() > 0,
+            "sample_rate should be set after play"
+        );
     }
 
     #[test]
@@ -1127,7 +1144,11 @@ mod tests {
         engine.play(path).unwrap();
         *engine.sample_offset.lock().expect("playback lock poisoned") = 22050;
         engine.seek_to_sample(0).unwrap();
-        assert_eq!(engine.sample_offset(), 0, "seek_to_sample(0) should rewind to start");
+        assert_eq!(
+            engine.sample_offset(),
+            0,
+            "seek_to_sample(0) should rewind to start"
+        );
     }
 
     #[test]
@@ -1294,7 +1315,12 @@ mod tests {
             total_frames: 100,
             pos: 0,
             channel: 0,
-            playlist: vec![PlaySegment { start: 0, end: 100, reps: 1, logical_start: None }],
+            playlist: vec![PlaySegment {
+                start: 0,
+                end: 100,
+                reps: 1,
+                logical_start: None,
+            }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
@@ -1323,7 +1349,12 @@ mod tests {
             total_frames: 200,
             pos: 0,
             channel: 0,
-            playlist: vec![PlaySegment { start: 0, end: 100, reps: 2, logical_start: None }],
+            playlist: vec![PlaySegment {
+                start: 0,
+                end: 100,
+                reps: 2,
+                logical_start: None,
+            }],
             seg_idx: 0,
             reps_left: 2,
             fade_out: 0,
@@ -1352,7 +1383,12 @@ mod tests {
             total_frames: 100,
             pos: 0,
             channel: 0,
-            playlist: vec![PlaySegment { start: 0, end: 100, reps: 1, logical_start: None }],
+            playlist: vec![PlaySegment {
+                start: 0,
+                end: 100,
+                reps: 1,
+                logical_start: None,
+            }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
@@ -1389,8 +1425,18 @@ mod tests {
             pos: 0,
             channel: 0,
             playlist: vec![
-                PlaySegment { start: 0, end: 50, reps: 1, logical_start: None },
-                PlaySegment { start: 50, end: 100, reps: 1, logical_start: None },
+                PlaySegment {
+                    start: 0,
+                    end: 50,
+                    reps: 1,
+                    logical_start: None,
+                },
+                PlaySegment {
+                    start: 50,
+                    end: 100,
+                    reps: 1,
+                    logical_start: None,
+                },
             ],
             seg_idx: 0,
             reps_left: 1,
@@ -1424,7 +1470,12 @@ mod tests {
             total_frames: 100,
             pos: 0,
             channel: 0,
-            playlist: vec![PlaySegment { start: 0, end: 50, reps: 2, logical_start: None }],
+            playlist: vec![PlaySegment {
+                start: 0,
+                end: 50,
+                reps: 2,
+                logical_start: None,
+            }],
             seg_idx: 0,
             reps_left: 2,
             fade_out: 0,
@@ -1460,14 +1511,15 @@ mod tests {
         let control = Arc::new(SourceControl::new());
         // pre_reverse: frames 2..8 reversed → frame order [7,6,5,4,3,2]
         let ch = 1usize;
-        let reversed: Vec<f32> = buffer[2*ch..8*ch]
-            .chunks(ch).rev()
+        let reversed: Vec<f32> = buffer[2 * ch..8 * ch]
+            .chunks(ch)
+            .rev()
             .flat_map(|f| f.iter().copied())
             .collect();
         let mut buf = buffer.clone();
         let new_start = (buf.len() / ch) as u32; // = 10
         buf.extend_from_slice(&reversed);
-        let new_end = (buf.len() / ch) as u32;   // = 16
+        let new_end = (buf.len() / ch) as u32; // = 16
 
         let mut src = SegmentSource {
             buffer: buf,
@@ -1476,7 +1528,12 @@ mod tests {
             total_frames: 10,
             pos: new_start as usize * ch,
             channel: 0,
-            playlist: vec![PlaySegment { start: new_start, end: new_end, reps: 1, logical_start: Some(7) }],
+            playlist: vec![PlaySegment {
+                start: new_start,
+                end: new_end,
+                reps: 1,
+                logical_start: Some(7),
+            }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
@@ -1510,14 +1567,15 @@ mod tests {
         // At buffer frame 15: logical = 7 - (15 - 10) = 2
         let ch = 1usize;
         let buffer: Vec<f32> = (0..10).map(|i| i as f32 / 10.0).collect();
-        let reversed: Vec<f32> = buffer[2*ch..8*ch]
-            .chunks(ch).rev()
+        let reversed: Vec<f32> = buffer[2 * ch..8 * ch]
+            .chunks(ch)
+            .rev()
             .flat_map(|f| f.iter().copied())
             .collect();
         let mut buf = buffer;
         let new_start = (buf.len() / ch) as u32; // = 10
         buf.extend_from_slice(&reversed);
-        let new_end = (buf.len() / ch) as u32;   // = 16
+        let new_end = (buf.len() / ch) as u32; // = 16
 
         let control = Arc::new(SourceControl::new());
         let mut src = SegmentSource {
@@ -1528,7 +1586,10 @@ mod tests {
             pos: new_start as usize * ch,
             channel: 0,
             playlist: vec![PlaySegment {
-                start: new_start, end: new_end, reps: 1, logical_start: Some(7),
+                start: new_start,
+                end: new_end,
+                reps: 1,
+                logical_start: Some(7),
             }],
             seg_idx: 0,
             reps_left: 1,
@@ -1546,7 +1607,10 @@ mod tests {
         // Logical frames should count down: 7, 6, 5, 4, 3, 2.
         for (i, &lf) in logical_frames.iter().enumerate() {
             let expected = 7u32.saturating_sub(i as u32);
-            assert_eq!(lf, expected, "logical_frame[{i}] = {lf}, expected {expected}");
+            assert_eq!(
+                lf, expected,
+                "logical_frame[{i}] = {lf}, expected {expected}"
+            );
         }
     }
 
@@ -1567,8 +1631,18 @@ mod tests {
             pos: 0,
             channel: 0,
             playlist: vec![
-                PlaySegment { start: 0, end: 50, reps: 1, logical_start: None },
-                PlaySegment { start: 50, end: 100, reps: 1, logical_start: None },
+                PlaySegment {
+                    start: 0,
+                    end: 50,
+                    reps: 1,
+                    logical_start: None,
+                },
+                PlaySegment {
+                    start: 50,
+                    end: 100,
+                    reps: 1,
+                    logical_start: None,
+                },
             ],
             seg_idx: 0,
             reps_left: 1,
@@ -1582,18 +1656,26 @@ mod tests {
             src.next();
         }
         // Now in segment 1; frame should be around 55.
-        assert!(control.frame.load(Ordering::Relaxed) >= 50,
-            "should be in segment 1 by now");
+        assert!(
+            control.frame.load(Ordering::Relaxed) >= 50,
+            "should be in segment 1 by now"
+        );
 
         // Signal restart and consume one frame to trigger step 0.
         control.pending_restart.store(true, Ordering::Relaxed);
         src.next();
 
         // After restart: seg_idx=0, frame should be at start of segment 0 (=0).
-        assert_eq!(control.frame.load(Ordering::Relaxed), 0,
-            "pending_restart should rewind logical frame to segment 0 start");
+        assert_eq!(
+            control.frame.load(Ordering::Relaxed),
+            0,
+            "pending_restart should rewind logical frame to segment 0 start"
+        );
         // Source should continue yielding samples (not exhausted).
-        assert!(src.next().is_some(), "source should still yield samples after restart");
+        assert!(
+            src.next().is_some(),
+            "source should still yield samples after restart"
+        );
     }
 
     #[test]

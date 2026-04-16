@@ -147,10 +147,7 @@ mod tests {
             (b"IKEY", b"TestSoundID\0"),
             (b"ICMT", b"TestDescription\0"),
         ]);
-        let riff = make_riff(&[
-            (b"fmt ", &[0u8; 16]),
-            (b"LIST", &info),
-        ]);
+        let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"LIST", &info)]);
         let mut cursor = Cursor::new(riff);
         let map = scan_chunks(&mut cursor).unwrap();
         let fields = parse_riff_info(&mut cursor, &map).unwrap();
@@ -168,10 +165,7 @@ mod tests {
             (b"IART", b"ABC"),    // odd length, no null terminator
             (b"INAM", b"Next\0"), // next subchunk should still parse
         ]);
-        let riff = make_riff(&[
-            (b"fmt ", &[0u8; 16]),
-            (b"LIST", &info),
-        ]);
+        let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"LIST", &info)]);
         let mut cursor = Cursor::new(riff);
         let map = scan_chunks(&mut cursor).unwrap();
         let fields = parse_riff_info(&mut cursor, &map).unwrap();
@@ -186,10 +180,7 @@ mod tests {
             (b"ICRD", b"2024-01-15\0"),
             (b"IART", b"TheVendor\0"),
         ]);
-        let riff = make_riff(&[
-            (b"fmt ", &[0u8; 16]),
-            (b"LIST", &info),
-        ]);
+        let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"LIST", &info)]);
         let mut cursor = Cursor::new(riff);
         let map = scan_chunks(&mut cursor).unwrap();
         let fields = parse_riff_info(&mut cursor, &map).unwrap();
@@ -202,10 +193,7 @@ mod tests {
     fn empty_list_info() {
         // LIST-INFO with just "INFO" and no subchunks (size=4).
         let info = b"INFO".to_vec();
-        let riff = make_riff(&[
-            (b"fmt ", &[0u8; 16]),
-            (b"LIST", &info),
-        ]);
+        let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"LIST", &info)]);
         let mut cursor = Cursor::new(riff);
         let map = scan_chunks(&mut cursor).unwrap();
         let fields = parse_riff_info(&mut cursor, &map).unwrap();
