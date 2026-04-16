@@ -7,6 +7,7 @@ pub mod filesystem;
 pub mod id3;
 pub mod marks;
 pub mod playback;
+pub mod pq;
 pub mod riff_info;
 pub mod similarity;
 pub mod source;
@@ -748,15 +749,73 @@ fn run_similar(opts: &cli::Opts) -> anyhow::Result<()> {
         .load_embedding(&query_str)?
         .ok_or_else(|| anyhow::anyhow!("file not embedded: {query_str}"))?;
 
-    let candidates = db.load_all_embeddings()?;
-    let query_id = candidates
-        .iter()
-        .find(|(_, p, _)| p.as_os_str() == query_path.as_os_str())
-        .map(|(id, _, _)| *id)
-        .unwrap_or(-1); // -1 if path not found among candidates (subject still pinned)
-
     let limit = opts.limit.unwrap_or(50);
-    let results = similarity::search_similar(query_id, &query_embedding, &candidates, limit);
+
+    // Try PQ-accelerated search first; fall back to brute-force L2.
+    let results = if let Ok(Some(codebook_blob)) = db.get_metadata("pq_codebook") {
+        // PQ path: encode all embeddings to codes, then ADC scan.
+        let pq = pq::ProductQuantizer::from_bytes(&codebook_blob)?;
+        let all_embeddings = db.load_all_embeddings()?;
+        let codes: Vec<(i64, [u8; pq::M])> = all_embeddings
+            .iter()
+            .map(|(id, _, vec)| (*id, pq.encode(vec)))
+            .collect();
+
+        let scored = pq.search(&query_embedding, &codes, limit + 1);
+
+        // Build path lookup.
+        let path_map: std::collections::HashMap<i64, &std::path::Path> = all_embeddings
+            .iter()
+            .map(|(id, p, _)| (*id, p.as_path()))
+            .collect();
+
+        let query_id = all_embeddings
+            .iter()
+            .find(|(_, p, _)| p.as_os_str() == query_path.as_os_str())
+            .map(|(id, _, _)| *id)
+            .unwrap_or(-1);
+
+        // Convert PQ results to SimilarityResult format.
+        let max_dist = scored.last().map(|(_, d)| d.sqrt()).unwrap_or(0.0);
+        let mut results = Vec::with_capacity(scored.len() + 1);
+
+        // Pin subject at top.
+        results.push(similarity::SimilarityResult {
+            id: query_id,
+            path: query_path.clone(),
+            dist: 0.0,
+            sim: 1.0,
+        });
+
+        for (id, sq_dist) in &scored {
+            if *id == query_id {
+                continue;
+            }
+            let dist = sq_dist.sqrt();
+            let sim = similarity::similarity_score(dist, max_dist);
+            let path = path_map
+                .get(id)
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            results.push(similarity::SimilarityResult {
+                id: *id,
+                path,
+                dist,
+                sim,
+            });
+        }
+        results.truncate(limit);
+        results
+    } else {
+        // Brute-force L2 fallback.
+        let candidates = db.load_all_embeddings()?;
+        let query_id = candidates
+            .iter()
+            .find(|(_, p, _)| p.as_os_str() == query_path.as_os_str())
+            .map(|(id, _, _)| *id)
+            .unwrap_or(-1);
+        similarity::search_similar(query_id, &query_embedding, &candidates, limit)
+    };
 
     let stdout = std::io::stdout().lock();
     let mut out = BufWriter::new(stdout);
