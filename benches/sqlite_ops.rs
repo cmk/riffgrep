@@ -21,15 +21,7 @@ fn make_test_meta(i: usize) -> UnifiedMetadata {
         key: if i % 12 == 0 { "C".to_string() } else { "".to_string() },
         bpm: if i % 3 == 0 { Some((80 + (i % 100)) as u16) } else { None },
         rating: if i % 4 == 0 { "****".to_string() } else { "".to_string() },
-        subcategory: "".to_string(),
-        genre_id: "".to_string(),
-        usage_id: "".to_string(),
-        umid: "".to_string(),
-        recid: 0,
-        take: "".to_string(),
-        track: "".to_string(),
-        item: "".to_string(),
-        date: "".to_string(),
+        ..Default::default()
     }
 }
 
