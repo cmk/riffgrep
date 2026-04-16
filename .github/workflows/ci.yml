@@ -24,8 +24,9 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@v1
         with:
+          toolchain: "1.94"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -34,11 +35,10 @@ jobs:
         run: cargo build
 
       - name: Clippy
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
         run: cargo test
 
       - name: Formatting
         run: cargo fmt --all -- --check
-        continue-on-error: true
