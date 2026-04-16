@@ -6,11 +6,11 @@
 use std::path::PathBuf;
 
 use crossbeam_channel::Sender;
-use ignore::types::TypesBuilder;
 use ignore::WalkBuilder;
+use ignore::types::TypesBuilder;
 
-use super::{SearchQuery, UnifiedMetadata, read_metadata};
 use super::source::AudioRegistry;
+use super::{SearchQuery, UnifiedMetadata, read_metadata};
 
 /// Result sent through the channel for each matching file.
 pub type SearchResult = UnifiedMetadata;
@@ -20,8 +20,12 @@ pub type SearchResult = UnifiedMetadata;
 pub fn build_audio_types(registry: &AudioRegistry) -> ignore::types::Types {
     let mut builder = TypesBuilder::new();
     for ext in registry.all_extensions() {
-        builder.add("audio", &format!("*.{ext}")).expect("valid glob");
-        builder.add("audio", &format!("*.{}", ext.to_uppercase())).expect("valid glob");
+        builder
+            .add("audio", &format!("*.{ext}"))
+            .expect("valid glob");
+        builder
+            .add("audio", &format!("*.{}", ext.to_uppercase()))
+            .expect("valid glob");
     }
     builder.select("audio");
     builder.build().expect("valid types")
@@ -123,7 +127,12 @@ mod tests {
         finder.walk(&query, tx);
         let results: Vec<_> = rx.iter().collect();
         // There are WAV files in test_files/ (including packed_markers.wav).
-        assert_eq!(results.len(), 10, "expected 10 WAV files, got {}", results.len());
+        assert_eq!(
+            results.len(),
+            10,
+            "expected 10 WAV files, got {}",
+            results.len()
+        );
     }
 
     #[test]
@@ -160,7 +169,9 @@ mod tests {
         let finder = FilesystemFinder::new(vec![test_files_dir()], 2);
         let (tx, rx) = crossbeam_channel::bounded(64);
         let query = SearchQuery {
-            vendor: Some(super::super::Pattern::Substring("nonexistent_vendor_xyz".to_string())),
+            vendor: Some(super::super::Pattern::Substring(
+                "nonexistent_vendor_xyz".to_string(),
+            )),
             ..Default::default()
         };
         finder.walk(&query, tx);
@@ -170,8 +181,7 @@ mod tests {
 
     #[test]
     fn walk_nonexistent_directory() {
-        let finder =
-            FilesystemFinder::new(vec![PathBuf::from("/nonexistent/directory/abc123")], 1);
+        let finder = FilesystemFinder::new(vec![PathBuf::from("/nonexistent/directory/abc123")], 1);
         let (tx, rx) = crossbeam_channel::bounded(64);
         let query = SearchQuery::default();
         finder.walk(&query, tx);

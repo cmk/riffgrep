@@ -186,30 +186,150 @@ pub struct ColumnDef {
 /// Get the column definition for a key.
 pub fn column_def(key: &str) -> Option<ColumnDef> {
     match key {
-        "name" => Some(ColumnDef { key: "name", label: "Name", min_width: 10, weight: 4 }),
-        "vendor" => Some(ColumnDef { key: "vendor", label: "Vendor", min_width: 12, weight: 3 }),
-        "library" => Some(ColumnDef { key: "library", label: "Library", min_width: 16, weight: 3 }),
-        "date" => Some(ColumnDef { key: "date", label: "Date", min_width: 8, weight: 2 }),
-        "category" => Some(ColumnDef { key: "category", label: "CAT", min_width: 4, weight: 2 }),
-        "sound_id" => Some(ColumnDef { key: "sound_id", label: "Snd ID", min_width: 6, weight: 2 }),
-        "description" => Some(ColumnDef { key: "description", label: "Description", min_width: 10, weight: 4 }),
-        "comment" => Some(ColumnDef { key: "comment", label: "Comment", min_width: 8, weight: 3 }),
-        "key" => Some(ColumnDef { key: "key", label: "Key", min_width: 8, weight: 1 }),
-        "bpm" => Some(ColumnDef { key: "bpm", label: "BPM", min_width: 4, weight: 1 }),
-        "rating" => Some(ColumnDef { key: "rating", label: "Rating", min_width: 4, weight: 1 }),
-        "subcategory" => Some(ColumnDef { key: "subcategory", label: "SUB", min_width: 4, weight: 1 }),
-        "genre_id" => Some(ColumnDef { key: "genre_id", label: "Gen ID", min_width: 6, weight: 2 }),
-        "usage_id" => Some(ColumnDef { key: "usage_id", label: "Use ID", min_width: 6, weight: 2 }),
-        "duration" => Some(ColumnDef { key: "duration", label: "Length", min_width: 6, weight: 1 }),
-        "sample_rate" => Some(ColumnDef { key: "sample_rate", label: "Rate", min_width: 4, weight: 1 }),
-        "bit_depth" => Some(ColumnDef { key: "bit_depth", label: "Bits", min_width: 4, weight: 1 }),
-        "channels" => Some(ColumnDef { key: "channels", label: "Ch", min_width: 3, weight: 1 }),
-        "take" => Some(ColumnDef { key: "take", label: "Take", min_width: 4, weight: 1 }),
-        "track" => Some(ColumnDef { key: "track", label: "Trck", min_width: 4, weight: 1 }),
-        "item" => Some(ColumnDef { key: "item", label: "Item", min_width: 4, weight: 1 }),
-        "format" => Some(ColumnDef { key: "format", label: "Format", min_width: 8, weight: 2 }),
-        "parent_folder" => Some(ColumnDef { key: "parent_folder", label: "Folder", min_width: 8, weight: 3 }),
-        "sim" => Some(ColumnDef { key: "sim", label: "Sim", min_width: 5, weight: 1 }),
+        "name" => Some(ColumnDef {
+            key: "name",
+            label: "Name",
+            min_width: 10,
+            weight: 4,
+        }),
+        "vendor" => Some(ColumnDef {
+            key: "vendor",
+            label: "Vendor",
+            min_width: 12,
+            weight: 3,
+        }),
+        "library" => Some(ColumnDef {
+            key: "library",
+            label: "Library",
+            min_width: 16,
+            weight: 3,
+        }),
+        "date" => Some(ColumnDef {
+            key: "date",
+            label: "Date",
+            min_width: 8,
+            weight: 2,
+        }),
+        "category" => Some(ColumnDef {
+            key: "category",
+            label: "CAT",
+            min_width: 4,
+            weight: 2,
+        }),
+        "sound_id" => Some(ColumnDef {
+            key: "sound_id",
+            label: "Snd ID",
+            min_width: 6,
+            weight: 2,
+        }),
+        "description" => Some(ColumnDef {
+            key: "description",
+            label: "Description",
+            min_width: 10,
+            weight: 4,
+        }),
+        "comment" => Some(ColumnDef {
+            key: "comment",
+            label: "Comment",
+            min_width: 8,
+            weight: 3,
+        }),
+        "key" => Some(ColumnDef {
+            key: "key",
+            label: "Key",
+            min_width: 8,
+            weight: 1,
+        }),
+        "bpm" => Some(ColumnDef {
+            key: "bpm",
+            label: "BPM",
+            min_width: 4,
+            weight: 1,
+        }),
+        "rating" => Some(ColumnDef {
+            key: "rating",
+            label: "Rating",
+            min_width: 4,
+            weight: 1,
+        }),
+        "subcategory" => Some(ColumnDef {
+            key: "subcategory",
+            label: "SUB",
+            min_width: 4,
+            weight: 1,
+        }),
+        "genre_id" => Some(ColumnDef {
+            key: "genre_id",
+            label: "Gen ID",
+            min_width: 6,
+            weight: 2,
+        }),
+        "usage_id" => Some(ColumnDef {
+            key: "usage_id",
+            label: "Use ID",
+            min_width: 6,
+            weight: 2,
+        }),
+        "duration" => Some(ColumnDef {
+            key: "duration",
+            label: "Length",
+            min_width: 6,
+            weight: 1,
+        }),
+        "sample_rate" => Some(ColumnDef {
+            key: "sample_rate",
+            label: "Rate",
+            min_width: 4,
+            weight: 1,
+        }),
+        "bit_depth" => Some(ColumnDef {
+            key: "bit_depth",
+            label: "Bits",
+            min_width: 4,
+            weight: 1,
+        }),
+        "channels" => Some(ColumnDef {
+            key: "channels",
+            label: "Ch",
+            min_width: 3,
+            weight: 1,
+        }),
+        "take" => Some(ColumnDef {
+            key: "take",
+            label: "Take",
+            min_width: 4,
+            weight: 1,
+        }),
+        "track" => Some(ColumnDef {
+            key: "track",
+            label: "Trck",
+            min_width: 4,
+            weight: 1,
+        }),
+        "item" => Some(ColumnDef {
+            key: "item",
+            label: "Item",
+            min_width: 4,
+            weight: 1,
+        }),
+        "format" => Some(ColumnDef {
+            key: "format",
+            label: "Format",
+            min_width: 8,
+            weight: 2,
+        }),
+        "parent_folder" => Some(ColumnDef {
+            key: "parent_folder",
+            label: "Folder",
+            min_width: 8,
+            weight: 3,
+        }),
+        "sim" => Some(ColumnDef {
+            key: "sim",
+            label: "Sim",
+            min_width: 5,
+            weight: 1,
+        }),
         _ => None,
     }
 }
@@ -228,8 +348,7 @@ pub fn resolve_config_path() -> anyhow::Result<PathBuf> {
 fn default_config_path() -> anyhow::Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        let home =
-            std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
+        let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
         Ok(PathBuf::from(home).join("Library/Application Support/riffgrep/config.toml"))
     }
     #[cfg(target_os = "linux")]
@@ -267,7 +386,10 @@ pub fn load_config() -> Config {
     match toml::from_str::<Config>(&contents) {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("riffgrep: warning: malformed config at {}: {e}", path.display());
+            eprintln!(
+                "riffgrep: warning: malformed config at {}: {e}",
+                path.display()
+            );
             Config::default()
         }
     }
@@ -379,13 +501,30 @@ mod tests {
     #[test]
     fn test_default_columns() {
         let cols = default_columns();
-        assert_eq!(cols, vec![
-            "vendor", "library", "date", "duration",
-            "sample_rate", "bit_depth", "channels",
-            "rating", "bpm", "subcategory", "category",
-            "genre_id", "sound_id", "usage_id",
-            "key", "take", "track", "item", "comment",
-        ]);
+        assert_eq!(
+            cols,
+            vec![
+                "vendor",
+                "library",
+                "date",
+                "duration",
+                "sample_rate",
+                "bit_depth",
+                "channels",
+                "rating",
+                "bpm",
+                "subcategory",
+                "category",
+                "genre_id",
+                "sound_id",
+                "usage_id",
+                "key",
+                "take",
+                "track",
+                "item",
+                "comment",
+            ]
+        );
     }
 
     #[test]
@@ -406,7 +545,8 @@ mod tests {
         {
             let path = default_config_path().unwrap();
             assert!(
-                path.to_string_lossy().contains("Library/Application Support/riffgrep"),
+                path.to_string_lossy()
+                    .contains("Library/Application Support/riffgrep"),
                 "expected macOS config path, got: {}",
                 path.display()
             );
@@ -442,7 +582,13 @@ mod tests {
             auto_advance: None,
         };
         let (small, large) = resolve_scrub_increments(Some(&scrub));
-        assert!((small - 0.01).abs() < f64::EPSILON, "should clamp low to 0.01, got {small}");
-        assert!((large - 100.0).abs() < f64::EPSILON, "should clamp high to 100.0, got {large}");
+        assert!(
+            (small - 0.01).abs() < f64::EPSILON,
+            "should clamp low to 0.01, got {small}"
+        );
+        assert!(
+            (large - 100.0).abs() < f64::EPSILON,
+            "should clamp high to 100.0, got {large}"
+        );
     }
 }

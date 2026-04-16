@@ -9,9 +9,9 @@ use std::collections::HashSet;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::engine::{TableRow, UnifiedMetadata};
 use crate::engine::marks::MarkStore;
 use crate::engine::playback::{PlaybackEngine, PlaybackState};
+use crate::engine::{TableRow, UnifiedMetadata};
 use theme::Theme;
 
 /// Preview data for the selected result.
@@ -119,17 +119,19 @@ pub fn segment_bounds(bank: &crate::engine::bext::MarkerBank, total: u32) -> Vec
     }
     boundaries.push(total);
 
-    (0..4).map(|i| {
-        let raw_start = boundaries[i];
-        let raw_end = boundaries[i + 1];
-        let reverse = raw_start > raw_end;
-        Segment {
-            start: raw_start,
-            end: raw_end,
-            rep: bank.reps[i],
-            reverse,
-        }
-    }).collect()
+    (0..4)
+        .map(|i| {
+            let raw_start = boundaries[i];
+            let raw_end = boundaries[i + 1];
+            let reverse = raw_start > raw_end;
+            Segment {
+                start: raw_start,
+                end: raw_end,
+                rep: bank.reps[i],
+                reverse,
+            }
+        })
+        .collect()
 }
 
 /// TUI application state. All transitions are pure functions (no I/O).
@@ -249,7 +251,6 @@ pub struct App {
     pub cursor_sample: u32,
 
     // --- Audio controls (A1/A2/A3) ---
-
     /// Current volume adjustment in dBFS (0.0 = unity, clamped to −60..+6).
     pub volume_db: f32,
     /// Whether to reset volume to 0 dBFS on each new sample selection (default true).
@@ -403,14 +404,38 @@ impl App {
             Action::ReversePlayback => self.reverse_playback(),
             Action::VolumeUp => self.volume_adjust(1.0),
             Action::VolumeDown => self.volume_adjust(-1.0),
-            Action::SpeedIncCents => { let d = self.speed_cents_coarse; self.speed_adjust_cents(d); }
-            Action::SpeedDecCents => { let d = self.speed_cents_coarse; self.speed_adjust_cents(-d); }
-            Action::SpeedIncCentsFine => { let d = self.speed_cents_fine; self.speed_adjust_cents(d); }
-            Action::SpeedDecCentsFine => { let d = self.speed_cents_fine; self.speed_adjust_cents(-d); }
-            Action::SpeedIncBpm => { let d = self.speed_bpm_coarse; self.speed_adjust_bpm(d); }
-            Action::SpeedDecBpm => { let d = self.speed_bpm_coarse; self.speed_adjust_bpm(-d); }
-            Action::SpeedIncBpmFine => { let d = self.speed_bpm_fine; self.speed_adjust_bpm(d); }
-            Action::SpeedDecBpmFine => { let d = self.speed_bpm_fine; self.speed_adjust_bpm(-d); }
+            Action::SpeedIncCents => {
+                let d = self.speed_cents_coarse;
+                self.speed_adjust_cents(d);
+            }
+            Action::SpeedDecCents => {
+                let d = self.speed_cents_coarse;
+                self.speed_adjust_cents(-d);
+            }
+            Action::SpeedIncCentsFine => {
+                let d = self.speed_cents_fine;
+                self.speed_adjust_cents(d);
+            }
+            Action::SpeedDecCentsFine => {
+                let d = self.speed_cents_fine;
+                self.speed_adjust_cents(-d);
+            }
+            Action::SpeedIncBpm => {
+                let d = self.speed_bpm_coarse;
+                self.speed_adjust_bpm(d);
+            }
+            Action::SpeedDecBpm => {
+                let d = self.speed_bpm_coarse;
+                self.speed_adjust_bpm(-d);
+            }
+            Action::SpeedIncBpmFine => {
+                let d = self.speed_bpm_fine;
+                self.speed_adjust_bpm(d);
+            }
+            Action::SpeedDecBpmFine => {
+                let d = self.speed_bpm_fine;
+                self.speed_adjust_bpm(-d);
+            }
             Action::SpeedReset => self.speed_reset_action(),
             Action::SessionBpmInc => self.session_bpm_adjust(1.0),
             Action::SessionBpmDec => self.session_bpm_adjust(-1.0),
@@ -773,14 +798,18 @@ impl App {
         }
 
         // Stopped: update cursor_sample from preview audio info.
-        let Some(total) = self.total_samples() else { return };
-        let rate = self.preview.as_ref()
+        let Some(total) = self.total_samples() else {
+            return;
+        };
+        let rate = self
+            .preview
+            .as_ref()
             .and_then(|p| p.audio_info.as_ref())
             .map(|ai| ai.sample_rate)
             .unwrap_or(48000) as f64;
         let delta_samples = (delta * rate) as i64;
-        self.cursor_sample = (self.cursor_sample as i64 + delta_samples)
-            .clamp(0, total as i64) as u32;
+        self.cursor_sample =
+            (self.cursor_sample as i64 + delta_samples).clamp(0, total as i64) as u32;
         let secs = self.cursor_sample as f64 / rate;
         self.set_status(format!("Position: {:.2}s", secs));
     }
@@ -870,7 +899,9 @@ impl App {
             }
         }
         // 3. Duration-aware default: short files get shot, longer files get loop.
-        let total_samples = self.preview.as_ref()
+        let total_samples = self
+            .preview
+            .as_ref()
             .and_then(|p| p.audio_info.as_ref())
             .map(|ai| ai.total_samples);
         match total_samples {
@@ -974,7 +1005,8 @@ impl App {
 
     /// Compute total samples from preview audio_info, or None.
     fn total_samples(&self) -> Option<u32> {
-        self.preview.as_ref()
+        self.preview
+            .as_ref()
             .and_then(|p| p.audio_info.as_ref())
             .map(|ai| ai.total_samples)
     }
@@ -1000,12 +1032,12 @@ impl App {
     fn ensure_markers(&mut self) {
         if let Some(ref mut preview) = self.preview {
             if preview.markers.is_none() {
-                let total = preview.audio_info.as_ref()
+                let total = preview
+                    .audio_info
+                    .as_ref()
                     .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32);
                 preview.markers = Some(match total {
-                    Some(s) if s >= 2 * 48000 => {
-                        crate::engine::bext::MarkerConfig::preset_loop(s)
-                    }
+                    Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
                     _ => crate::engine::bext::MarkerConfig::preset_shot(),
                 });
             }
@@ -1040,8 +1072,13 @@ impl App {
             Self::set_bank_marker(bank, index, snapped);
         }
 
-        let bank_label = if self.bank_sync { "A+B" } else {
-            match self.active_bank { Bank::A => "A", Bank::B => "B" }
+        let bank_label = if self.bank_sync {
+            "A+B"
+        } else {
+            match self.active_bank {
+                Bank::A => "A",
+                Bank::B => "B",
+            }
         };
         self.set_status(format!("Marker {} set (bank {bank_label})", index + 1));
     }
@@ -1067,9 +1104,8 @@ impl App {
         let fmt = crate::engine::wav::parse_fmt(&mut reader, &map).ok()?;
 
         let radius = 4096u32;
-        let (buf, base) = crate::engine::wav::read_sample_window(
-            &mut reader, &map, &fmt, sample, radius,
-        ).ok()?;
+        let (buf, base) =
+            crate::engine::wav::read_sample_window(&mut reader, &map, &fmt, sample, radius).ok()?;
         if buf.is_empty() {
             return None;
         }
@@ -1115,7 +1151,9 @@ impl App {
                 }
             };
             let markers = [bank.m1, bank.m2, bank.m3];
-            markers.iter().enumerate()
+            markers
+                .iter()
+                .enumerate()
                 .filter(|&(_, &v)| v != crate::engine::bext::MARKER_EMPTY)
                 .min_by_key(|&(_, &v)| (v as i64 - sample as i64).unsigned_abs())
                 .map(|(idx, _)| idx)
@@ -1133,8 +1171,13 @@ impl App {
             } else if let Some(bank) = self.active_bank_mut() {
                 Self::set_bank_marker(bank, idx, empty);
             }
-            let bank_label = if self.bank_sync { "A+B" } else {
-                match self.active_bank { Bank::A => "A", Bank::B => "B" }
+            let bank_label = if self.bank_sync {
+                "A+B"
+            } else {
+                match self.active_bank {
+                    Bank::A => "A",
+                    Bank::B => "B",
+                }
             };
             self.set_status(format!("Marker {} cleared (bank {bank_label})", idx + 1));
         } else {
@@ -1154,7 +1197,10 @@ impl App {
             self.set_status("Banks A+B cleared".to_string());
         } else if let Some(bank) = self.active_bank_mut() {
             *bank = crate::engine::bext::MarkerBank::empty();
-            let bank_label = match self.active_bank { Bank::A => "A", Bank::B => "B" };
+            let bank_label = match self.active_bank {
+                Bank::A => "A",
+                Bank::B => "B",
+            };
             self.set_status(format!("Bank {bank_label} cleared"));
         } else {
             self.set_status("No markers".to_string());
@@ -1215,7 +1261,11 @@ impl App {
                     let new_val = (cur as i16 + delta as i16).clamp(0, 15) as u8;
                     markers.bank_a.reps[seg] = new_val;
                     markers.bank_b.reps[seg] = new_val;
-                    let label = if new_val == 15 { "inf".to_string() } else { format!("{new_val}") };
+                    let label = if new_val == 15 {
+                        "inf".to_string()
+                    } else {
+                        format!("{new_val}")
+                    };
                     self.set_status(format!("Segment {} rep: {label}", seg + 1));
                 }
             }
@@ -1223,7 +1273,11 @@ impl App {
             let current = bank.reps[seg];
             let new_val = (current as i16 + delta as i16).clamp(0, 15) as u8;
             bank.reps[seg] = new_val;
-            let label = if new_val == 15 { "inf".to_string() } else { format!("{new_val}") };
+            let label = if new_val == 15 {
+                "inf".to_string()
+            } else {
+                format!("{new_val}")
+            };
             self.set_status(format!("Segment {} rep: {label}", seg + 1));
         } else {
             self.set_status("No markers".to_string());
@@ -1299,7 +1353,8 @@ impl App {
         }
 
         // Build playlist: (start, end, reps, reverse) for all non-skipped segments.
-        let playlist: Vec<(u32, u32, u8, bool)> = segs.iter()
+        let playlist: Vec<(u32, u32, u8, bool)> = segs
+            .iter()
             .filter(|seg| seg.rep > 0 && seg.start != seg.end)
             .map(|seg| (seg.start, seg.end, seg.rep, seg.reverse))
             .collect();
@@ -1427,7 +1482,9 @@ impl App {
             .unwrap_or(12345);
         let mut rng = seed ^ (n as u64).wrapping_mul(0x9e3779b97f4a7c15);
         for i in (1..n).rev() {
-            rng = rng.wrapping_mul(0x6364136223846793).wrapping_add(0x1442695040888963);
+            rng = rng
+                .wrapping_mul(0x6364136223846793)
+                .wrapping_add(0x1442695040888963);
             let j = ((rng >> 33) as usize) % (i + 1);
             self.results.swap(i, j);
         }
@@ -1495,12 +1552,8 @@ impl App {
             .map(|(id, _, _)| *id)
             .unwrap_or(-1);
 
-        let sim_results = similarity::search_similar(
-            query_id,
-            &query_embedding,
-            &candidates,
-            self.results.len(),
-        );
+        let sim_results =
+            similarity::search_similar(query_id, &query_embedding, &candidates, self.results.len());
 
         // Build a lookup: path → sim score.
         let sim_map: std::collections::HashMap<&std::path::Path, f32> = sim_results
@@ -1522,7 +1575,9 @@ impl App {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
                 _ => match (a.sim, b.sim) {
-                    (Some(sa), Some(sb)) => sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal),
+                    (Some(sa), Some(sb)) => {
+                        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+                    }
                     (Some(_), None) => std::cmp::Ordering::Less,
                     (None, Some(_)) => std::cmp::Ordering::Greater,
                     (None, None) => std::cmp::Ordering::Equal,
@@ -1537,7 +1592,10 @@ impl App {
         self.selection_changed = true;
         self.set_status(format!(
             "Similarity to {}",
-            selected_path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default()
+            selected_path
+                .file_stem()
+                .map(|s| s.to_string_lossy())
+                .unwrap_or_default()
         ));
     }
 
@@ -1578,7 +1636,9 @@ impl App {
     /// Requires a BPM tag on the selected sample. If absent, shows a status message
     /// and returns without changing speed.
     fn speed_adjust_bpm(&mut self, delta_bpm: f32) {
-        let sample_bpm = self.preview.as_ref()
+        let sample_bpm = self
+            .preview
+            .as_ref()
             .and_then(|p| p.metadata.bpm)
             .map(|b| b as f32);
         let Some(sbpm) = sample_bpm else {
@@ -1614,12 +1674,18 @@ impl App {
     /// If `session_bpm` is set and the selected sample has a BPM tag, set
     /// `speed_multiplier = session_bpm / sample_bpm` (clamped to [0.5, 2.0]).
     pub fn recompute_speed_from_session_bpm(&mut self) {
-        let Some(sbpm_session) = self.session_bpm else { return };
-        let Some(sample_bpm) = self.preview.as_ref()
+        let Some(sbpm_session) = self.session_bpm else {
+            return;
+        };
+        let Some(sample_bpm) = self
+            .preview
+            .as_ref()
             .and_then(|p| p.metadata.bpm)
             .map(|b| b as f32)
             .filter(|&b| b > 0.0)
-        else { return };
+        else {
+            return;
+        };
         self.speed_multiplier = (sbpm_session / sample_bpm).clamp(0.5, 2.0);
         if let Some(ref engine) = self.playback {
             engine.set_speed(self.speed_multiplier);
@@ -1685,7 +1751,10 @@ impl App {
             return;
         }
         let current = self.selected_marker.unwrap_or(usize::MAX);
-        let next = defined.iter().find(|&&i| i > current).copied()
+        let next = defined
+            .iter()
+            .find(|&&i| i > current)
+            .copied()
             .unwrap_or(defined[0]);
         self.selected_marker = Some(next);
         self.seek_to_selected_marker();
@@ -1702,7 +1771,11 @@ impl App {
             return;
         }
         let current = self.selected_marker.unwrap_or(0);
-        let prev = defined.iter().rev().find(|&&i| i < current).copied()
+        let prev = defined
+            .iter()
+            .rev()
+            .find(|&&i| i < current)
+            .copied()
             .unwrap_or(*defined.last().unwrap());
         self.selected_marker = Some(prev);
         self.seek_to_selected_marker();
@@ -1712,9 +1785,15 @@ impl App {
     fn defined_marker_indices(&self) -> Vec<usize> {
         let mut indices = vec![0usize]; // SOF
         if let Some(bank) = self.active_bank_ref() {
-            if bank.m1 != crate::engine::bext::MARKER_EMPTY { indices.push(1); }
-            if bank.m2 != crate::engine::bext::MARKER_EMPTY { indices.push(2); }
-            if bank.m3 != crate::engine::bext::MARKER_EMPTY { indices.push(3); }
+            if bank.m1 != crate::engine::bext::MARKER_EMPTY {
+                indices.push(1);
+            }
+            if bank.m2 != crate::engine::bext::MARKER_EMPTY {
+                indices.push(2);
+            }
+            if bank.m3 != crate::engine::bext::MARKER_EMPTY {
+                indices.push(3);
+            }
         }
         indices
     }
@@ -1735,7 +1814,9 @@ impl App {
                         3 => bank.m3,
                         _ => return,
                     };
-                    if val == crate::engine::bext::MARKER_EMPTY { return; }
+                    if val == crate::engine::bext::MARKER_EMPTY {
+                        return;
+                    }
                     val
                 } else {
                     return;
@@ -1746,7 +1827,11 @@ impl App {
         if let Some(ref engine) = self.playback {
             let _ = engine.seek_to_sample(sample);
         }
-        let label = if idx == 0 { "SOF".to_string() } else { format!("Marker {idx}") };
+        let label = if idx == 0 {
+            "SOF".to_string()
+        } else {
+            format!("Marker {idx}")
+        };
         self.set_status(format!("Selected: {label}"));
     }
 
@@ -1877,9 +1962,8 @@ impl App {
         let fmt = crate::engine::wav::parse_fmt(&mut reader, &map).ok()?;
 
         let radius = 8192u32;
-        let (buf, base) = crate::engine::wav::read_sample_window(
-            &mut reader, &map, &fmt, sample, radius,
-        ).ok()?;
+        let (buf, base) =
+            crate::engine::wav::read_sample_window(&mut reader, &map, &fmt, sample, radius).ok()?;
         if buf.is_empty() {
             return None;
         }
@@ -2011,8 +2095,7 @@ impl App {
         let fmt_bank = |b: &crate::engine::bext::MarkerBank, label: &str| {
             format!(
                 "{},{},{},{},{},{},{},{}\n",
-                label, b.m1, b.m2, b.m3,
-                b.reps[0], b.reps[1], b.reps[2], b.reps[3]
+                label, b.m1, b.m2, b.m3, b.reps[0], b.reps[1], b.reps[2], b.reps[3]
             )
         };
         lines.push_str(&fmt_bank(&markers.bank_a, "A"));
@@ -2065,7 +2148,10 @@ impl App {
             let r4 = parse_u8(fields[7]).unwrap_or(0);
 
             let bank = crate::engine::bext::MarkerBank {
-                m1, m2, m3, reps: [r1, r2, r3, r4],
+                m1,
+                m2,
+                m3,
+                reps: [r1, r2, r3, r4],
             };
             match bank_label {
                 "A" => bank_a = Some(bank),
@@ -2136,10 +2222,7 @@ impl App {
         // For FS-mode files, pcm may not be loaded yet (only peaks were computed).
         // Attempt a synchronous load so zoom can proceed.
         if self.preview.as_ref().and_then(|p| p.pcm.as_ref()).is_none() {
-            let path = self
-                .results
-                .get(self.selected)
-                .map(|r| r.meta.path.clone());
+            let path = self.results.get(self.selected).map(|r| r.meta.path.clone());
             if let Some(ref p) = path {
                 match crate::engine::wav::load_pcm_data(p) {
                     Ok(pcm) => {
@@ -2221,12 +2304,7 @@ impl App {
         if self.zoom_cache.is_none() {
             if let Some(preview) = &self.preview {
                 // Use first PEAK_COUNT elements (left-channel peaks from stereo BEXT peaks).
-                let peaks: Vec<u8> = preview
-                    .peaks
-                    .iter()
-                    .copied()
-                    .take(NUM_ZOOM_COLS)
-                    .collect();
+                let peaks: Vec<u8> = preview.peaks.iter().copied().take(NUM_ZOOM_COLS).collect();
                 self.zoom_cache = Some(ZoomCache::new(&peaks));
             }
         }
@@ -2270,11 +2348,7 @@ impl App {
         // Re-centre on zoom_center.
         if let Some(center) = self.zoom_center {
             if let Some(preview) = &self.preview {
-                let total_samples = preview
-                    .pcm
-                    .as_ref()
-                    .map(|p| p.samples.len())
-                    .unwrap_or(1);
+                let total_samples = preview.pcm.as_ref().map(|p| p.samples.len()).unwrap_or(1);
                 let k_lvl0 = if total_samples < NUM_ZOOM_COLS {
                     1usize
                 } else {
@@ -2282,8 +2356,7 @@ impl App {
                 };
                 let k_current = (k_lvl0 >> self.zoom_level).max(1);
                 let total_cols = NUM_ZOOM_COLS << self.zoom_level;
-                let center_col =
-                    (center as usize / k_current).min(total_cols.saturating_sub(1));
+                let center_col = (center as usize / k_current).min(total_cols.saturating_sub(1));
                 self.zoom_offset = center_col
                     .saturating_sub(NUM_ZOOM_COLS / 2)
                     .min(total_cols.saturating_sub(NUM_ZOOM_COLS));
@@ -2332,33 +2405,27 @@ impl App {
             }
         };
 
-        let k_lvl0 = if pcm_len < NUM_ZOOM_COLS { 1 } else { pcm_len / NUM_ZOOM_COLS };
+        let k_lvl0 = if pcm_len < NUM_ZOOM_COLS {
+            1
+        } else {
+            pcm_len / NUM_ZOOM_COLS
+        };
 
         // Ensure the cache is initialised.
         if self.zoom_cache.is_none() {
             if let Some(preview) = &self.preview {
-                let peaks: Vec<u8> = preview
-                    .peaks
-                    .iter()
-                    .copied()
-                    .take(NUM_ZOOM_COLS)
-                    .collect();
+                let peaks: Vec<u8> = preview.peaks.iter().copied().take(NUM_ZOOM_COLS).collect();
                 self.zoom_cache = Some(crate::engine::wav::ZoomCache::new(&peaks));
             }
         }
 
         if let (Some(cache), Some(samples)) = (&mut self.zoom_cache, pcm_samples) {
-            self.zoom_peaks = cache.get_visible_peaks(
-                self.zoom_level,
-                self.zoom_offset,
-                &samples,
-                k_lvl0,
-            );
+            self.zoom_peaks =
+                cache.get_visible_peaks(self.zoom_level, self.zoom_offset, &samples, k_lvl0);
         } else {
             self.zoom_peaks.clear();
         }
     }
-
 }
 
 /// Sort key for column-based sorting.
@@ -2397,9 +2464,7 @@ impl PartialOrd for SortKey {
 }
 
 /// Numeric column keys for sort key extraction.
-const SORT_NUMERIC_COLUMNS: &[&str] = &[
-    "bpm", "sample_rate", "bit_depth", "channels",
-];
+const SORT_NUMERIC_COLUMNS: &[&str] = &["bpm", "sample_rate", "bit_depth", "channels"];
 
 /// Extract a sort key from a TableRow for a given column.
 fn column_sort_key(row: &TableRow, key: &str) -> SortKey {
@@ -2482,9 +2547,9 @@ use std::path::PathBuf;
 use crossterm::event::{Event, EventStream};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::Terminal;
 use tokio::time::{Duration, Instant};
 
 use search::{SearchHandleTable, SearchMode};
@@ -2557,7 +2622,11 @@ fn resolve_db_path_for_peaks(opts: &crate::engine::cli::Opts) -> Option<PathBuf>
         return None;
     }
     let db_path = crate::engine::sqlite::resolve_db_path(opts.db_path.as_deref()).ok()?;
-    if db_path.exists() { Some(db_path) } else { None }
+    if db_path.exists() {
+        Some(db_path)
+    } else {
+        None
+    }
 }
 
 /// Run the interactive TUI.
@@ -2634,7 +2703,8 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
 
     // Initial search: empty query returns all.
     let initial_query = crate::engine::SearchQuery::default();
-    let mut current_search: Option<SearchHandleTable> = Some(SearchHandleTable::spawn(initial_query, search_mode));
+    let mut current_search: Option<SearchHandleTable> =
+        Some(SearchHandleTable::spawn(initial_query, search_mode));
     app.search_in_progress = true;
 
     let mut event_reader = EventStream::new();
@@ -2721,8 +2791,7 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
                 app.search_in_progress = true;
 
                 // Build new search: parse @field=value filters from query.
-                let (freetext, column_filters) =
-                    crate::engine::parse_column_filters(&app.query);
+                let (freetext, column_filters) = crate::engine::parse_column_filters(&app.query);
                 let query = crate::engine::SearchQuery {
                     freetext: if freetext.is_empty() {
                         None
@@ -2814,7 +2883,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             })
             .collect();
         app
@@ -2964,7 +3034,8 @@ mod tests {
             meta: UnifiedMetadata::default(),
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         }]);
         assert_eq!(app.selected, 0);
     }
@@ -2981,10 +3052,7 @@ mod tests {
     fn test_app_quit_on_ctrl_c() {
         let mut app = App::new(Theme::default());
         // Ctrl+C quits from Normal mode.
-        app.on_key(KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::CONTROL,
-        ));
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
 
@@ -3085,7 +3153,8 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         }];
         // All playback operations should be no-ops with no panic.
         app.toggle_playback();
@@ -3101,7 +3170,11 @@ mod tests {
         // Selection change triggers stop_playback, which calls engine.stop().
         // With no real engine playing, position_fraction() returns 0.0.
         app.move_selection(1);
-        assert_eq!(app.playback_position(), 0.0, "selection change should reset position");
+        assert_eq!(
+            app.playback_position(),
+            0.0,
+            "selection change should reset position"
+        );
     }
 
     // --- S6-T1 tests: Played file coloring ---
@@ -3126,7 +3199,10 @@ mod tests {
             markers: None,
             pcm: None,
         });
-        assert!(!app.played.contains(&path), "preview should not add to played set");
+        assert!(
+            !app.played.contains(&path),
+            "preview should not add to played set"
+        );
     }
 
     #[test]
@@ -3136,7 +3212,10 @@ mod tests {
         app.played.insert(std::path::PathBuf::from("/test/0.wav"));
         app.selected = 0;
         // The style for selected should override played — verified via render test.
-        assert!(app.played.contains(&std::path::PathBuf::from("/test/0.wav")));
+        assert!(
+            app.played
+                .contains(&std::path::PathBuf::from("/test/0.wav"))
+        );
         assert_eq!(app.selected, 0);
     }
 
@@ -3146,7 +3225,10 @@ mod tests {
         app.played.insert(std::path::PathBuf::from("/test/0.wav"));
         app.results[0].marked = true;
         // When both played and marked, marked style takes precedence.
-        assert!(app.played.contains(&std::path::PathBuf::from("/test/0.wav")));
+        assert!(
+            app.played
+                .contains(&std::path::PathBuf::from("/test/0.wav"))
+        );
         assert!(app.results[0].marked);
     }
 
@@ -3173,7 +3255,10 @@ mod tests {
         assert!(app.results[0].marked, "should be marked after 'm'");
         // Press 'm' again to unmark.
         app.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
-        assert!(!app.results[0].marked, "should be unmarked after second 'm'");
+        assert!(
+            !app.results[0].marked,
+            "should be unmarked after second 'm'"
+        );
     }
 
     #[test]
@@ -3291,7 +3376,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -3301,7 +3387,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
         ];
         app.sort_by_selected_column(true);
@@ -3323,7 +3410,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -3333,7 +3421,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
         ];
         app.sort_by_selected_column(false);
@@ -3355,7 +3444,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -3365,7 +3455,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
         ];
         app.sort_by_selected_column(true);
@@ -3387,7 +3478,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -3397,7 +3489,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
         ];
         app.sort_by_selected_column(true);
@@ -3428,7 +3521,8 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         }];
 
         app.sort_by_selected_column(true);
@@ -3703,7 +3797,9 @@ mod tests {
         let (_, bindings) = app_entries.unwrap();
         // Check that 'x' maps to Quit.
         assert!(
-            bindings.iter().any(|(k, a)| k == "x" && *a == actions::Action::Quit),
+            bindings
+                .iter()
+                .any(|(k, a)| k == "x" && *a == actions::Action::Quit),
             "custom keymap override should be reflected in help entries"
         );
     }
@@ -3729,8 +3825,15 @@ mod tests {
         app.selected = 5;
         app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.selected, 4, "Up arrow should navigate up in Insert mode");
-        assert_eq!(app.input_mode, InputMode::Insert, "should stay in Insert mode");
+        assert_eq!(
+            app.selected, 4,
+            "Up arrow should navigate up in Insert mode"
+        );
+        assert_eq!(
+            app.input_mode,
+            InputMode::Insert,
+            "should stay in Insert mode"
+        );
     }
 
     #[test]
@@ -3738,8 +3841,15 @@ mod tests {
         let mut app = make_app_with_results(10);
         app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.selected, 1, "Down arrow should navigate down in Insert mode");
-        assert_eq!(app.input_mode, InputMode::Insert, "should stay in Insert mode");
+        assert_eq!(
+            app.selected, 1,
+            "Down arrow should navigate down in Insert mode"
+        );
+        assert_eq!(
+            app.input_mode,
+            InputMode::Insert,
+            "should stay in Insert mode"
+        );
     }
 
     #[test]
@@ -3747,7 +3857,10 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
-        assert!(app.query_changed, "typing should set query_changed for debounce");
+        assert!(
+            app.query_changed,
+            "typing should set query_changed for debounce"
+        );
         assert_eq!(app.query, "k");
     }
 
@@ -3763,7 +3876,11 @@ mod tests {
         // Reset query_changed to verify Enter re-triggers.
         app.query_changed = false;
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.input_mode, InputMode::Normal, "Enter should return to Normal");
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "Enter should return to Normal"
+        );
         assert!(app.query_changed, "Enter should trigger search");
         assert_eq!(app.query, "drum", "query should be preserved");
     }
@@ -3783,7 +3900,11 @@ mod tests {
         let mut app = make_app_with_results(10);
         // Simulate new search dispatched — results should still be visible.
         app.search_pending = true;
-        assert_eq!(app.results.len(), 10, "old results should persist until new batch");
+        assert_eq!(
+            app.results.len(),
+            10,
+            "old results should persist until new batch"
+        );
     }
 
     #[test]
@@ -3798,11 +3919,15 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         };
         app.on_search_results(vec![new_row]);
         assert_eq!(app.results.len(), 1, "old results should be replaced");
-        assert_eq!(app.results[0].meta.path, std::path::PathBuf::from("/new/result.wav"));
+        assert_eq!(
+            app.results[0].meta.path,
+            std::path::PathBuf::from("/new/result.wav")
+        );
         assert!(!app.search_pending, "search_pending should be cleared");
     }
 
@@ -3818,7 +3943,8 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         };
         app.on_search_results(vec![row1]);
         assert_eq!(app.results.len(), 1);
@@ -3830,7 +3956,8 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         };
         app.on_search_results(vec![row2]);
         assert_eq!(app.results.len(), 2);
@@ -3923,7 +4050,10 @@ mod tests {
         app.was_playing = true;
         app.selected = 0;
         app.update_playback_position();
-        assert_eq!(app.selected, 0, "should not advance when auto_advance is off");
+        assert_eq!(
+            app.selected, 0,
+            "should not advance when auto_advance is off"
+        );
     }
 
     #[test]
@@ -4267,7 +4397,10 @@ mod tests {
         assert!(app.preview.as_ref().unwrap().markers.is_some());
         let markers = app.preview.as_ref().unwrap().markers.unwrap();
         // 5s @ 48kHz = 240000 samples → preset_loop
-        assert_eq!(markers, crate::engine::bext::MarkerConfig::preset_loop(240000));
+        assert_eq!(
+            markers,
+            crate::engine::bext::MarkerConfig::preset_loop(240000)
+        );
     }
 
     #[test]
@@ -4405,7 +4538,7 @@ mod tests {
     #[test]
     fn test_segments_reverse_encoding() {
         // When m1 > m2, segment 2 should be marked reverse.
-        use crate::engine::bext::{MarkerBank, MARKER_EMPTY};
+        use crate::engine::bext::{MARKER_EMPTY, MarkerBank};
         let bank = MarkerBank {
             m1: 30000,
             m2: 10000,
@@ -4470,7 +4603,7 @@ mod tests {
 
     mod segment_proptests {
         use super::*;
-        use crate::engine::bext::{MarkerBank, MARKER_EMPTY};
+        use crate::engine::bext::{MARKER_EMPTY, MarkerBank};
         use proptest::prelude::*;
 
         // --- Generators ---
@@ -4505,18 +4638,25 @@ mod tests {
         /// Full MarkerBank with weighted marker and rep generation.
         fn arb_bank(total: u32) -> impl Strategy<Value = MarkerBank> {
             (
-                arb_marker(total), arb_marker(total), arb_marker(total),
-                0u8..16, 0u8..16, 0u8..16, 0u8..16,
-            ).prop_map(|(m1, m2, m3, r0, r1, r2, r3)| {
-                MarkerBank { m1, m2, m3, reps: [r0, r1, r2, r3] }
-            })
+                arb_marker(total),
+                arb_marker(total),
+                arb_marker(total),
+                0u8..16,
+                0u8..16,
+                0u8..16,
+                0u8..16,
+            )
+                .prop_map(|(m1, m2, m3, r0, r1, r2, r3)| MarkerBank {
+                    m1,
+                    m2,
+                    m3,
+                    reps: [r0, r1, r2, r3],
+                })
         }
 
         /// (total, bank) pair where markers are valid for the given total.
         fn arb_total_and_bank() -> impl Strategy<Value = (u32, MarkerBank)> {
-            arb_total().prop_flat_map(|total| {
-                arb_bank(total).prop_map(move |bank| (total, bank))
-            })
+            arb_total().prop_flat_map(|total| arb_bank(total).prop_map(move |bank| (total, bank)))
         }
 
         // --- Group 3: Segment computation invariants ---
@@ -4656,7 +4796,9 @@ mod tests {
         #[test]
         fn test_rep15_stored_in_segment() {
             let bank = MarkerBank {
-                m1: 12000, m2: 24000, m3: 36000,
+                m1: 12000,
+                m2: 24000,
+                m3: 36000,
                 reps: [15, 1, 1, 1],
             };
             let segs = segment_bounds(&bank, 48000);
@@ -4668,7 +4810,9 @@ mod tests {
         #[test]
         fn test_rep0_means_skip() {
             let bank = MarkerBank {
-                m1: 12000, m2: 24000, m3: 36000,
+                m1: 12000,
+                m2: 24000,
+                m3: 36000,
                 reps: [0, 1, 0, 1],
             };
             let segs = segment_bounds(&bank, 48000);
@@ -4758,7 +4902,10 @@ mod tests {
         assert!(app.markers_visible);
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert!(!app.markers_visible);
-        assert_eq!(app.status_message.as_deref(), Some("Markers hidden — Ctrl-Alt-d to restore"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Markers hidden — Ctrl-Alt-d to restore")
+        );
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert!(app.markers_visible);
         assert_eq!(app.status_message.as_deref(), Some("Markers visible"));
@@ -4769,7 +4916,10 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.markers_visible = false;
         app.dispatch(actions::Action::ClearBankMarkers);
-        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-d"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Enable markers with Ctrl-Alt-d")
+        );
     }
 
     #[test]
@@ -4786,7 +4936,10 @@ mod tests {
         let mut app = make_app_with_results(5);
         app.global_loop = true;
         app.move_selection(1);
-        assert!(app.global_loop, "global_loop should persist across file changes");
+        assert!(
+            app.global_loop,
+            "global_loop should persist across file changes"
+        );
     }
 
     #[test]
@@ -4867,7 +5020,10 @@ mod tests {
     fn test_toggle_infinite_loop_needs_selection() {
         let mut app = App::new(Theme::default());
         app.toggle_infinite_loop();
-        assert_eq!(app.status_message.as_deref(), Some("Select a marker first (Tab)"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Select a marker first (Tab)")
+        );
     }
 
     #[test]
@@ -4897,10 +5053,16 @@ mod tests {
         let mut app = App::new(Theme::default());
         assert!(!app.global_loop);
         app.toggle_preview_loop();
-        assert!(app.global_loop, "toggle_preview_loop should set global_loop = true");
+        assert!(
+            app.global_loop,
+            "toggle_preview_loop should set global_loop = true"
+        );
         assert_eq!(app.status_message.as_deref(), Some("Loop: on"));
         app.toggle_preview_loop();
-        assert!(!app.global_loop, "second toggle should set global_loop = false");
+        assert!(
+            !app.global_loop,
+            "second toggle should set global_loop = false"
+        );
         assert_eq!(app.status_message.as_deref(), Some("Loop: off"));
     }
 
@@ -4921,7 +5083,10 @@ mod tests {
             pcm: None,
         });
         app.marker_reset();
-        assert_eq!(app.status_message.as_deref(), Some("Markers reset to preset"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Markers reset to preset")
+        );
         // Should have markers now.
         let markers = app.preview.as_ref().unwrap().markers.as_ref().unwrap();
         assert!(!markers.bank_a.is_empty());
@@ -4988,7 +5153,10 @@ mod tests {
         // SeekForwardLarge with a marker selected should NOT update cursor_sample.
         app.dispatch(actions::Action::SeekForwardLarge);
         // cursor_sample should remain 0 (seek_relative was NOT called).
-        assert_eq!(app.cursor_sample, 0, "cursor_sample must not change when marker selected + large seek");
+        assert_eq!(
+            app.cursor_sample, 0,
+            "cursor_sample must not change when marker selected + large seek"
+        );
     }
 
     #[test]
@@ -5012,7 +5180,10 @@ mod tests {
         app.selected_marker = None; // No marker selected.
         app.dispatch(actions::Action::SeekForwardLarge);
         // cursor_sample should have advanced by scrub_large * sample_rate.
-        assert!(app.cursor_sample > 0, "cursor_sample should advance when no marker selected");
+        assert!(
+            app.cursor_sample > 0,
+            "cursor_sample should advance when no marker selected"
+        );
     }
 
     // --- Sprint 13 Q1: RandomSort ---
@@ -5021,15 +5192,18 @@ mod tests {
     fn test_random_sort_shuffles_results() {
         let mut app = App::new(Theme::default());
         // Create 10 results with different paths.
-        app.results = (0..10).map(|i| TableRow {
-            meta: UnifiedMetadata {
-                path: std::path::PathBuf::from(format!("/test/{i}.wav")),
-                ..UnifiedMetadata::default()
-            },
-            audio_info: None,
-            marked: false,
-            markers: None, sim: None,
-        }).collect();
+        app.results = (0..10)
+            .map(|i| TableRow {
+                meta: UnifiedMetadata {
+                    path: std::path::PathBuf::from(format!("/test/{i}.wav")),
+                    ..UnifiedMetadata::default()
+                },
+                audio_info: None,
+                marked: false,
+                markers: None,
+                sim: None,
+            })
+            .collect();
         let original_order: Vec<_> = app.results.iter().map(|r| r.meta.path.clone()).collect();
         app.random_sort();
         let new_order: Vec<_> = app.results.iter().map(|r| r.meta.path.clone()).collect();
@@ -5038,9 +5212,15 @@ mod tests {
         let mut new_sorted = new_order.clone();
         orig_sorted.sort();
         new_sorted.sort();
-        assert_eq!(orig_sorted, new_sorted, "shuffle must not lose or duplicate entries");
+        assert_eq!(
+            orig_sorted, new_sorted,
+            "shuffle must not lose or duplicate entries"
+        );
         assert_eq!(app.status_message.as_deref(), Some("Shuffled"));
-        assert!(app.sort_column.is_none(), "sort_column must be cleared after shuffle");
+        assert!(
+            app.sort_column.is_none(),
+            "sort_column must be cleared after shuffle"
+        );
     }
 
     #[test]
@@ -5121,8 +5301,7 @@ mod tests {
         app.speed_adjust_bpm(1.0);
         // No BPM → status message set, speed unchanged.
         assert!((app.speed_multiplier - 1.0).abs() < f32::EPSILON);
-        assert!(app.status_message.as_deref().unwrap_or("")
-            .contains("BPM"));
+        assert!(app.status_message.as_deref().unwrap_or("").contains("BPM"));
     }
 
     #[test]
@@ -5210,7 +5389,8 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         }];
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
         app.on_preview_ready(PreviewData {
@@ -5247,7 +5427,10 @@ mod tests {
     fn test_nudge_marker_requires_selection() {
         let mut app = App::new(Theme::default());
         app.nudge_marker(true, 1);
-        assert_eq!(app.status_message.as_deref(), Some("Select a marker first (Tab)"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Select a marker first (Tab)")
+        );
     }
 
     #[test]
@@ -5262,14 +5445,17 @@ mod tests {
     fn test_snap_zc_requires_selection() {
         let mut app = App::new(Theme::default());
         app.snap_zero_crossing(true);
-        assert_eq!(app.status_message.as_deref(), Some("Select a marker first (Tab)"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Select a marker first (Tab)")
+        );
     }
 
     // --- Sprint 12: Zoom state-machine tests ---
 
     /// Helper: build a PreviewData with a real PcmData payload (1-second 48kHz mono sine).
     fn preview_with_pcm(sample_rate: u32, duration_secs: f64) -> PreviewData {
-        use crate::engine::wav::{AudioInfo, PcmData, PEAK_COUNT};
+        use crate::engine::wav::{AudioInfo, PEAK_COUNT, PcmData};
         let total_samples = (sample_rate as f64 * duration_secs) as usize;
         // Simple non-zero waveform so peaks are non-trivial.
         let samples: Vec<i16> = (0..total_samples)
@@ -5293,7 +5479,10 @@ mod tests {
                 path: std::path::PathBuf::from("/test/zoom.wav"),
                 ..Default::default()
             },
-            peaks: peaks.into_iter().chain(std::iter::repeat(0).take(PEAK_COUNT)).collect(),
+            peaks: peaks
+                .into_iter()
+                .chain(std::iter::repeat(0).take(PEAK_COUNT))
+                .collect(),
             audio_info: Some(AudioInfo {
                 total_samples: total_samples as u32,
                 duration_secs,
@@ -5319,7 +5508,10 @@ mod tests {
         });
         app.zoom_in();
         assert_eq!(app.zoom_level, 0, "level unchanged when pcm is None");
-        assert_eq!(app.status_message.as_deref(), Some("No audio data for zoom"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("No audio data for zoom")
+        );
     }
 
     #[test]
@@ -5336,10 +5528,17 @@ mod tests {
         use crate::engine::wav::NUM_ZOOM_COLS;
         let mut app = App::new(Theme::default());
         app.on_preview_ready(preview_with_pcm(48000, 1.0));
-        assert!(app.zoom_peaks.is_empty(), "zoom_peaks should be empty before first zoom");
+        assert!(
+            app.zoom_peaks.is_empty(),
+            "zoom_peaks should be empty before first zoom"
+        );
         app.zoom_in();
-        assert_eq!(app.zoom_peaks.len(), NUM_ZOOM_COLS,
-            "zoom_peaks should have {} values after zoom_in", NUM_ZOOM_COLS);
+        assert_eq!(
+            app.zoom_peaks.len(),
+            NUM_ZOOM_COLS,
+            "zoom_peaks should have {} values after zoom_in",
+            NUM_ZOOM_COLS
+        );
     }
 
     #[test]
@@ -5361,7 +5560,10 @@ mod tests {
         assert!(!app.zoom_peaks.is_empty());
         app.zoom_out();
         assert_eq!(app.zoom_level, 0);
-        assert!(app.zoom_peaks.is_empty(), "zoom_peaks cleared when returning to full view");
+        assert!(
+            app.zoom_peaks.is_empty(),
+            "zoom_peaks cleared when returning to full view"
+        );
     }
 
     #[test]
@@ -5398,8 +5600,15 @@ mod tests {
         }
         assert_eq!(app.zoom_level, crate::engine::wav::MAX_ZOOM_LEVEL);
         app.zoom_in();
-        assert_eq!(app.zoom_level, crate::engine::wav::MAX_ZOOM_LEVEL, "must not exceed MAX");
-        let max_zoom_str = format!("Maximum zoom ({}×)", 1usize << crate::engine::wav::MAX_ZOOM_LEVEL);
+        assert_eq!(
+            app.zoom_level,
+            crate::engine::wav::MAX_ZOOM_LEVEL,
+            "must not exceed MAX"
+        );
+        let max_zoom_str = format!(
+            "Maximum zoom ({}×)",
+            1usize << crate::engine::wav::MAX_ZOOM_LEVEL
+        );
         assert_eq!(app.status_message.as_deref(), Some(max_zoom_str.as_str()));
     }
 
@@ -5428,7 +5637,7 @@ mod tests {
 
     #[test]
     fn test_zoom_in_centers_on_selected_marker() {
-        use crate::engine::bext::{MarkerBank, MarkerConfig, MARKER_EMPTY};
+        use crate::engine::bext::{MARKER_EMPTY, MarkerBank, MarkerConfig};
         let mut app = App::new(Theme::default());
         let p = preview_with_pcm(48000, 1.0);
         let total = p.pcm.as_ref().unwrap().samples.len() as u32;
@@ -5448,8 +5657,11 @@ mod tests {
         app.selected_marker = Some(2); // select marker 2
         app.zoom_in();
         // zoom_center should be at marker 2's position.
-        assert_eq!(app.zoom_center, Some(m2_pos),
-            "zoom should centre on selected marker 2 at sample {m2_pos}");
+        assert_eq!(
+            app.zoom_center,
+            Some(m2_pos),
+            "zoom should centre on selected marker 2 at sample {m2_pos}"
+        );
     }
 
     #[test]
@@ -5502,13 +5714,30 @@ mod tests {
         let mut app = app_with_preview_and_markers();
         // selected_marker = Some(0) means SOF (segment 0).
         app.selected_marker = Some(0);
-        let initial = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
-            .bank_a.reps[0];
+        let initial = app
+            .preview
+            .as_ref()
+            .unwrap()
+            .markers
+            .as_ref()
+            .unwrap()
+            .bank_a
+            .reps[0];
         app.dispatch(actions::Action::IncrementRep);
-        let after = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
-            .bank_a.reps[0];
-        assert_eq!(after, (initial + 1).min(15),
-            "IncrementRep with selected_marker=0 should affect segment 0 reps");
+        let after = app
+            .preview
+            .as_ref()
+            .unwrap()
+            .markers
+            .as_ref()
+            .unwrap()
+            .bank_a
+            .reps[0];
+        assert_eq!(
+            after,
+            (initial + 1).min(15),
+            "IncrementRep with selected_marker=0 should affect segment 0 reps"
+        );
     }
 
     #[test]
@@ -5516,13 +5745,30 @@ mod tests {
         let mut app = app_with_preview_and_markers();
         // selected_marker = Some(2) means marker 2 → segment 2.
         app.selected_marker = Some(2);
-        let initial = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
-            .bank_a.reps[2];
+        let initial = app
+            .preview
+            .as_ref()
+            .unwrap()
+            .markers
+            .as_ref()
+            .unwrap()
+            .bank_a
+            .reps[2];
         app.dispatch(actions::Action::IncrementRep);
-        let after = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
-            .bank_a.reps[2];
-        assert_eq!(after, (initial + 1).min(15),
-            "IncrementRep with selected_marker=2 should affect segment 2 reps");
+        let after = app
+            .preview
+            .as_ref()
+            .unwrap()
+            .markers
+            .as_ref()
+            .unwrap()
+            .bank_a
+            .reps[2];
+        assert_eq!(
+            after,
+            (initial + 1).min(15),
+            "IncrementRep with selected_marker=2 should affect segment 2 reps"
+        );
     }
 
     #[test]
@@ -5537,10 +5783,20 @@ mod tests {
         app.selected_marker = Some(1);
         let initial = 3u8;
         app.dispatch(actions::Action::DecrementRep);
-        let after = app.preview.as_ref().unwrap().markers.as_ref().unwrap()
-            .bank_a.reps[1];
-        assert_eq!(after, initial - 1,
-            "DecrementRep with selected_marker=1 should affect segment 1 reps");
+        let after = app
+            .preview
+            .as_ref()
+            .unwrap()
+            .markers
+            .as_ref()
+            .unwrap()
+            .bank_a
+            .reps[1];
+        assert_eq!(
+            after,
+            initial - 1,
+            "DecrementRep with selected_marker=1 should affect segment 1 reps"
+        );
     }
 
     #[test]
@@ -5555,11 +5811,22 @@ mod tests {
         }
         app.selected_marker = Some(0); // target segment 0
         app.dispatch(actions::Action::IncrementRep);
-        let reps = app.preview.as_ref().unwrap().markers.as_ref().unwrap().bank_a.reps;
+        let reps = app
+            .preview
+            .as_ref()
+            .unwrap()
+            .markers
+            .as_ref()
+            .unwrap()
+            .bank_a
+            .reps;
         assert_eq!(reps[0], 3, "segment 0 should have increased");
         assert_eq!(reps[1], 2, "segment 1 should be unchanged");
         assert_eq!(reps[2], 2, "segment 2 should be unchanged");
-        assert_eq!(reps[3], 2, "segment 3 should be unchanged (old bug: this was 3)");
+        assert_eq!(
+            reps[3], 2,
+            "segment 3 should be unchanged (old bug: this was 3)"
+        );
     }
 
     // --- Sprint 12: ToggleMarkerDisplay tests ---
@@ -5579,17 +5846,27 @@ mod tests {
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert!(!app.markers_visible);
         // Marker data must survive the toggle.
-        let still_has_markers = app.preview.as_ref()
+        let still_has_markers = app
+            .preview
+            .as_ref()
             .and_then(|p| p.markers.as_ref())
             .is_some();
-        assert!(still_has_markers, "marker data preserved when display is toggled off");
+        assert!(
+            still_has_markers,
+            "marker data preserved when display is toggled off"
+        );
         // Toggle back on — data still present.
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert!(app.markers_visible);
-        let still_has_markers2 = app.preview.as_ref()
+        let still_has_markers2 = app
+            .preview
+            .as_ref()
             .and_then(|p| p.markers.as_ref())
             .is_some();
-        assert!(still_has_markers2, "marker data preserved after toggle back on");
+        assert!(
+            still_has_markers2,
+            "marker data preserved after toggle back on"
+        );
     }
 
     #[test]
@@ -5597,8 +5874,10 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.selected_marker = Some(2);
         app.dispatch(actions::Action::ToggleMarkerDisplay);
-        assert_eq!(app.selected_marker, None,
-            "selected_marker must be cleared when markers hidden");
+        assert_eq!(
+            app.selected_marker, None,
+            "selected_marker must be cleared when markers hidden"
+        );
     }
 
     #[test]
@@ -5606,7 +5885,10 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.markers_visible = false;
         app.dispatch(actions::Action::SetMarker1);
-        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-d"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Enable markers with Ctrl-Alt-d")
+        );
     }
 
     #[test]
@@ -5614,7 +5896,10 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.markers_visible = false;
         app.dispatch(actions::Action::SaveMarkers);
-        assert_eq!(app.status_message.as_deref(), Some("Enable markers with Ctrl-Alt-d"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Enable markers with Ctrl-Alt-d")
+        );
     }
 
     // --- Sprint 12 fixes: F1, F2, F3, F5 ---
@@ -5637,11 +5922,31 @@ mod tests {
             app.adjust_rep(1);
         }
 
-        let reps = app.preview.as_ref().unwrap().markers.as_ref().unwrap().bank_a.reps;
-        assert_eq!(reps[0], 2, "segment 0 rep should be 2 after increment at idx 0");
-        assert_eq!(reps[1], 2, "segment 1 rep should be 2 after increment at idx 1");
-        assert_eq!(reps[2], 2, "segment 2 rep should be 2 after increment at idx 2");
-        assert_eq!(reps[3], 2, "segment 3 rep should be 2 after increment at idx 3");
+        let reps = app
+            .preview
+            .as_ref()
+            .unwrap()
+            .markers
+            .as_ref()
+            .unwrap()
+            .bank_a
+            .reps;
+        assert_eq!(
+            reps[0], 2,
+            "segment 0 rep should be 2 after increment at idx 0"
+        );
+        assert_eq!(
+            reps[1], 2,
+            "segment 1 rep should be 2 after increment at idx 1"
+        );
+        assert_eq!(
+            reps[2], 2,
+            "segment 2 rep should be 2 after increment at idx 2"
+        );
+        assert_eq!(
+            reps[3], 2,
+            "segment 3 rep should be 2 after increment at idx 3"
+        );
     }
 
     #[test]
@@ -5658,7 +5963,10 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.cursor_sample = 44100; // simulate having scrubbed
         app.rewind_to_start();
-        assert_eq!(app.cursor_sample, 0, "cursor_sample should be 0 after rewind");
+        assert_eq!(
+            app.cursor_sample, 0,
+            "cursor_sample should be 0 after rewind"
+        );
     }
 
     #[test]
@@ -5674,7 +5982,13 @@ mod tests {
         });
         // app.results is empty → no path to load PCM from.
         app.zoom_in();
-        assert_eq!(app.zoom_level, 0, "zoom_level unchanged when no path available");
-        assert_eq!(app.status_message.as_deref(), Some("No audio data for zoom"));
+        assert_eq!(
+            app.zoom_level, 0,
+            "zoom_level unchanged when no path available"
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("No audio data for zoom")
+        );
     }
 }

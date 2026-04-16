@@ -8,8 +8,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::engine::playback::PlaybackState;
 
-use super::{App, InputMode};
 use super::theme::Theme;
+use super::{App, InputMode};
 
 /// Render the search prompt bar.
 pub fn render_search_prompt(app: &App, area: Rect, buf: &mut Buffer) {
@@ -158,7 +158,9 @@ fn render_marker_lines(
 
     // Bank A: top half rows.
     for sample in markers.bank_a.defined_markers() {
-        if let Some(col) = sample_to_viewport_col(sample, viewport_start, viewport_samples, wave_width) {
+        if let Some(col) =
+            sample_to_viewport_col(sample, viewport_start, viewport_samples, wave_width)
+        {
             let cx = x_start + col;
             for row in 0..half {
                 let cy = y_start + row;
@@ -171,7 +173,9 @@ fn render_marker_lines(
 
     // Bank B: bottom half rows.
     for sample in markers.bank_b.defined_markers() {
-        if let Some(col) = sample_to_viewport_col(sample, viewport_start, viewport_samples, wave_width) {
+        if let Some(col) =
+            sample_to_viewport_col(sample, viewport_start, viewport_samples, wave_width)
+        {
             let cx = x_start + col;
             for row in half..wave_rows {
                 let cy = y_start + row;
@@ -220,8 +224,8 @@ fn render_segment_labels(
         let hi = seg.start.max(seg.end);
 
         // Map lo and hi into the viewport; skip if midpoint outside window.
-        let col_start = sample_to_viewport_col(lo, viewport_start, viewport_samples, wave_width)
-            .unwrap_or(0);
+        let col_start =
+            sample_to_viewport_col(lo, viewport_start, viewport_samples, wave_width).unwrap_or(0);
         let col_end = sample_to_viewport_col(hi, viewport_start, viewport_samples, wave_width)
             .unwrap_or_else(|| {
                 // hi may be clipped at viewport end.
@@ -234,7 +238,9 @@ fn render_segment_labels(
 
         // Skip if the entire segment is outside the viewport.
         let mid_sample = (lo / 2).saturating_add(hi / 2);
-        if sample_to_viewport_col(mid_sample, viewport_start, viewport_samples, wave_width).is_none() {
+        if sample_to_viewport_col(mid_sample, viewport_start, viewport_samples, wave_width)
+            .is_none()
+        {
             continue;
         }
 
@@ -336,8 +342,12 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
         }
         PlaybackState::Stopped => {
             let mut s = String::new();
-            if app.auto_advance { s.push_str(" [AUTO]"); }
-            if app.global_loop { s.push_str(" [LOOP]"); }
+            if app.auto_advance {
+                s.push_str(" [AUTO]");
+            }
+            if app.global_loop {
+                s.push_str(" [LOOP]");
+            }
             let bank_label = match app.active_bank {
                 super::Bank::A => " [A]",
                 super::Bank::B => " [B]",
@@ -356,7 +366,11 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
         Some(bpm) => format!(" \u{2669}{:.1}", bpm), // ♩
         None => String::new(),
     };
-    let filter_str = if app.show_marked_only { " [marked]" } else { "" };
+    let filter_str = if app.show_marked_only {
+        " [marked]"
+    } else {
+        ""
+    };
     let right = format!(" {vol_str} {speed_str}{bpm_str}{filter_str} ");
 
     // Render left (playback) with accent style.
@@ -378,12 +392,7 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
 ///
 /// Displays column headers + rows of metadata from `app.results`.
 /// Column list comes from config or defaults.
-pub fn render_metadata_table(
-    app: &App,
-    area: Rect,
-    buf: &mut Buffer,
-    columns: &[String],
-) {
+pub fn render_metadata_table(app: &App, area: Rect, buf: &mut Buffer, columns: &[String]) {
     let theme = &app.theme;
 
     if area.width == 0 || area.height == 0 {
@@ -433,7 +442,11 @@ pub fn render_metadata_table(
         let w = col_widths[i];
         // Append sort indicator if this column is sorted.
         let sort_indicator = if app.sort_column.as_deref() == Some(def.key) {
-            if app.sort_ascending { " \u{25B2}" } else { " \u{25BC}" }
+            if app.sort_ascending {
+                " \u{25B2}"
+            } else {
+                " \u{25BC}"
+            }
         } else {
             ""
         };
@@ -457,7 +470,9 @@ pub fn render_metadata_table(
 
     // Build index list: either all results or only marked.
     let indices: Vec<usize> = if app.show_marked_only {
-        app.results.iter().enumerate()
+        app.results
+            .iter()
+            .enumerate()
             .filter(|(_, r)| r.marked)
             .map(|(i, _)| i)
             .collect()
@@ -585,10 +600,7 @@ pub fn column_value(row: &crate::engine::TableRow, key: &str) -> String {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        "sim" => row
-            .sim
-            .map(|s| format!("{s:.2}"))
-            .unwrap_or_default(),
+        "sim" => row.sim.map(|s| format!("{s:.2}")).unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -654,24 +666,33 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     // Zoom mapping parameters for marker overlay and transport indicator.
     // viewport_start_samples: first sample of the visible window (0 at full view).
     // effective_total_samples: number of samples spanned by the visible window.
-    let (effective_total_samples, viewport_start_samples): (u64, u64) =
-        if app.zoom_level > 0 {
-            if let Some(pcm) = preview.pcm.as_ref() {
-                use crate::engine::wav::NUM_ZOOM_COLS;
-                let total = pcm.samples.len();
-                let k_lvl0 = if total < NUM_ZOOM_COLS { 1 } else { total / NUM_ZOOM_COLS };
-                let k_current = (k_lvl0 >> app.zoom_level).max(1);
-                let viewport_s = (NUM_ZOOM_COLS * k_current) as u64;
-                let start_s = (app.zoom_offset * k_current) as u64;
-                (viewport_s, start_s)
+    let (effective_total_samples, viewport_start_samples): (u64, u64) = if app.zoom_level > 0 {
+        if let Some(pcm) = preview.pcm.as_ref() {
+            use crate::engine::wav::NUM_ZOOM_COLS;
+            let total = pcm.samples.len();
+            let k_lvl0 = if total < NUM_ZOOM_COLS {
+                1
             } else {
-                let total = preview.audio_info.as_ref().map_or(0u32, |ai| ai.total_samples);
-                (total as u64, 0)
-            }
+                total / NUM_ZOOM_COLS
+            };
+            let k_current = (k_lvl0 >> app.zoom_level).max(1);
+            let viewport_s = (NUM_ZOOM_COLS * k_current) as u64;
+            let start_s = (app.zoom_offset * k_current) as u64;
+            (viewport_s, start_s)
         } else {
-            let total = preview.audio_info.as_ref().map_or(0u32, |ai| ai.total_samples);
+            let total = preview
+                .audio_info
+                .as_ref()
+                .map_or(0u32, |ai| ai.total_samples);
             (total as u64, 0)
-        };
+        }
+    } else {
+        let total = preview
+            .audio_info
+            .as_ref()
+            .map_or(0u32, |ai| ai.total_samples);
+        (total as u64, 0)
+    };
 
     let lines = if peaks_for_render.is_empty() {
         let blank = "\u{2800}".repeat(wave_width);
@@ -685,47 +706,54 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     let half = lines.len() / 2;
 
     for (i, line) in lines.iter().enumerate().take(wave_rows) {
-        let style = if i < half { positive_style } else { negative_style };
+        let style = if i < half {
+            positive_style
+        } else {
+            negative_style
+        };
         buf.set_string(area.x, area.y + i as u16, line, style);
     }
 
     // Marker lines and segment labels overlay (gated by markers_visible).
     if app.markers_visible {
-    if let Some(markers) = &preview.markers {
-        if !markers.is_empty() {
-            let total_samples = preview.audio_info.as_ref().map_or(0u32, |ai| ai.total_samples);
-            if total_samples > 0 && effective_total_samples > 0 {
-                render_marker_lines(
-                    markers,
-                    viewport_start_samples,
-                    effective_total_samples,
-                    area.x,
-                    area.y,
-                    wave_width as u16,
-                    wave_rows as u16,
-                    buf,
-                    theme,
-                );
+        if let Some(markers) = &preview.markers {
+            if !markers.is_empty() {
+                let total_samples = preview
+                    .audio_info
+                    .as_ref()
+                    .map_or(0u32, |ai| ai.total_samples);
+                if total_samples > 0 && effective_total_samples > 0 {
+                    render_marker_lines(
+                        markers,
+                        viewport_start_samples,
+                        effective_total_samples,
+                        area.x,
+                        area.y,
+                        wave_width as u16,
+                        wave_rows as u16,
+                        buf,
+                        theme,
+                    );
 
-                // Segment labels for the active bank.
-                let (bank, color) = match app.active_bank {
-                    super::Bank::A => (&markers.bank_a, theme.marker_a),
-                    super::Bank::B => (&markers.bank_b, theme.marker_b),
-                };
-                render_segment_labels(
-                    bank,
-                    total_samples,
-                    viewport_start_samples,
-                    effective_total_samples,
-                    area.x,
-                    area.y,
-                    wave_width as u16,
-                    buf,
-                    Style::default().fg(color),
-                );
+                    // Segment labels for the active bank.
+                    let (bank, color) = match app.active_bank {
+                        super::Bank::A => (&markers.bank_a, theme.marker_a),
+                        super::Bank::B => (&markers.bank_b, theme.marker_b),
+                    };
+                    render_segment_labels(
+                        bank,
+                        total_samples,
+                        viewport_start_samples,
+                        effective_total_samples,
+                        area.x,
+                        area.y,
+                        wave_width as u16,
+                        buf,
+                        Style::default().fg(color),
+                    );
+                }
             }
         }
-    }
     } // markers_visible
 
     // Playback cursor overlay (zoom-viewport-aware).
@@ -742,8 +770,8 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
         if play_sample >= viewport_start_samples
             && play_sample < viewport_start_samples + effective_total_samples
         {
-            let viewport_fraction = (play_sample - viewport_start_samples) as f32
-                / effective_total_samples as f32;
+            let viewport_fraction =
+                (play_sample - viewport_start_samples) as f32 / effective_total_samples as f32;
             render_playback_cursor(
                 viewport_fraction,
                 area.x,
@@ -819,7 +847,10 @@ pub fn render_braille_waveform_height(peaks: &[u8], width: usize, height: usize)
     // Detect stereo: 360+ bytes = 180L + 180R.
     let is_stereo = peaks.len() >= crate::engine::wav::STEREO_PEAK_COUNT;
     let (left_peaks, right_peaks) = if is_stereo {
-        (&peaks[..crate::engine::wav::PEAK_COUNT], &peaks[crate::engine::wav::PEAK_COUNT..crate::engine::wav::STEREO_PEAK_COUNT])
+        (
+            &peaks[..crate::engine::wav::PEAK_COUNT],
+            &peaks[crate::engine::wav::PEAK_COUNT..crate::engine::wav::STEREO_PEAK_COUNT],
+        )
     } else {
         (peaks, peaks) // mono: both halves use same data
     };
@@ -992,10 +1023,11 @@ pub fn render_help_overlay(app: &App, area: Rect, buf: &mut Buffer) {
 
     let key_col_width: usize = sections
         .iter()
-        .flat_map(|(_, rows)| rows.iter().map(|(_, keys)| {
-            keys.iter().map(|k| k.len()).sum::<usize>()
-                + keys.len().saturating_sub(1) * 2 // ", " separators
-        }))
+        .flat_map(|(_, rows)| {
+            rows.iter().map(|(_, keys)| {
+                keys.iter().map(|k| k.len()).sum::<usize>() + keys.len().saturating_sub(1) * 2 // ", " separators
+            })
+        })
         .max()
         .unwrap_or(12)
         .max(12)
@@ -1019,10 +1051,7 @@ pub fn render_help_overlay(app: &App, area: Rect, buf: &mut Buffer) {
                     format!("    {keys_str:<key_col_width$}  "),
                     theme.metadata_key,
                 ),
-                Span::styled(
-                    action.description().to_string(),
-                    theme.metadata_value,
-                ),
+                Span::styled(action.description().to_string(), theme.metadata_value),
             ]));
         }
 
@@ -1035,11 +1064,11 @@ pub fn render_help_overlay(app: &App, area: Rect, buf: &mut Buffer) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-    use crate::engine::{TableRow, UnifiedMetadata};
     use super::super::PreviewData;
+    use super::*;
+    use crate::engine::{TableRow, UnifiedMetadata};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     /// Helper to create a default TableRow for tests.
     fn default_table_row() -> TableRow {
@@ -1047,7 +1076,8 @@ mod tests {
             meta: UnifiedMetadata::default(),
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         }
     }
 
@@ -1139,7 +1169,10 @@ mod tests {
         for row in &rows {
             assert_eq!(row.chars().count(), 90);
             for ch in row.chars() {
-                assert_eq!(ch, '\u{2800}', "all-zero peaks should produce blank Braille");
+                assert_eq!(
+                    ch, '\u{2800}',
+                    "all-zero peaks should produce blank Braille"
+                );
             }
         }
     }
@@ -1152,7 +1185,10 @@ mod tests {
         for row in &rows {
             assert_eq!(row.chars().count(), 90);
             for ch in row.chars() {
-                assert_ne!(ch, '\u{2800}', "all-max peaks should produce non-blank Braille");
+                assert_ne!(
+                    ch, '\u{2800}',
+                    "all-max peaks should produce non-blank Braille"
+                );
             }
         }
     }
@@ -1174,7 +1210,12 @@ mod tests {
         assert_eq!(rows.len(), 16);
         // Symmetric: row i should mirror row (15-i).
         for i in 0..8 {
-            assert_eq!(rows[i], rows[15 - i], "row {i} should mirror row {}", 15 - i);
+            assert_eq!(
+                rows[i],
+                rows[15 - i],
+                "row {i} should mirror row {}",
+                15 - i
+            );
         }
     }
 
@@ -1290,16 +1331,23 @@ mod tests {
         assert_eq!(rows.len(), 16);
 
         // Top 8 rows (left channel) should have non-blank characters.
-        let top_nonblank: usize = rows[..8].iter()
+        let top_nonblank: usize = rows[..8]
+            .iter()
             .flat_map(|r| r.chars())
             .filter(|&c| c != '\u{2800}')
             .count();
-        assert!(top_nonblank > 0, "top half (left) should have waveform dots");
+        assert!(
+            top_nonblank > 0,
+            "top half (left) should have waveform dots"
+        );
 
         // Bottom 8 rows (right channel) should be all blank.
         for (i, row) in rows[8..].iter().enumerate() {
             for ch in row.chars() {
-                assert_eq!(ch, '\u{2800}', "bottom row {i} should be blank (silent right channel)");
+                assert_eq!(
+                    ch, '\u{2800}',
+                    "bottom row {i} should be blank (silent right channel)"
+                );
             }
         }
     }
@@ -1316,7 +1364,12 @@ mod tests {
         assert_eq!(rows.len(), 16);
         // Should be symmetric: row i mirrors row (15-i).
         for i in 0..8 {
-            assert_eq!(rows[i], rows[15 - i], "stereo mono-compat: row {i} should mirror row {}", 15 - i);
+            assert_eq!(
+                rows[i],
+                rows[15 - i],
+                "stereo mono-compat: row {i} should mirror row {}",
+                15 - i
+            );
         }
     }
 
@@ -1327,7 +1380,12 @@ mod tests {
         let rows = render_braille_waveform_height(&peaks, 90, 16);
         assert_eq!(rows.len(), 16);
         for i in 0..8 {
-            assert_eq!(rows[i], rows[15 - i], "mono 180: row {i} should mirror row {}", 15 - i);
+            assert_eq!(
+                rows[i],
+                rows[15 - i],
+                "mono 180: row {i} should mirror row {}",
+                15 - i
+            );
         }
     }
 
@@ -1346,7 +1404,10 @@ mod tests {
         render_playback_cursor(0.01, 0, 0, 20, 4, &mut buf, &theme);
         // Column 0 should have cursor background.
         let cell = buf.cell((0, 0)).unwrap();
-        assert_eq!(cell.bg, theme.playback_cursor, "cursor should be at column 0");
+        assert_eq!(
+            cell.bg, theme.playback_cursor,
+            "cursor should be at column 0"
+        );
     }
 
     #[test]
@@ -1356,7 +1417,10 @@ mod tests {
         render_playback_cursor(0.5, 0, 0, 20, 4, &mut buf, &theme);
         // Column 10 should have cursor background.
         let cell = buf.cell((10, 0)).unwrap();
-        assert_eq!(cell.bg, theme.playback_cursor, "cursor should be at column 10");
+        assert_eq!(
+            cell.bg, theme.playback_cursor,
+            "cursor should be at column 10"
+        );
     }
 
     #[test]
@@ -1366,7 +1430,10 @@ mod tests {
         render_playback_cursor(1.0, 0, 0, 20, 4, &mut buf, &theme);
         // Column 19 (width-1) should have cursor background.
         let cell = buf.cell((19, 0)).unwrap();
-        assert_eq!(cell.bg, theme.playback_cursor, "cursor should be at column 19");
+        assert_eq!(
+            cell.bg, theme.playback_cursor,
+            "cursor should be at column 19"
+        );
     }
 
     #[test]
@@ -1466,7 +1533,10 @@ mod tests {
         let out = buffer_to_string(terminal.backend().buffer());
         // Transport info line should show path but no sample rate/format when audio_info is None.
         assert!(out.contains("file.wav"), "should show filename: {out}");
-        assert!(!out.contains("16-bit"), "should not show format when None: {out}");
+        assert!(
+            !out.contains("16-bit"),
+            "should not show format when None: {out}"
+        );
     }
 
     #[test]
@@ -1498,7 +1568,10 @@ mod tests {
             .unwrap();
         // Stopped: no playback text on left.
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(!out.contains("\u{25B6}"), "stopped should not show play icon: {out}");
+        assert!(
+            !out.contains("\u{25B6}"),
+            "stopped should not show play icon: {out}"
+        );
     }
 
     #[test]
@@ -1536,7 +1609,10 @@ mod tests {
             .unwrap();
         // Just verify it doesn't panic and doesn't show "No results".
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(!out.contains("No results"), "status bar should not show 'No results': {out}");
+        assert!(
+            !out.contains("No results"),
+            "status bar should not show 'No results': {out}"
+        );
     }
 
     #[test]
@@ -1555,8 +1631,14 @@ mod tests {
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("42 matches"), "search prompt should show match count: {out}");
-        assert!(out.contains("2 marked"), "search prompt should show marked count: {out}");
+        assert!(
+            out.contains("42 matches"),
+            "search prompt should show match count: {out}"
+        );
+        assert!(
+            out.contains("2 marked"),
+            "search prompt should show marked count: {out}"
+        );
     }
 
     #[test]
@@ -1574,7 +1656,10 @@ mod tests {
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
         assert!(out.contains("10 matches"), "should show match count: {out}");
-        assert!(!out.contains("marked"), "should not show 'marked' when count is zero: {out}");
+        assert!(
+            !out.contains("marked"),
+            "should not show 'marked' when count is zero: {out}"
+        );
     }
 
     // --- S5-T3 tests: Two-panel layout (table + waveform) ---
@@ -1582,7 +1667,11 @@ mod tests {
     #[test]
     fn test_table_renders_column_headers() {
         let app = App::new(Theme::default());
-        let columns = vec!["name".to_string(), "vendor".to_string(), "category".to_string()];
+        let columns = vec![
+            "name".to_string(),
+            "vendor".to_string(),
+            "category".to_string(),
+        ];
 
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1593,7 +1682,10 @@ mod tests {
             .unwrap();
         // No results → should show "No results" message.
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("No results"), "empty table should show No results: {out}");
+        assert!(
+            out.contains("No results"),
+            "empty table should show No results: {out}"
+        );
     }
 
     #[test]
@@ -1608,9 +1700,14 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         }];
-        let columns = vec!["name".to_string(), "vendor".to_string(), "category".to_string()];
+        let columns = vec![
+            "name".to_string(),
+            "vendor".to_string(),
+            "category".to_string(),
+        ];
 
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1637,7 +1734,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1646,7 +1744,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
         ];
         app.selected = 1;
@@ -1660,7 +1759,10 @@ mod tests {
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("snare"), "selected row should be visible: {out}");
+        assert!(
+            out.contains("snare"),
+            "selected row should be visible: {out}"
+        );
     }
 
     #[test]
@@ -1687,15 +1789,21 @@ mod tests {
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
         // Should contain Braille characters (waveform rendered).
-        assert!(out.contains('\u{2800}') || out.chars().any(|c| c >= '\u{2800}' && c <= '\u{28FF}'),
-            "waveform panel should contain Braille chars: {out}");
+        assert!(
+            out.contains('\u{2800}') || out.chars().any(|c| c >= '\u{2800}' && c <= '\u{28FF}'),
+            "waveform panel should contain Braille chars: {out}"
+        );
     }
 
     #[test]
     fn test_narrow_terminal_graceful() {
         let mut app = App::new(Theme::default());
         app.results = vec![default_table_row()];
-        let columns = vec!["name".to_string(), "vendor".to_string(), "category".to_string()];
+        let columns = vec![
+            "name".to_string(),
+            "vendor".to_string(),
+            "category".to_string(),
+        ];
 
         // Very narrow terminal — should not panic.
         let backend = TestBackend::new(20, 5);
@@ -1740,7 +1848,8 @@ mod tests {
                 channels: 2,
             }),
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         };
         assert_eq!(column_value(&row, "name"), "kick");
         assert_eq!(column_value(&row, "vendor"), "Mars");
@@ -1758,7 +1867,8 @@ mod tests {
             },
             audio_info: None,
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         };
         assert_eq!(column_value(&row, "duration"), "-");
         assert_eq!(column_value(&row, "sample_rate"), "-");
@@ -1783,7 +1893,10 @@ mod tests {
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("2 marked"), "search prompt should show mark count: {out}");
+        assert!(
+            out.contains("2 marked"),
+            "search prompt should show mark count: {out}"
+        );
     }
 
     #[test]
@@ -1800,7 +1913,10 @@ mod tests {
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(!out.contains("marked"), "search prompt should not show 'marked' when zero: {out}");
+        assert!(
+            !out.contains("marked"),
+            "search prompt should not show 'marked' when zero: {out}"
+        );
     }
 
     #[test]
@@ -1814,7 +1930,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: true,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1823,7 +1940,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: false,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
             TableRow {
                 meta: UnifiedMetadata {
@@ -1832,7 +1950,8 @@ mod tests {
                 },
                 audio_info: None,
                 marked: true,
-                markers: None, sim: None,
+                markers: None,
+                sim: None,
             },
         ];
         app.show_marked_only = true;
@@ -1848,7 +1967,10 @@ mod tests {
         let out = buffer_to_string(terminal.backend().buffer());
         assert!(out.contains("kick"), "marked file should be visible: {out}");
         assert!(out.contains("hat"), "marked file should be visible: {out}");
-        assert!(!out.contains("snare"), "unmarked file should be hidden: {out}");
+        assert!(
+            !out.contains("snare"),
+            "unmarked file should be hidden: {out}"
+        );
     }
 
     // --- Rating asterisks tests ---
@@ -1900,7 +2022,8 @@ mod tests {
                 channels: 2,
             }),
             marked: false,
-            markers: None, sim: None,
+            markers: None,
+            sim: None,
         };
         assert_eq!(column_value(&row, "date"), "2024-01-15");
         assert_eq!(column_value(&row, "take"), "67");
@@ -1925,7 +2048,10 @@ mod tests {
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("[NORMAL]"), "should show [NORMAL] indicator: {out}");
+        assert!(
+            out.contains("[NORMAL]"),
+            "should show [NORMAL] indicator: {out}"
+        );
     }
 
     #[test]
@@ -1940,7 +2066,10 @@ mod tests {
             })
             .unwrap();
         let out = buffer_to_string(terminal.backend().buffer());
-        assert!(out.contains("[SEARCH]"), "should show [SEARCH] indicator: {out}");
+        assert!(
+            out.contains("[SEARCH]"),
+            "should show [SEARCH] indicator: {out}"
+        );
     }
 
     #[test]
@@ -1955,7 +2084,10 @@ mod tests {
             })
             .unwrap();
         let normal_out = buffer_to_string(terminal.backend().buffer());
-        assert!(!normal_out.contains('\u{2588}'), "Normal mode should not show block cursor");
+        assert!(
+            !normal_out.contains('\u{2588}'),
+            "Normal mode should not show block cursor"
+        );
 
         // Insert mode: block cursor visible.
         let mut app2 = App::new(Theme::default());
@@ -1968,7 +2100,10 @@ mod tests {
             })
             .unwrap();
         let insert_out = buffer_to_string(terminal2.backend().buffer());
-        assert!(insert_out.contains('\u{2588}'), "Insert mode should show block cursor");
+        assert!(
+            insert_out.contains('\u{2588}'),
+            "Insert mode should show block cursor"
+        );
     }
 
     #[test]
@@ -2008,20 +2143,38 @@ mod tests {
                 let theme = Theme::default();
                 let markers = crate::engine::bext::MarkerConfig {
                     bank_a: crate::engine::bext::MarkerBank {
-                        m1: 0, m2: crate::engine::bext::MARKER_EMPTY,
-                        m3: 47999, reps: [1, 0, 1, 1],
+                        m1: 0,
+                        m2: crate::engine::bext::MARKER_EMPTY,
+                        m3: 47999,
+                        reps: [1, 0, 1, 1],
                     },
                     bank_b: crate::engine::bext::MarkerBank::empty(),
                 };
-                render_marker_lines(&markers, 0, 48000 as u64, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(
+                    &markers,
+                    0,
+                    48000 as u64,
+                    area.x,
+                    area.y,
+                    area.width,
+                    8,
+                    buf,
+                    &theme,
+                );
 
                 // m1=0 should be at column 0.
                 let cell_0 = buf.cell((0, 0)).unwrap();
-                assert_eq!(cell_0.bg, theme.marker_a, "marker at sample 0 should be at col 0");
+                assert_eq!(
+                    cell_0.bg, theme.marker_a,
+                    "marker at sample 0 should be at col 0"
+                );
 
                 // m3=47999 should be at last column (39).
                 let cell_last = buf.cell((39, 0)).unwrap();
-                assert_eq!(cell_last.bg, theme.marker_a, "marker at sample 47999 should be at last col");
+                assert_eq!(
+                    cell_last.bg, theme.marker_a,
+                    "marker at sample 47999 should be at last col"
+                );
             })
             .unwrap();
     }
@@ -2037,23 +2190,41 @@ mod tests {
                 let theme = Theme::default();
                 let markers = crate::engine::bext::MarkerConfig {
                     bank_a: crate::engine::bext::MarkerBank {
-                        m1: 24000, m2: crate::engine::bext::MARKER_EMPTY,
-                        m3: crate::engine::bext::MARKER_EMPTY, reps: [1, 0, 0, 1],
+                        m1: 24000,
+                        m2: crate::engine::bext::MARKER_EMPTY,
+                        m3: crate::engine::bext::MARKER_EMPTY,
+                        reps: [1, 0, 0, 1],
                     },
                     bank_b: crate::engine::bext::MarkerBank::empty(),
                 };
-                render_marker_lines(&markers, 0, 48000 as u64, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(
+                    &markers,
+                    0,
+                    48000 as u64,
+                    area.x,
+                    area.y,
+                    area.width,
+                    8,
+                    buf,
+                    &theme,
+                );
 
                 // m1=24000 → col 10 (midpoint of 20-wide).
                 // Top half (rows 0-3) should have marker_a bg.
                 for row in 0..4u16 {
                     let cell = buf.cell((10, row)).unwrap();
-                    assert_eq!(cell.bg, theme.marker_a, "bank A should appear in top half row {row}");
+                    assert_eq!(
+                        cell.bg, theme.marker_a,
+                        "bank A should appear in top half row {row}"
+                    );
                 }
                 // Bottom half (rows 4-7) should NOT have marker_a bg.
                 for row in 4..8u16 {
                     let cell = buf.cell((10, row)).unwrap();
-                    assert_ne!(cell.bg, theme.marker_a, "bank A should NOT appear in bottom half row {row}");
+                    assert_ne!(
+                        cell.bg, theme.marker_a,
+                        "bank A should NOT appear in bottom half row {row}"
+                    );
                 }
             })
             .unwrap();
@@ -2071,22 +2242,40 @@ mod tests {
                 let markers = crate::engine::bext::MarkerConfig {
                     bank_a: crate::engine::bext::MarkerBank::empty(),
                     bank_b: crate::engine::bext::MarkerBank {
-                        m1: 24000, m2: crate::engine::bext::MARKER_EMPTY,
-                        m3: crate::engine::bext::MARKER_EMPTY, reps: [1, 0, 0, 1],
+                        m1: 24000,
+                        m2: crate::engine::bext::MARKER_EMPTY,
+                        m3: crate::engine::bext::MARKER_EMPTY,
+                        reps: [1, 0, 0, 1],
                     },
                 };
-                render_marker_lines(&markers, 0, 48000 as u64, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(
+                    &markers,
+                    0,
+                    48000 as u64,
+                    area.x,
+                    area.y,
+                    area.width,
+                    8,
+                    buf,
+                    &theme,
+                );
 
                 // m1=24000 → col 10.
                 // Top half (rows 0-3) should NOT have marker_b bg.
                 for row in 0..4u16 {
                     let cell = buf.cell((10, row)).unwrap();
-                    assert_ne!(cell.bg, theme.marker_b, "bank B should NOT appear in top half row {row}");
+                    assert_ne!(
+                        cell.bg, theme.marker_b,
+                        "bank B should NOT appear in top half row {row}"
+                    );
                 }
                 // Bottom half (rows 4-7) should have marker_b bg.
                 for row in 4..8u16 {
                     let cell = buf.cell((10, row)).unwrap();
-                    assert_eq!(cell.bg, theme.marker_b, "bank B should appear in bottom half row {row}");
+                    assert_eq!(
+                        cell.bg, theme.marker_b,
+                        "bank B should appear in bottom half row {row}"
+                    );
                 }
             })
             .unwrap();
@@ -2107,7 +2296,17 @@ mod tests {
                     .flat_map(|x| (0..8u16).map(move |y| (x, y)))
                     .map(|(x, y)| buf.cell((x, y)).unwrap().bg)
                     .collect();
-                render_marker_lines(&markers, 0, 48000 as u64, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(
+                    &markers,
+                    0,
+                    48000 as u64,
+                    area.x,
+                    area.y,
+                    area.width,
+                    8,
+                    buf,
+                    &theme,
+                );
                 // Snapshot buffer state after — should be unchanged.
                 let after: Vec<_> = (0..20u16)
                     .flat_map(|x| (0..8u16).map(move |y| (x, y)))
@@ -2129,7 +2328,9 @@ mod tests {
                 let theme = Theme::default();
                 let markers = crate::engine::bext::MarkerConfig::preset_shot();
                 // Should not panic with total_samples=0.
-                render_marker_lines(&markers, 0, 0 as u64, area.x, area.y, area.width, 8, buf, &theme);
+                render_marker_lines(
+                    &markers, 0, 0 as u64, area.x, area.y, area.width, 8, buf, &theme,
+                );
             })
             .unwrap();
     }
@@ -2150,17 +2351,42 @@ mod tests {
                 bank.m2 = 24000;
                 bank.m3 = 36000;
                 bank.reps = [2, 3, 1, 1];
-                render_segment_labels(&bank, 48000, 0, 48000 as u64, area.x, area.y, 80, buf, style);
+                render_segment_labels(
+                    &bank,
+                    48000,
+                    0,
+                    48000 as u64,
+                    area.x,
+                    area.y,
+                    80,
+                    buf,
+                    style,
+                );
 
                 // Check that content was rendered in the top row.
-                let top_row: String = (0..80).map(|x| {
-                    buf.cell((x, 0)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
-                }).collect();
+                let top_row: String = (0..80)
+                    .map(|x| {
+                        buf.cell((x, 0))
+                            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                    })
+                    .collect();
                 // Should contain segment labels.
-                assert!(top_row.contains("1×2"), "expected 1×2 in top row: '{top_row}'");
-                assert!(top_row.contains("2×3"), "expected 2×3 in top row: '{top_row}'");
-                assert!(top_row.contains("3×1"), "expected 3×1 in top row: '{top_row}'");
-                assert!(top_row.contains("4×1"), "expected 4×1 in top row: '{top_row}'");
+                assert!(
+                    top_row.contains("1×2"),
+                    "expected 1×2 in top row: '{top_row}'"
+                );
+                assert!(
+                    top_row.contains("2×3"),
+                    "expected 2×3 in top row: '{top_row}'"
+                );
+                assert!(
+                    top_row.contains("3×1"),
+                    "expected 3×1 in top row: '{top_row}'"
+                );
+                assert!(
+                    top_row.contains("4×1"),
+                    "expected 4×1 in top row: '{top_row}'"
+                );
             })
             .unwrap();
     }
@@ -2177,12 +2403,28 @@ mod tests {
                 let mut bank = crate::engine::bext::MarkerBank::empty();
                 bank.m1 = 24000;
                 bank.reps = [0, 1, 0, 0]; // Segment 1 is skipped (rep=0).
-                render_segment_labels(&bank, 48000, 0, 48000 as u64, area.x, area.y, 80, buf, style);
+                render_segment_labels(
+                    &bank,
+                    48000,
+                    0,
+                    48000 as u64,
+                    area.x,
+                    area.y,
+                    80,
+                    buf,
+                    style,
+                );
 
-                let top_row: String = (0..80).map(|x| {
-                    buf.cell((x, 0)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
-                }).collect();
-                assert!(top_row.contains("1×0"), "skipped segment shows 1×0: '{top_row}'");
+                let top_row: String = (0..80)
+                    .map(|x| {
+                        buf.cell((x, 0))
+                            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                    })
+                    .collect();
+                assert!(
+                    top_row.contains("1×0"),
+                    "skipped segment shows 1×0: '{top_row}'"
+                );
             })
             .unwrap();
     }
@@ -2199,13 +2441,29 @@ mod tests {
                 let mut bank = crate::engine::bext::MarkerBank::empty();
                 bank.m1 = 24000;
                 bank.reps = [15, 1, 0, 0]; // Segment 1 is infinite (rep=15).
-                render_segment_labels(&bank, 48000, 0, 48000 as u64, area.x, area.y, 80, buf, style);
+                render_segment_labels(
+                    &bank,
+                    48000,
+                    0,
+                    48000 as u64,
+                    area.x,
+                    area.y,
+                    80,
+                    buf,
+                    style,
+                );
 
-                let top_row: String = (0..80).map(|x| {
-                    buf.cell((x, 0)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
-                }).collect();
+                let top_row: String = (0..80)
+                    .map(|x| {
+                        buf.cell((x, 0))
+                            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                    })
+                    .collect();
                 // ∞ is multi-byte, check the label is present.
-                assert!(top_row.contains("1×"), "infinite segment shows 1×∞: '{top_row}'");
+                assert!(
+                    top_row.contains("1×"),
+                    "infinite segment shows 1×∞: '{top_row}'"
+                );
             })
             .unwrap();
     }
@@ -2227,7 +2485,17 @@ mod tests {
                 bank.m3 = 36000;
                 bank.reps = [1, 1, 1, 1];
                 // Should not panic, labels just skipped.
-                render_segment_labels(&bank, 48000, 0, 48000 as u64, area.x, area.y, 10, buf, style);
+                render_segment_labels(
+                    &bank,
+                    48000,
+                    0,
+                    48000 as u64,
+                    area.x,
+                    area.y,
+                    10,
+                    buf,
+                    style,
+                );
             })
             .unwrap();
     }

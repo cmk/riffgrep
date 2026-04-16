@@ -2,8 +2,8 @@
 //! results into tokio channels.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use tokio::sync::mpsc;
@@ -185,7 +185,8 @@ impl SearchHandleTable {
                                 .ok()
                                 .and_then(|bext| bext.markers);
                             Some((ai, markers))
-                        })().map_or((None, None), |(ai, m)| (Some(ai), m));
+                        })()
+                        .map_or((None, None), |(ai, m)| (Some(ai), m));
                         let row = TableRow {
                             meta,
                             audio_info,
@@ -238,10 +239,7 @@ pub async fn load_peaks(db_path: &Path, file_path: &str) -> Option<Vec<u8>> {
 }
 
 /// Load peaks with JIT fallback: try DB first, then compute from audio.
-pub async fn load_peaks_with_fallback(
-    db_path: Option<&Path>,
-    file_path: &Path,
-) -> Option<Vec<u8>> {
+pub async fn load_peaks_with_fallback(db_path: Option<&Path>, file_path: &Path) -> Option<Vec<u8>> {
     // Try DB first.
     if let Some(db) = db_path {
         let path_str = file_path.to_string_lossy().to_string();
@@ -524,7 +522,10 @@ mod tests {
         }
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
-        assert!(row.audio_info.is_some(), "SQLite TableRow should have audio info");
+        assert!(
+            row.audio_info.is_some(),
+            "SQLite TableRow should have audio info"
+        );
         let info = row.audio_info.as_ref().unwrap();
         assert!((info.duration_secs - 2.5).abs() < 0.01);
         assert_eq!(info.sample_rate, 44100);
@@ -549,9 +550,10 @@ mod tests {
         }
         assert!(!rows.is_empty(), "should get results from filesystem");
         for row in &rows {
-            let info = row.audio_info.as_ref().expect(
-                "filesystem TableRow should have audio info from WAV headers",
-            );
+            let info = row
+                .audio_info
+                .as_ref()
+                .expect("filesystem TableRow should have audio info from WAV headers");
             assert!(info.sample_rate > 0, "sample_rate should be set");
             assert!(info.bit_depth > 0, "bit_depth should be set");
             assert!(info.channels > 0, "channels should be set");

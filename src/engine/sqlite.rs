@@ -119,10 +119,10 @@ impl Database {
                     mtime,
                     peaks.as_deref(),
                     peaks_source,
-                    Option::<f64>::None,   // duration
-                    Option::<i32>::None,   // sample_rate
-                    Option::<i32>::None,   // bit_depth
-                    Option::<i32>::None,   // channels
+                    Option::<f64>::None, // duration
+                    Option::<i32>::None, // sample_rate
+                    Option::<i32>::None, // bit_depth
+                    Option::<i32>::None, // channels
                     meta.date,
                     meta.take,
                     meta.track,
@@ -173,7 +173,8 @@ impl Database {
         batch_size: usize,
     ) -> anyhow::Result<usize> {
         let mut total = 0;
-        let mut batch: Vec<(UnifiedMetadata, i64, Option<Vec<u8>>)> = Vec::with_capacity(batch_size);
+        let mut batch: Vec<(UnifiedMetadata, i64, Option<Vec<u8>>)> =
+            Vec::with_capacity(batch_size);
         let mut sources: Vec<String> = Vec::with_capacity(batch_size);
 
         for (meta, mtime, peaks, source) in rx {
@@ -197,12 +198,25 @@ impl Database {
     /// Returns the total number of records inserted.
     pub fn index_writer_with_audio(
         &self,
-        rx: &Receiver<(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>, Option<super::bext::MarkerConfig>)>,
+        rx: &Receiver<(
+            UnifiedMetadata,
+            i64,
+            Option<Vec<u8>>,
+            String,
+            Option<super::wav::AudioInfo>,
+            Option<super::bext::MarkerConfig>,
+        )>,
         batch_size: usize,
     ) -> anyhow::Result<usize> {
         let mut total = 0;
-        let mut batch: Vec<(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>, Option<super::bext::MarkerConfig>)> =
-            Vec::with_capacity(batch_size);
+        let mut batch: Vec<(
+            UnifiedMetadata,
+            i64,
+            Option<Vec<u8>>,
+            String,
+            Option<super::wav::AudioInfo>,
+            Option<super::bext::MarkerConfig>,
+        )> = Vec::with_capacity(batch_size);
 
         for item in rx {
             batch.push(item);
@@ -265,10 +279,10 @@ impl Database {
                     mtime,
                     peaks.as_deref(),
                     source.as_str(),
-                    Option::<f64>::None,   // duration
-                    Option::<i32>::None,   // sample_rate
-                    Option::<i32>::None,   // bit_depth
-                    Option::<i32>::None,   // channels
+                    Option::<f64>::None, // duration
+                    Option::<i32>::None, // sample_rate
+                    Option::<i32>::None, // bit_depth
+                    Option::<i32>::None, // channels
                     meta.date,
                     meta.take,
                     meta.track,
@@ -286,7 +300,14 @@ impl Database {
     /// Insert records with per-record peaks_source, audio info, and markers.
     pub fn insert_batch_with_audio(
         &self,
-        records: &[(UnifiedMetadata, i64, Option<Vec<u8>>, String, Option<super::wav::AudioInfo>, Option<super::bext::MarkerConfig>)],
+        records: &[(
+            UnifiedMetadata,
+            i64,
+            Option<Vec<u8>>,
+            String,
+            Option<super::wav::AudioInfo>,
+            Option<super::bext::MarkerConfig>,
+        )],
     ) -> anyhow::Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
         {
@@ -371,8 +392,7 @@ impl Database {
         let tx = self.conn.unchecked_transaction()?;
         let mut deleted = 0;
         {
-            let mut stmt =
-                tx.prepare_cached("DELETE FROM samples WHERE path = ?1")?;
+            let mut stmt = tx.prepare_cached("DELETE FROM samples WHERE path = ?1")?;
             for path in paths {
                 deleted += stmt.execute(params![path.to_string_lossy().as_ref()])?;
             }
@@ -393,8 +413,10 @@ impl Database {
             }
         };
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = values
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let rows = match stmt.query_map(param_refs.as_slice(), row_to_metadata) {
             Ok(r) => r,
@@ -420,11 +442,7 @@ impl Database {
 
     /// Execute a search query and send TableRow results through the channel.
     /// Includes audio info and marked status from the database.
-    pub fn search_table_rows(
-        &self,
-        query: &SearchQuery,
-        tx: &Sender<super::TableRow>,
-    ) {
+    pub fn search_table_rows(&self, query: &SearchQuery, tx: &Sender<super::TableRow>) {
         let (sql, values) = build_sql(query);
 
         let mut stmt = match self.conn.prepare(&sql) {
@@ -435,8 +453,10 @@ impl Database {
             }
         };
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = values
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let rows = match stmt.query_map(param_refs.as_slice(), row_to_table_row) {
             Ok(r) => r,
@@ -462,12 +482,13 @@ impl Database {
 
     /// Get aggregate statistics about the database.
     pub fn stats(&self) -> anyhow::Result<DbStats> {
-        let file_count: i64 =
-            self.conn.query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))?;
-
-        let last_mtime: Option<i64> = self
+        let file_count: i64 = self
             .conn
-            .query_row("SELECT MAX(mtime) FROM samples", [], |r| r.get(0))?;
+            .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))?;
+
+        let last_mtime: Option<i64> =
+            self.conn
+                .query_row("SELECT MAX(mtime) FROM samples", [], |r| r.get(0))?;
 
         let mut vendor_stmt = self.conn.prepare(
             "SELECT vendor, COUNT(*) as cnt FROM samples
@@ -508,9 +529,9 @@ impl Database {
     /// Check if sample paths exist on the filesystem. Returns the number of
     /// stale (non-existent) paths out of the sampled set.
     pub fn check_staleness(&self, sample_size: usize) -> anyhow::Result<(usize, usize)> {
-        let mut stmt = self.conn.prepare(
-            "SELECT path FROM samples ORDER BY RANDOM() LIMIT ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM samples ORDER BY RANDOM() LIMIT ?1")?;
         let rows = stmt.query_map(params![sample_size as i64], |row| {
             let path: String = row.get(0)?;
             Ok(PathBuf::from(path))
@@ -531,11 +552,14 @@ impl Database {
     /// Retrieve decompressed peaks for a file path. Returns None if the path
     /// is not in the database or has no peaks stored.
     pub fn get_peaks(&self, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        let blob: Option<Vec<u8>> = self.conn.query_row(
-            "SELECT peaks FROM samples WHERE path = ?1",
-            params![path],
-            |row| row.get(0),
-        ).unwrap_or(None);
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT peaks FROM samples WHERE path = ?1",
+                params![path],
+                |row| row.get(0),
+            )
+            .unwrap_or(None);
 
         Ok(blob.map(|b| decompress_peaks(&b)))
     }
@@ -617,9 +641,9 @@ impl Database {
     /// Load a 512×f32 embedding for a file (by path).
     /// Returns `None` if the file has no embedding.
     pub fn load_embedding(&self, path: &str) -> anyhow::Result<Option<Vec<f32>>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT embedding FROM samples WHERE path = ?"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT embedding FROM samples WHERE path = ?")?;
         let blob: Option<Vec<u8>> = match stmt.query_row([path], |row| row.get(0)) {
             Ok(b) => b,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
@@ -627,7 +651,8 @@ impl Database {
         };
         match blob {
             Some(b) if b.len() >= 4 => {
-                let vec: Vec<f32> = b.chunks_exact(4)
+                let vec: Vec<f32> = b
+                    .chunks_exact(4)
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 Ok(Some(vec))
@@ -639,9 +664,9 @@ impl Database {
     /// Load all embeddings as `(row_id, path, vector)` triples.
     /// Skips rows where embedding is NULL.
     pub fn load_all_embeddings(&self) -> anyhow::Result<Vec<(i64, std::path::PathBuf, Vec<f32>)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path, embedding FROM samples WHERE embedding IS NOT NULL"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, embedding FROM samples WHERE embedding IS NOT NULL")?;
         let rows = stmt.query_map([], |row| {
             let id: i64 = row.get(0)?;
             let path: String = row.get(1)?;
@@ -653,7 +678,8 @@ impl Database {
         for row in rows {
             let (id, path, blob) = row?;
             if blob.len() >= 4 {
-                let vec: Vec<f32> = blob.chunks_exact(4)
+                let vec: Vec<f32> = blob
+                    .chunks_exact(4)
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 results.push((id, std::path::PathBuf::from(path), vec));
@@ -673,9 +699,9 @@ impl Database {
 
     /// Load a blob from the metadata table. Returns `None` if key not found.
     pub fn get_metadata(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT value FROM metadata WHERE key = ?"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT value FROM metadata WHERE key = ?")?;
         let result = stmt.query_row([key], |row| row.get::<_, Vec<u8>>(0));
         match result {
             Ok(v) => Ok(Some(v)),
@@ -808,13 +834,19 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
 
 /// Register a `regexp(pattern, text)` scalar function backed by the Rust `regex` crate.
 fn register_regexp_udf(conn: &Connection) -> anyhow::Result<()> {
-    conn.create_scalar_function("regexp", 2, rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
-        let pattern: String = ctx.get(0)?;
-        let text: String = ctx.get(1)?;
-        let re = regex::Regex::new(&pattern)
-            .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-        Ok(re.is_match(&text))
-    })?;
+    conn.create_scalar_function(
+        "regexp",
+        2,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let pattern: String = ctx.get(0)?;
+            let text: String = ctx.get(1)?;
+            let re = regex::Regex::new(&pattern)
+                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+            Ok(re.is_match(&text))
+        },
+    )?;
     Ok(())
 }
 
@@ -844,10 +876,7 @@ impl rusqlite::types::ToSql for SqlValue {
 /// substring queries and LIKE/REGEXP for more complex cases.
 pub fn build_sql(query: &SearchQuery) -> (String, Vec<SqlValue>) {
     if query.is_empty() {
-        return (
-            "SELECT * FROM samples ORDER BY path".to_string(),
-            vec![],
-        );
+        return ("SELECT * FROM samples ORDER BY path".to_string(), vec![]);
     }
 
     let mut conditions: Vec<String> = Vec::new();
@@ -927,8 +956,11 @@ pub fn build_sql(query: &SearchQuery) -> (String, Vec<SqlValue>) {
     // and AND mode, with no freetext or column_filters present. For simplicity, we use
     // LIKE for multi-field queries since FTS5 trigram MATCH doesn't do per-column
     // filtering directly.
-    if conditions.len() == 1 && matches!(query.match_mode, MatchMode::And)
-        && query.bpm.is_none() && !uses_fts && query.column_filters.is_empty()
+    if conditions.len() == 1
+        && matches!(query.match_mode, MatchMode::And)
+        && query.bpm.is_none()
+        && !uses_fts
+        && query.column_filters.is_empty()
     {
         // Check if this is a single-field substring query on an FTS column
         if let Some(single_field) = get_single_fts_field(query) {
@@ -1124,10 +1156,13 @@ fn row_to_table_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::TableRow
     let markers = markers_blob.and_then(|blob| {
         let decompressed = decompress_peaks(&blob);
         if decompressed.len() == super::bext::MARKER_BLOCK_SIZE {
-            let arr: [u8; super::bext::MARKER_BLOCK_SIZE] =
-                decompressed.try_into().ok()?;
+            let arr: [u8; super::bext::MARKER_BLOCK_SIZE] = decompressed.try_into().ok()?;
             let config = super::bext::MarkerConfig::from_bytes(&arr);
-            if config.is_empty() { None } else { Some(config) }
+            if config.is_empty() {
+                None
+            } else {
+                Some(config)
+            }
         } else {
             None
         }
@@ -1159,9 +1194,7 @@ pub fn decompress_peaks(blob: &[u8]) -> Vec<u8> {
 /// Resolve the database file path from CLI options and environment.
 ///
 /// Priority: `--db-path` > `RIFFGREP_DB` env var > platform default.
-pub fn resolve_db_path(
-    explicit_path: Option<&Path>,
-) -> anyhow::Result<PathBuf> {
+pub fn resolve_db_path(explicit_path: Option<&Path>) -> anyhow::Result<PathBuf> {
     // 1. Explicit CLI flag.
     if let Some(p) = explicit_path {
         ensure_parent_dirs(p)?;
@@ -1185,10 +1218,8 @@ pub fn resolve_db_path(
 fn default_db_path() -> anyhow::Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        let home = std::env::var("HOME")
-            .map_err(|_| anyhow::anyhow!("HOME not set"))?;
-        Ok(PathBuf::from(home)
-            .join("Library/Application Support/riffgrep/index.db"))
+        let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
+        Ok(PathBuf::from(home).join("Library/Application Support/riffgrep/index.db"))
     }
     #[cfg(target_os = "linux")]
     {
@@ -1366,18 +1397,14 @@ mod tests {
     #[test]
     fn test_parent_dirs_created() {
         let dir = std::env::temp_dir().join("riffgrep_test_parent_dirs/deep/nested");
-        let _ = std::fs::remove_dir_all(
-            std::env::temp_dir().join("riffgrep_test_parent_dirs"),
-        );
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("riffgrep_test_parent_dirs"));
         let db_path = dir.join("index.db");
 
         let result = resolve_db_path(Some(&db_path)).unwrap();
         assert_eq!(result, db_path);
         assert!(dir.exists(), "parent dirs should have been created");
 
-        let _ = std::fs::remove_dir_all(
-            std::env::temp_dir().join("riffgrep_test_parent_dirs"),
-        );
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("riffgrep_test_parent_dirs"));
     }
 
     // --- Ticket 3 tests: Batch insert & index_writer ---
@@ -1563,10 +1590,7 @@ mod tests {
             ..Default::default()
         };
         let (sql, _) = build_sql(&query);
-        assert!(
-            sql.contains("regexp"),
-            "SQL should contain regexp: {sql}"
-        );
+        assert!(sql.contains("regexp"), "SQL should contain regexp: {sql}");
     }
 
     #[test]
@@ -1576,10 +1600,7 @@ mod tests {
             ..Default::default()
         };
         let (sql, values) = build_sql(&query);
-        assert!(
-            sql.contains("BETWEEN"),
-            "SQL should contain BETWEEN: {sql}"
-        );
+        assert!(sql.contains("BETWEEN"), "SQL should contain BETWEEN: {sql}");
         assert!(values.len() >= 2);
     }
 
@@ -1683,7 +1704,12 @@ mod tests {
         drop(tx);
 
         let results: Vec<_> = rx.iter().collect();
-        assert_eq!(results.len(), 10, "expected 10 results, got {}", results.len());
+        assert_eq!(
+            results.len(),
+            10,
+            "expected 10 results, got {}",
+            results.len()
+        );
     }
 
     #[test]
@@ -1806,7 +1832,11 @@ mod tests {
         drop(tx);
 
         let results: Vec<_> = rx.iter().collect();
-        assert_eq!(results.len(), 1, "AND mode should return only the matching row");
+        assert_eq!(
+            results.len(),
+            1,
+            "AND mode should return only the matching row"
+        );
         assert!(results[0].path.to_string_lossy().contains("both.wav"));
     }
 
@@ -2213,7 +2243,6 @@ mod tests {
 
     // --- Schema migration tests ---
 
-
     // --- Mark/unmark tests ---
 
     #[test]
@@ -2366,7 +2395,10 @@ mod tests {
             ..Default::default()
         };
         let (sql, values) = build_sql(&query);
-        assert!(sql.contains("vendor LIKE"), "should use LIKE for text: {sql}");
+        assert!(
+            sql.contains("vendor LIKE"),
+            "should use LIKE for text: {sql}"
+        );
         assert!(!values.is_empty());
     }
 
@@ -2407,9 +2439,18 @@ mod tests {
             ..Default::default()
         };
         let (sql, _) = build_sql(&query);
-        assert!(sql.contains("samples_fts MATCH"), "should use FTS for freetext: {sql}");
-        assert!(sql.contains("vendor LIKE"), "should also filter vendor: {sql}");
-        assert!(sql.contains(" AND "), "should AND freetext with filter: {sql}");
+        assert!(
+            sql.contains("samples_fts MATCH"),
+            "should use FTS for freetext: {sql}"
+        );
+        assert!(
+            sql.contains("vendor LIKE"),
+            "should also filter vendor: {sql}"
+        );
+        assert!(
+            sql.contains(" AND "),
+            "should AND freetext with filter: {sql}"
+        );
     }
 
     #[test]
@@ -2423,7 +2464,10 @@ mod tests {
         };
         let (sql, values) = build_sql(&query);
         // Unknown field should be ignored → empty query
-        assert!(!sql.contains("nonexistent"), "unknown field should be skipped: {sql}");
+        assert!(
+            !sql.contains("nonexistent"),
+            "unknown field should be skipped: {sql}"
+        );
     }
 
     #[test]
@@ -2435,11 +2479,8 @@ mod tests {
         meta2.category = "SFX".to_string();
         let meta3 = make_test_meta("/test/splice.wav", "Splice");
 
-        db.insert_batch(&[
-            (meta1, 100, None),
-            (meta2, 100, None),
-            (meta3, 100, None),
-        ]).unwrap();
+        db.insert_batch(&[(meta1, 100, None), (meta2, 100, None), (meta3, 100, None)])
+            .unwrap();
 
         // Filter by vendor=Mars only.
         let (tx, rx) = crossbeam_channel::bounded(64);
@@ -2580,7 +2621,8 @@ mod tests {
     #[test]
     fn test_metadata_table_exists() {
         let db = Database::open_in_memory().unwrap();
-        let count: i64 = db.conn()
+        let count: i64 = db
+            .conn()
             .query_row("SELECT COUNT(*) FROM metadata", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
@@ -2669,5 +2711,4 @@ mod tests {
         let loaded = db.get_metadata("key").unwrap().unwrap();
         assert_eq!(loaded, vec![4, 5, 6]);
     }
-
 }

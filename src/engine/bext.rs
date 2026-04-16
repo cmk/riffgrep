@@ -298,8 +298,7 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
     let file_id = u64::from_be_bytes([
         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
     ]);
-    let is_packed =
-        version_major == 1 && version_minor >= 1 && bext_version >= 2 && file_id != 0;
+    let is_packed = version_major == 1 && version_minor >= 1 && bext_version >= 2 && file_id != 0;
 
     // Determine peaks format.
     // RiffgrepU8 requires the full packed schema (version_major=1, bext_version>=2,
@@ -462,10 +461,7 @@ pub const PACKED_VERSION_MINOR_V2: u16 = 2;
 /// Requires an existing BEXT chunk with the packed schema detected. Reads the
 /// file to verify the packed schema marker, then writes 32 bytes of marker data
 /// and updates the schema version minor.
-pub fn write_markers(
-    path: &std::path::Path,
-    markers: &MarkerConfig,
-) -> Result<(), BextWriteError> {
+pub fn write_markers(path: &std::path::Path, markers: &MarkerConfig) -> Result<(), BextWriteError> {
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::with_capacity(4096, file);
     let map = scan_chunks(&mut reader)?;
@@ -498,8 +494,7 @@ pub fn write_markers(
     reader.read_exact(&mut id_buf)?;
     let file_id = u64::from_be_bytes(id_buf);
 
-    let is_packed =
-        version_major == 1 && version_minor >= 1 && bext_version >= 2 && file_id != 0;
+    let is_packed = version_major == 1 && version_minor >= 1 && bext_version >= 2 && file_id != 0;
     if !is_packed {
         return Err(BextWriteError::NotPacked);
     }
@@ -762,7 +757,7 @@ mod tests {
     use super::*;
 
     /// Build a minimal RIFF/WAVE header + chunks for testing.
-    fn make_riff(chunks: &[(& [u8; 4], &[u8])]) -> Vec<u8> {
+    fn make_riff(chunks: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
         let mut data = Vec::new();
         // Accumulate chunk data to compute RIFF size.
         let mut chunk_bytes = Vec::new();
@@ -800,10 +795,7 @@ mod tests {
     #[test]
     fn scan_bext_at_offset_36() {
         let bext_data = vec![0u8; 604];
-        let riff = make_riff(&[
-            (b"fmt ", &[0u8; 16]),
-            (b"bext", &bext_data),
-        ]);
+        let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"bext", &bext_data)]);
         let mut cursor = Cursor::new(riff);
         let map = scan_chunks(&mut cursor).unwrap();
         // fmt is at offset 12, size 16+8=24 -> bext starts at 12+24=36, data at 36+8=44
@@ -813,10 +805,7 @@ mod tests {
 
     #[test]
     fn scan_no_bext() {
-        let riff = make_riff(&[
-            (b"fmt ", &[0u8; 16]),
-            (b"data", &[0u8; 100]),
-        ]);
+        let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"data", &[0u8; 100])]);
         let mut cursor = Cursor::new(riff);
         let map = scan_chunks(&mut cursor).unwrap();
         assert_eq!(map.bext_offset, None);
@@ -998,10 +987,7 @@ mod tests {
         let mut buf = [0u8; BEXT_STANDARD_SIZE];
         buf[0..14].copy_from_slice(b"Yamaha DX-100\0");
         buf[256..273].copy_from_slice(b"Samples From Mars");
-        let riff = make_riff(&[
-            (b"fmt ", &[0u8; 16]),
-            (b"bext", &buf),
-        ]);
+        let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"bext", &buf)]);
         let mut cursor = Cursor::new(riff);
         let map = scan_chunks(&mut cursor).unwrap();
         let fields = parse_bext_data(&mut cursor, &map).unwrap();
@@ -1095,10 +1081,7 @@ mod tests {
     #[test]
     fn bext_chunk_smaller_than_602() {
         let bext_data = vec![0u8; 100];
-        let riff = make_riff(&[
-            (b"fmt ", &[0u8; 16]),
-            (b"bext", &bext_data),
-        ]);
+        let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"bext", &bext_data)]);
         let mut cursor = Cursor::new(riff);
         let map = scan_chunks(&mut cursor).unwrap();
         assert_eq!(map.bext_size, 100);
@@ -1109,10 +1092,7 @@ mod tests {
     #[test]
     fn bext_chunk_larger_than_602() {
         let bext_data = vec![0u8; 800]; // CodingHistory appended
-        let riff = make_riff(&[
-            (b"fmt ", &[0u8; 16]),
-            (b"bext", &bext_data),
-        ]);
+        let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"bext", &bext_data)]);
         let mut cursor = Cursor::new(riff);
         let map = scan_chunks(&mut cursor).unwrap();
         assert_eq!(map.bext_size, 800);
@@ -1172,7 +1152,10 @@ mod tests {
         }
         let fields = parse_bext_buffer(&buf);
         assert_eq!(fields.peaks_format, PeaksFormat::RiffgrepU8);
-        assert_eq!(fields.bext_version, 2, "packed helper should set bext_version=2");
+        assert_eq!(
+            fields.bext_version, 2,
+            "packed helper should set bext_version=2"
+        );
         assert!(!fields.peaks.is_empty());
     }
 
@@ -1209,7 +1192,10 @@ mod tests {
         buf[347] = 0;
         let fields = parse_bext_buffer(&buf);
         assert_eq!(fields.peaks_format, PeaksFormat::Empty);
-        assert!(!fields.packed, "bext_version=0 should not activate packed schema");
+        assert!(
+            !fields.packed,
+            "bext_version=0 should not activate packed schema"
+        );
     }
 
     #[test]
@@ -1791,10 +1777,8 @@ mod tests {
     #[test]
     fn test_write_bext_field_no_bext_errors() {
         let riff = make_riff(&[(b"fmt ", &[0u8; 16]), (b"data", &[0u8; 100])]);
-        let path = std::env::temp_dir().join(format!(
-            "riffgrep_test_no_bext_{}.wav",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("riffgrep_test_no_bext_{}.wav", std::process::id()));
         std::fs::write(&path, &riff).unwrap();
 
         let map = ChunkMap::default(); // No BEXT offset
@@ -2198,8 +2182,7 @@ mod tests {
             ));
             std::fs::write(&path, &riff).unwrap();
 
-            let result =
-                init_packed_and_write_markers(&path, &MarkerConfig::preset_shot());
+            let result = init_packed_and_write_markers(&path, &MarkerConfig::preset_shot());
             assert!(matches!(result, Err(BextWriteError::NoBextChunk)));
 
             std::fs::remove_file(&path).unwrap();

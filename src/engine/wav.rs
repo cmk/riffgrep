@@ -39,9 +39,7 @@ pub struct FmtChunk {
 ///
 /// Requires at least 16 bytes of fmt data.
 pub fn parse_fmt<R: Read + Seek>(reader: &mut R, map: &ChunkMap) -> Result<FmtChunk, RiffError> {
-    let offset = map
-        .fmt_offset
-        .ok_or(RiffError::NotRiffWave)?;
+    let offset = map.fmt_offset.ok_or(RiffError::NotRiffWave)?;
 
     if map.fmt_size < 16 {
         return Err(RiffError::BextTooSmall {
@@ -86,9 +84,8 @@ fn decode_sample(bytes: &[u8], format: AudioFormat, bits: u16) -> f32 {
             }
             24 => {
                 // Sign-extend 24-bit to i32.
-                let val = bytes[0] as i32
-                    | (bytes[1] as i32) << 8
-                    | ((bytes[2] as i8) as i32) << 16;
+                let val =
+                    bytes[0] as i32 | (bytes[1] as i32) << 8 | ((bytes[2] as i8) as i32) << 16;
                 val as f32 / 8_388_608.0
             }
             8 => {
@@ -329,7 +326,8 @@ pub fn compute_peaks_from_path_with_options(
 ) -> Result<Vec<u8>, RiffError> {
     // Only the RIFF path supports configurable peak options.
     let registry = super::source::AudioRegistry::new();
-    let is_riff = registry.for_path(path)
+    let is_riff = registry
+        .for_path(path)
         .is_some_and(|s| s.extensions().contains(&"wav"));
     if !is_riff {
         return Ok(Vec::new());
@@ -499,8 +497,7 @@ pub fn compute_peaks_stereo_from_path(path: &Path) -> Result<Vec<u8>, RiffError>
 pub fn compute_peaks_stereo_via_decoder(path: &Path) -> Result<Vec<u8>, RiffError> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
-    let decoder = rodio::Decoder::new(reader)
-        .map_err(|_| RiffError::NotRiffWave)?;
+    let decoder = rodio::Decoder::new(reader).map_err(|_| RiffError::NotRiffWave)?;
 
     let channels = decoder.channels() as usize;
     let samples: Vec<f32> = decoder.map(|s| s as f32 / 32768.0).collect();
@@ -607,11 +604,7 @@ impl AudioInfo {
 
     /// Format as "16-bit stereo" or "24-bit mono" etc.
     pub fn format_display(&self) -> String {
-        let ch = if self.channels == 1 {
-            "mono"
-        } else {
-            "stereo"
-        };
+        let ch = if self.channels == 1 { "mono" } else { "stereo" };
         format!("{}-bit {ch}", self.bit_depth)
     }
 }
@@ -768,7 +761,11 @@ impl PcmData {
     /// Returns 1 if the file is shorter than `NUM_ZOOM_COLS` frames.
     pub fn k_lvl0(&self) -> usize {
         let n = self.samples.len();
-        if n < NUM_ZOOM_COLS { 1 } else { n / NUM_ZOOM_COLS }
+        if n < NUM_ZOOM_COLS {
+            1
+        } else {
+            n / NUM_ZOOM_COLS
+        }
     }
 }
 
@@ -854,12 +851,8 @@ pub fn load_pcm_data_riff(path: &std::path::Path) -> Result<PcmData, RiffError> 
             },
             AudioFormat::IeeeFloat => {
                 // 32-bit float → i16 range.
-                let f = f32::from_le_bytes([
-                    frame_buf[0],
-                    frame_buf[1],
-                    frame_buf[2],
-                    frame_buf[3],
-                ]);
+                let f =
+                    f32::from_le_bytes([frame_buf[0], frame_buf[1], frame_buf[2], frame_buf[3]]);
                 (f.clamp(-1.0, 1.0) * 32767.0) as i16
             }
             AudioFormat::Other(_) => 0,
@@ -875,15 +868,16 @@ pub fn load_pcm_data_riff(path: &std::path::Path) -> Result<PcmData, RiffError> 
 pub fn load_pcm_data_via_decoder(path: &std::path::Path) -> Result<PcmData, RiffError> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
-    let decoder = rodio::Decoder::new(reader)
-        .map_err(|_| RiffError::NotRiffWave)?;
+    let decoder = rodio::Decoder::new(reader).map_err(|_| RiffError::NotRiffWave)?;
 
     let channels = decoder.channels() as usize;
     // rodio::Decoder yields i16 samples (interleaved).
     let all_samples: Vec<i16> = decoder.collect();
 
     if all_samples.is_empty() || channels == 0 {
-        return Ok(PcmData { samples: Vec::new() });
+        return Ok(PcmData {
+            samples: Vec::new(),
+        });
     }
 
     // Extract left channel only (same as RIFF path).
@@ -957,7 +951,11 @@ impl ZoomCache {
             computed.push(vec![false; size]);
         }
 
-        Self { cache, computed, num_cols: NUM_ZOOM_COLS }
+        Self {
+            cache,
+            computed,
+            num_cols: NUM_ZOOM_COLS,
+        }
     }
 
     /// Return `NUM_ZOOM_COLS` peaks for the viewport at `level` starting at
@@ -1116,7 +1114,12 @@ pub fn read_sample_window<R: Read + Seek>(
             },
             AudioFormat::IeeeFloat => {
                 if fmt.bits_per_sample == 32 && frame_buf.len() >= 4 {
-                    let f = f32::from_le_bytes([frame_buf[0], frame_buf[1], frame_buf[2], frame_buf[3]]);
+                    let f = f32::from_le_bytes([
+                        frame_buf[0],
+                        frame_buf[1],
+                        frame_buf[2],
+                        frame_buf[3],
+                    ]);
                     (f * 32768.0) as i32
                 } else {
                     0
@@ -1246,14 +1249,18 @@ mod tests {
 
     #[test]
     fn test_pcm_data_k_lvl0_small_file() {
-        let pcm = PcmData { samples: vec![0i16; 45] }; // < NUM_ZOOM_COLS
+        let pcm = PcmData {
+            samples: vec![0i16; 45],
+        }; // < NUM_ZOOM_COLS
         assert_eq!(pcm.k_lvl0(), 1, "short file k_lvl0 should clamp to 1");
     }
 
     #[test]
     fn test_pcm_data_k_lvl0_normal_file() {
         // NUM_ZOOM_COLS == PEAK_COUNT == 180; 900 / 180 = 5.
-        let pcm = PcmData { samples: vec![0i16; 900] };
+        let pcm = PcmData {
+            samples: vec![0i16; 900],
+        };
         assert_eq!(pcm.k_lvl0(), 5);
     }
 
@@ -1285,7 +1292,11 @@ mod tests {
             }
         }
         let visible = cache.get_visible_peaks(1, 0, &samples, k_lvl0);
-        assert_eq!(visible.len(), NUM_ZOOM_COLS, "level 1 should return 90 visible peaks");
+        assert_eq!(
+            visible.len(),
+            NUM_ZOOM_COLS,
+            "level 1 should return 90 visible peaks"
+        );
     }
 
     #[test]
@@ -1305,7 +1316,10 @@ mod tests {
         // Left child = peak of samples[0..10] ≈ 100
         // Parent (col 0 at level 0) = 200 (from level0_peaks)
         // Since left_child < parent, right child should = parent = 200.
-        assert_eq!(visible[1], 200, "right child should equal parent peak via shortcut");
+        assert_eq!(
+            visible[1], 200,
+            "right child should equal parent peak via shortcut"
+        );
     }
 
     #[test]
@@ -1326,7 +1340,10 @@ mod tests {
         let visible = cache.get_visible_peaks(1, 0, &samples, k_lvl0);
         // Since left_child (≈200) >= parent (100), shortcut NOT applied.
         // Right child computed directly ≈ 50.
-        assert!(visible[1] < 200, "right child should NOT equal parent when shortcut does not apply");
+        assert!(
+            visible[1] < 200,
+            "right child should NOT equal parent when shortcut does not apply"
+        );
     }
 
     #[test]
@@ -1353,7 +1370,10 @@ mod tests {
         // Ask for viewport starting well past the end of level-0.
         let visible = cache.get_visible_peaks(0, NUM_ZOOM_COLS, &samples, k_lvl0);
         assert_eq!(visible.len(), NUM_ZOOM_COLS);
-        assert!(visible.iter().all(|&v| v == 0), "past-end viewport should be zero-padded");
+        assert!(
+            visible.iter().all(|&v| v == 0),
+            "past-end viewport should be zero-padded"
+        );
     }
 
     #[test]
@@ -1380,7 +1400,11 @@ mod tests {
     #[test]
     fn test_max_amp_u8_out_of_range() {
         let samples = vec![100i16; 5];
-        assert_eq!(max_amp_u8(&samples, 10, 5), 0, "start past end should return 0");
+        assert_eq!(
+            max_amp_u8(&samples, 10, 5),
+            0,
+            "start past end should return 0"
+        );
     }
 
     /// Build a minimal RIFF/WAVE file with fmt + data chunks.
@@ -1569,7 +1593,10 @@ mod tests {
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
         let mut samples = Vec::new();
-        let count = stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |s| samples.push(s)).unwrap();
+        let count = stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |s| {
+            samples.push(s)
+        })
+        .unwrap();
         assert_eq!(count, 2);
         assert!((samples[0] - 0.25).abs() < 0.001, "got {}", samples[0]);
         assert!((samples[1] - (-0.25)).abs() < 0.001, "got {}", samples[1]);
@@ -1589,7 +1616,10 @@ mod tests {
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
         let mut samples = Vec::new();
-        stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |s| samples.push(s)).unwrap();
+        stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |s| {
+            samples.push(s)
+        })
+        .unwrap();
         assert_eq!(samples.len(), 1);
         assert!(
             (samples[0] - 1.0).abs() < 0.001,
@@ -1610,7 +1640,10 @@ mod tests {
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
         let mut samples = Vec::new();
-        stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |s| samples.push(s)).unwrap();
+        stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |s| {
+            samples.push(s)
+        })
+        .unwrap();
         assert_eq!(samples.len(), 2);
         assert!((samples[0] - 0.5).abs() < 0.001);
         assert!((samples[1] - (-0.75)).abs() < 0.001);
@@ -1625,7 +1658,8 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let count = stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |_| {}).unwrap();
+        let count =
+            stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |_| {}).unwrap();
         assert_eq!(count, 10);
     }
 
@@ -1636,7 +1670,8 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let count = stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |_| {}).unwrap();
+        let count =
+            stream_samples_channel(&mut cursor, &map, &fmt, ChannelMode::Mix, &mut |_| {}).unwrap();
         assert_eq!(count, 0);
     }
 
@@ -1663,8 +1698,8 @@ mod tests {
         let num_frames = 2000; // 2000 * 6 = 12000 bytes (spans ~3 buffers)
         let mut audio = Vec::new();
         for i in 0..num_frames {
-            let val = ((i as f64 / num_frames as f64 * std::f64::consts::PI).sin()
-                * 4_000_000.0) as i32;
+            let val =
+                ((i as f64 / num_frames as f64 * std::f64::consts::PI).sin() * 4_000_000.0) as i32;
             // L channel: 24-bit LE
             audio.push((val & 0xFF) as u8);
             audio.push(((val >> 8) & 0xFF) as u8);
@@ -1741,7 +1776,8 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let peaks = compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
+        let peaks =
+            compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
         assert_eq!(peaks.len(), PEAK_COUNT);
         assert!(peaks.iter().all(|&v| v == 0));
     }
@@ -1785,7 +1821,8 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let peaks = compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
+        let peaks =
+            compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
         assert_eq!(peaks.len(), PEAK_COUNT);
         assert!(
             peaks.iter().any(|&v| v == 255),
@@ -1807,7 +1844,8 @@ mod tests {
         let map = scan_chunks(&mut cursor).unwrap();
         let fmt = parse_fmt(&mut cursor, &map).unwrap();
 
-        let peaks = compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
+        let peaks =
+            compute_peaks_with_options(&mut cursor, &map, &fmt, &PeakOptions::default()).unwrap();
         assert_eq!(peaks.len(), PEAK_COUNT);
         // Most bins should be 0 since we only have 10 samples for 180 bins.
         let nonzero = peaks.iter().filter(|&&v| v > 0).count();
@@ -1900,7 +1938,10 @@ mod tests {
             &mut c1,
             &map1,
             &fmt1,
-            &PeakOptions { channel: ChannelMode::Left, measurement: PeakMeasurement::Rms },
+            &PeakOptions {
+                channel: ChannelMode::Left,
+                measurement: PeakMeasurement::Rms,
+            },
         )
         .unwrap();
 
@@ -1911,7 +1952,10 @@ mod tests {
             &mut c2,
             &map2,
             &fmt2,
-            &PeakOptions { channel: ChannelMode::Mix, measurement: PeakMeasurement::Rms },
+            &PeakOptions {
+                channel: ChannelMode::Mix,
+                measurement: PeakMeasurement::Rms,
+            },
         )
         .unwrap();
 
@@ -1940,20 +1984,18 @@ mod tests {
             &mut c1,
             &map1,
             &fmt1,
-            &PeakOptions { channel: ChannelMode::Left, measurement: PeakMeasurement::Rms },
+            &PeakOptions {
+                channel: ChannelMode::Left,
+                measurement: PeakMeasurement::Rms,
+            },
         )
         .unwrap();
 
         let mut c2 = Cursor::new(wav);
         let map2 = scan_chunks(&mut c2).unwrap();
         let fmt2 = parse_fmt(&mut c2, &map2).unwrap();
-        let mix_peaks = compute_peaks_with_options(
-            &mut c2,
-            &map2,
-            &fmt2,
-            &PeakOptions::default(),
-        )
-        .unwrap();
+        let mix_peaks =
+            compute_peaks_with_options(&mut c2, &map2, &fmt2, &PeakOptions::default()).unwrap();
 
         assert_eq!(left_peaks, mix_peaks);
     }
@@ -1975,7 +2017,10 @@ mod tests {
             &mut c1,
             &map1,
             &fmt1,
-            &PeakOptions { channel: ChannelMode::Mix, measurement: PeakMeasurement::Rms },
+            &PeakOptions {
+                channel: ChannelMode::Mix,
+                measurement: PeakMeasurement::Rms,
+            },
         )
         .unwrap();
 
@@ -1986,7 +2031,10 @@ mod tests {
             &mut c2,
             &map2,
             &fmt2,
-            &PeakOptions { channel: ChannelMode::Mix, measurement: PeakMeasurement::Peak },
+            &PeakOptions {
+                channel: ChannelMode::Mix,
+                measurement: PeakMeasurement::Peak,
+            },
         )
         .unwrap();
 
@@ -2055,7 +2103,10 @@ mod tests {
 
         let left = &peaks[..PEAK_COUNT];
         let right = &peaks[PEAK_COUNT..];
-        assert_eq!(left, right, "mono stereo peaks should have identical L/R halves");
+        assert_eq!(
+            left, right,
+            "mono stereo peaks should have identical L/R halves"
+        );
     }
 
     #[test]
@@ -2102,7 +2153,10 @@ mod tests {
         assert!(left.iter().any(|&v| v == 255), "left should peak at 255");
         // Right should be < 255 (proportionally scaled).
         let right_max = *right.iter().max().unwrap();
-        assert!(right_max < 255, "right should be less than left (global normalization)");
+        assert!(
+            right_max < 255,
+            "right should be less than left (global normalization)"
+        );
         assert!(right_max > 0, "right should have signal");
     }
 
@@ -2197,7 +2251,10 @@ mod tests {
         // Low-amplitude sign changes should not count as zero-crossings.
         let samples: Vec<i32> = vec![10, -10, 10, -10, 10];
         let crossings = find_zero_crossings(&samples, ZC_THRESHOLD);
-        assert!(crossings.is_empty(), "sub-threshold crossings should be ignored");
+        assert!(
+            crossings.is_empty(),
+            "sub-threshold crossings should be ignored"
+        );
     }
 
     #[test]
@@ -2212,32 +2269,62 @@ mod tests {
     fn test_zc_forward_nearest() {
         let samples: Vec<i32> = vec![100, 200, -300, 400, -500];
         // Crossings at: 1 (200→-300), 2 (-300→400), 3 (400→-500)
-        assert_eq!(nearest_zero_crossing_forward(&samples, 0, ZC_THRESHOLD), Some(1));
-        assert_eq!(nearest_zero_crossing_forward(&samples, 2, ZC_THRESHOLD), Some(2));
-        assert_eq!(nearest_zero_crossing_forward(&samples, 4, ZC_THRESHOLD), None);
+        assert_eq!(
+            nearest_zero_crossing_forward(&samples, 0, ZC_THRESHOLD),
+            Some(1)
+        );
+        assert_eq!(
+            nearest_zero_crossing_forward(&samples, 2, ZC_THRESHOLD),
+            Some(2)
+        );
+        assert_eq!(
+            nearest_zero_crossing_forward(&samples, 4, ZC_THRESHOLD),
+            None
+        );
     }
 
     #[test]
     fn test_zc_backward_nearest() {
         let samples: Vec<i32> = vec![100, 200, -300, 400, -500];
-        assert_eq!(nearest_zero_crossing_backward(&samples, 3, ZC_THRESHOLD), Some(3));
-        assert_eq!(nearest_zero_crossing_backward(&samples, 1, ZC_THRESHOLD), Some(1));
+        assert_eq!(
+            nearest_zero_crossing_backward(&samples, 3, ZC_THRESHOLD),
+            Some(3)
+        );
+        assert_eq!(
+            nearest_zero_crossing_backward(&samples, 1, ZC_THRESHOLD),
+            Some(1)
+        );
     }
 
     #[test]
     fn test_zc_nth_forward() {
         let samples: Vec<i32> = vec![100, -200, 300, -400, 500, -600];
         // Every adjacent pair crosses zero.
-        assert_eq!(nth_zero_crossing_forward(&samples, 0, 1, ZC_THRESHOLD), Some(0));
-        assert_eq!(nth_zero_crossing_forward(&samples, 0, 3, ZC_THRESHOLD), Some(2));
-        assert_eq!(nth_zero_crossing_forward(&samples, 0, 5, ZC_THRESHOLD), Some(4));
+        assert_eq!(
+            nth_zero_crossing_forward(&samples, 0, 1, ZC_THRESHOLD),
+            Some(0)
+        );
+        assert_eq!(
+            nth_zero_crossing_forward(&samples, 0, 3, ZC_THRESHOLD),
+            Some(2)
+        );
+        assert_eq!(
+            nth_zero_crossing_forward(&samples, 0, 5, ZC_THRESHOLD),
+            Some(4)
+        );
     }
 
     #[test]
     fn test_zc_nth_backward() {
         let samples: Vec<i32> = vec![100, -200, 300, -400, 500, -600];
-        assert_eq!(nth_zero_crossing_backward(&samples, 4, 1, ZC_THRESHOLD), Some(4));
-        assert_eq!(nth_zero_crossing_backward(&samples, 4, 3, ZC_THRESHOLD), Some(2));
+        assert_eq!(
+            nth_zero_crossing_backward(&samples, 4, 1, ZC_THRESHOLD),
+            Some(4)
+        );
+        assert_eq!(
+            nth_zero_crossing_backward(&samples, 4, 3, ZC_THRESHOLD),
+            Some(2)
+        );
     }
 
     #[test]

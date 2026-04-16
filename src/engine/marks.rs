@@ -130,7 +130,10 @@ impl MarkStore for CsvMarkStore {
     }
 
     fn is_marked(&self, path: &Path) -> bool {
-        self.marks.lock().expect("marks lock poisoned").contains(path)
+        self.marks
+            .lock()
+            .expect("marks lock poisoned")
+            .contains(path)
     }
 
     fn marked_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
