@@ -808,7 +808,14 @@ fn run_similar(opts: &cli::Opts) -> anyhow::Result<()> {
         results.truncate(limit);
         results
     } else {
-        // Brute-force L2 fallback.
+        // Brute-force L2 fallback — cap at 100K to avoid multi-GB RAM usage.
+        const BRUTE_FORCE_MAX: usize = 100_000;
+        let count = db.embedding_count()?;
+        anyhow::ensure!(
+            count <= BRUTE_FORCE_MAX,
+            "too many embeddings ({count}) for brute-force search (max {BRUTE_FORCE_MAX}); \
+             train a PQ codebook to enable accelerated search"
+        );
         let candidates = db.load_all_embeddings()?;
         let query_id = candidates
             .iter()

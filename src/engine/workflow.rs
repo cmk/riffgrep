@@ -410,9 +410,15 @@ pub fn write_metadata_changes(
     drop(reader);
 
     // Helper: write a fixed-width ASCII field, right-padded with zeros.
+    // Non-ASCII characters are replaced with '?' to avoid writing invalid
+    // UTF-8 or splitting multi-byte codepoints at field boundaries.
     let write_ascii = |offset: usize, len: usize, val: &str| -> anyhow::Result<()> {
         let mut buf = vec![0u8; len];
-        let bytes = val.as_bytes();
+        let sanitized: String = val
+            .chars()
+            .map(|c| if c.is_ascii() { c } else { '?' })
+            .collect();
+        let bytes = sanitized.as_bytes();
         let copy_len = bytes.len().min(len);
         buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
         bext::write_bext_field(path, &map, offset, &buf)?;
@@ -427,34 +433,38 @@ pub fn write_metadata_changes(
         write_ascii(288, 32, &after.library)?;
     }
 
-    // Packed Description fields (offsets within the 256-byte Description block).
-    if before.comment != after.comment {
-        write_ascii(44, 32, &after.comment)?;
-    }
-    if before.rating != after.rating {
-        write_ascii(76, 4, &after.rating)?;
-    }
-    if before.bpm != after.bpm {
-        let bpm_str = after.bpm.map(|v| format!("{v:>4}")).unwrap_or_default();
-        write_ascii(80, 4, &bpm_str)?;
-    }
-    if before.subcategory != after.subcategory {
-        write_ascii(84, 4, &after.subcategory)?;
-    }
-    if before.category != after.category {
-        write_ascii(88, 4, &after.category)?;
-    }
-    if before.genre_id != after.genre_id {
-        write_ascii(92, 4, &after.genre_id)?;
-    }
-    if before.sound_id != after.sound_id {
-        write_ascii(96, 4, &after.sound_id)?;
-    }
-    if before.usage_id != after.usage_id {
-        write_ascii(100, 4, &after.usage_id)?;
-    }
-    if before.key != after.key {
-        write_ascii(104, 8, &after.key)?;
+    // Packed Description fields — only valid when the file uses the packed
+    // schema (file_id != 0). Writing these offsets on an unpacked file would
+    // corrupt the plain-text Description block.
+    if before.file_id != 0 {
+        if before.comment != after.comment {
+            write_ascii(44, 32, &after.comment)?;
+        }
+        if before.rating != after.rating {
+            write_ascii(76, 4, &after.rating)?;
+        }
+        if before.bpm != after.bpm {
+            let bpm_str = after.bpm.map(|v| format!("{v:>4}")).unwrap_or_default();
+            write_ascii(80, 4, &bpm_str)?;
+        }
+        if before.subcategory != after.subcategory {
+            write_ascii(84, 4, &after.subcategory)?;
+        }
+        if before.category != after.category {
+            write_ascii(88, 4, &after.category)?;
+        }
+        if before.genre_id != after.genre_id {
+            write_ascii(92, 4, &after.genre_id)?;
+        }
+        if before.sound_id != after.sound_id {
+            write_ascii(96, 4, &after.sound_id)?;
+        }
+        if before.usage_id != after.usage_id {
+            write_ascii(100, 4, &after.usage_id)?;
+        }
+        if before.key != after.key {
+            write_ascii(104, 8, &after.key)?;
+        }
     }
 
     // Standard BEXT UMID field (bytes 348-411, 64 bytes).

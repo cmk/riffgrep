@@ -633,6 +633,12 @@ impl Database {
     /// Returns an error if the path does not exist in the database.
     #[allow(dead_code)]
     pub fn insert_embedding(&self, path: &str, vector: &[f32]) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            vector.len() == super::pq::DIM,
+            "embedding dimension mismatch: expected {}, got {}",
+            super::pq::DIM,
+            vector.len()
+        );
         let blob: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
         let changed = self.conn.execute(
             "UPDATE samples SET embedding = ? WHERE path = ?",
@@ -653,15 +659,23 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(e) => return Err(e.into()),
         };
+        let expected_bytes = super::pq::DIM * 4;
         match blob {
-            Some(b) if b.len() >= 4 => {
+            Some(b) if b.len() == expected_bytes => {
                 let vec: Vec<f32> = b
                     .chunks_exact(4)
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 Ok(Some(vec))
             }
-            _ => Ok(None),
+            Some(b) => {
+                eprintln!(
+                    "riffgrep: skipping malformed embedding for {path} ({} bytes, expected {expected_bytes})",
+                    b.len()
+                );
+                Ok(None)
+            }
+            None => Ok(None),
         }
     }
 
@@ -688,15 +702,21 @@ impl Database {
             Ok((id, path, blob))
         })?;
 
+        let expected_bytes = super::pq::DIM * 4;
         let mut results = Vec::new();
         for row in rows {
             let (id, path, blob) = row?;
-            if blob.len() >= 4 {
+            if blob.len() == expected_bytes {
                 let vec: Vec<f32> = blob
                     .chunks_exact(4)
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 results.push((id, std::path::PathBuf::from(path), vec));
+            } else {
+                eprintln!(
+                    "riffgrep: skipping malformed embedding for {path} ({} bytes, expected {expected_bytes})",
+                    blob.len()
+                );
             }
         }
         Ok(results)
