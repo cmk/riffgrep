@@ -1525,6 +1525,23 @@ impl App {
             }
         };
 
+        // Guard: brute-force scan is O(n) in memory and time. Cap at 100K
+        // to avoid freezing the TUI. PQ acceleration (future) removes this limit.
+        const BRUTE_FORCE_MAX: usize = 100_000;
+        match db.embedding_count() {
+            Ok(n) if n > BRUTE_FORCE_MAX => {
+                self.set_status(format!(
+                    "Too many embeddings ({n}) for brute-force search (max {BRUTE_FORCE_MAX})"
+                ));
+                return;
+            }
+            Err(e) => {
+                self.set_status(format!("DB error: {e}"));
+                return;
+            }
+            _ => {}
+        }
+
         let candidates = match db.load_all_embeddings() {
             Ok(c) => c,
             Err(e) => {

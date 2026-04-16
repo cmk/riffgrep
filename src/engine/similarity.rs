@@ -21,16 +21,18 @@ pub struct SimilarityResult {
     pub path: PathBuf,
     /// L2 distance from query (0.0 = identical).
     pub dist: f32,
-    /// Similarity score: `1.0 - (dist / max_dist)`, in [0.0, 1.0].
+    /// Window-relative similarity: `1.0 - (dist / max_dist)`, in [0.0, 1.0].
+    /// Relative to the current result window — not comparable across queries
+    /// with different `limit` values. Use `dist` for absolute comparisons.
     /// The query file itself is always 1.0.
     pub sim: f32,
 }
 
 /// Squared L2 (Euclidean) distance between two vectors.
 ///
-/// Uses squared distance to avoid the sqrt — ranking is preserved since
-/// sqrt is monotonic. Only take the sqrt when computing the final `sim`
-/// score for display.
+/// Available for callers that only need ranking (sqrt is monotonic so
+/// squared distance preserves order). The main search path uses
+/// [`l2_distance`] for human-readable `dist` values.
 pub fn l2_distance_sq(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
     a.iter()
