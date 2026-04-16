@@ -629,6 +629,7 @@ impl Database {
 
     /// Store a 512×f32 embedding for a file (by path). The vector is
     /// serialized as a little-endian f32 BLOB (2048 bytes).
+    #[allow(dead_code)]
     pub fn insert_embedding(&self, path: &str, vector: &[f32]) -> anyhow::Result<()> {
         let blob: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
         self.conn.execute(
@@ -689,6 +690,7 @@ impl Database {
     }
 
     /// Store a blob in the metadata table (e.g., PQ codebook).
+    #[allow(dead_code)]
     pub fn set_metadata(&self, key: &str, value: &[u8]) -> anyhow::Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
@@ -698,6 +700,7 @@ impl Database {
     }
 
     /// Load a blob from the metadata table. Returns `None` if key not found.
+    #[allow(dead_code)]
     pub fn get_metadata(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let mut stmt = self
             .conn
@@ -884,17 +887,17 @@ pub fn build_sql(query: &SearchQuery) -> (String, Vec<SqlValue>) {
     let mut uses_fts = false;
 
     // Free-text: FTS5 MATCH across all indexed columns.
-    if let Some(text) = &query.freetext {
-        if !text.is_empty() {
-            let fts_escaped = format!("\"{}\"", text.replace('"', "\"\""));
-            let idx = values.len();
-            values.push(SqlValue::Text(fts_escaped));
-            uses_fts = true;
-            conditions.push(format!(
-                "samples.id IN (SELECT rowid FROM samples_fts WHERE samples_fts MATCH ?{})",
-                idx + 1,
-            ));
-        }
+    if let Some(text) = &query.freetext
+        && !text.is_empty()
+    {
+        let fts_escaped = format!("\"{}\"", text.replace('"', "\"\""));
+        let idx = values.len();
+        values.push(SqlValue::Text(fts_escaped));
+        uses_fts = true;
+        conditions.push(format!(
+            "samples.id IN (SELECT rowid FROM samples_fts WHERE samples_fts MATCH ?{})",
+            idx + 1,
+        ));
     }
 
     // Collect field conditions.
@@ -963,22 +966,22 @@ pub fn build_sql(query: &SearchQuery) -> (String, Vec<SqlValue>) {
         && query.column_filters.is_empty()
     {
         // Check if this is a single-field substring query on an FTS column
-        if let Some(single_field) = get_single_fts_field(query) {
-            if let Some(Pattern::Substring(s)) = single_field.1 {
-                // Rewrite to use FTS5 MATCH + field filter.
-                // Wrap in double quotes for FTS5 to treat as literal phrase
-                // (prevents operators like - being interpreted as NOT).
-                let fts_escaped = format!("\"{}\"", s.replace('"', "\"\""));
-                conditions.clear();
-                values.clear();
-                values.push(SqlValue::Text(fts_escaped));
-                values.push(SqlValue::Text(format!("%{}%", escape_like(s))));
-                uses_fts = true;
-                conditions.push(format!(
+        if let Some(single_field) = get_single_fts_field(query)
+            && let Some(Pattern::Substring(s)) = single_field.1
+        {
+            // Rewrite to use FTS5 MATCH + field filter.
+            // Wrap in double quotes for FTS5 to treat as literal phrase
+            // (prevents operators like - being interpreted as NOT).
+            let fts_escaped = format!("\"{}\"", s.replace('"', "\"\""));
+            conditions.clear();
+            values.clear();
+            values.push(SqlValue::Text(fts_escaped));
+            values.push(SqlValue::Text(format!("%{}%", escape_like(s))));
+            uses_fts = true;
+            conditions.push(format!(
                     "samples.id IN (SELECT rowid FROM samples_fts WHERE samples_fts MATCH ?1) AND {} LIKE ?2 ESCAPE '\\'",
                     single_field.0,
                 ));
-            }
         }
     }
 
@@ -1240,10 +1243,10 @@ fn default_db_path() -> anyhow::Result<PathBuf> {
 
 /// Create parent directories for a path if they don't exist.
 fn ensure_parent_dirs(path: &Path) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     Ok(())
 }
@@ -1681,11 +1684,11 @@ mod tests {
         for entry in std::fs::read_dir(&test_dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
-            if path.extension().is_some_and(|e| e == "wav") {
-                if let Ok(meta) = super::super::read_metadata(&path) {
-                    let mtime = file_mtime(&path).unwrap_or(0);
-                    db.insert_batch(&[(meta, mtime, None)]).unwrap();
-                }
+            if path.extension().is_some_and(|e| e == "wav")
+                && let Ok(meta) = super::super::read_metadata(&path)
+            {
+                let mtime = file_mtime(&path).unwrap_or(0);
+                db.insert_batch(&[(meta, mtime, None)]).unwrap();
             }
         }
     }
@@ -2190,7 +2193,7 @@ mod tests {
                 freetext: Some(input.to_string()),
                 ..Default::default()
             };
-            let (sql, _) = build_sql(&query);
+            let (_sql, _) = build_sql(&query);
             // Just verify it doesn't panic.
             let (tx, rx) = crossbeam_channel::bounded(64);
             db.search(&query, &tx);
@@ -2348,7 +2351,7 @@ mod tests {
     #[test]
     fn test_stats_peaks_breakdown() {
         let db = Database::open_in_memory().unwrap();
-        let raw = compress_peaks(&vec![128u8; 180]);
+        let raw = compress_peaks(&[128u8; 180]);
         db.insert_batch_with_source(
             &[(make_test_meta("/a.wav", "V"), 100, Some(raw.clone()))],
             "generated",
@@ -2462,7 +2465,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let (sql, values) = build_sql(&query);
+        let (sql, _values) = build_sql(&query);
         // Unknown field should be ignored → empty query
         assert!(
             !sql.contains("nonexistent"),

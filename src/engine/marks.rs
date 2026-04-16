@@ -101,10 +101,10 @@ impl CsvMarkStore {
 
     /// Flush marks to the CSV file.
     fn flush(&self, marks: &HashSet<PathBuf>) -> anyhow::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = self.path.parent()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let mut lines: Vec<String> = marks
             .iter()

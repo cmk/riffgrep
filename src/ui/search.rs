@@ -243,10 +243,10 @@ pub async fn load_peaks_with_fallback(db_path: Option<&Path>, file_path: &Path) 
     // Try DB first.
     if let Some(db) = db_path {
         let path_str = file_path.to_string_lossy().to_string();
-        if let Some(peaks) = load_peaks(db, &path_str).await {
-            if !peaks.is_empty() {
-                return Some(peaks);
-            }
+        if let Some(peaks) = load_peaks(db, &path_str).await
+            && !peaks.is_empty()
+        {
+            return Some(peaks);
         }
     }
     // Fallback: compute stereo peaks from audio file.
@@ -351,11 +351,11 @@ mod tests {
             for entry in std::fs::read_dir(&test_dir).unwrap() {
                 let entry = entry.unwrap();
                 let path = entry.path();
-                if path.extension().is_some_and(|e| e == "wav") {
-                    if let Ok(meta) = crate::engine::read_metadata(&path) {
-                        let mtime = crate::engine::sqlite::file_mtime(&path).unwrap_or(0);
-                        db.insert_batch(&[(meta, mtime, None)]).unwrap();
-                    }
+                if path.extension().is_some_and(|e| e == "wav")
+                    && let Ok(meta) = crate::engine::read_metadata(&path)
+                {
+                    let mtime = crate::engine::sqlite::file_mtime(&path).unwrap_or(0);
+                    db.insert_batch(&[(meta, mtime, None)]).unwrap();
                 }
             }
         }

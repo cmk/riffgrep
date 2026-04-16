@@ -15,7 +15,7 @@ use crate::engine::{TableRow, UnifiedMetadata};
 use theme::Theme;
 
 /// Preview data for the selected result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PreviewData {
     /// Metadata for the previewed file.
     pub metadata: UnifiedMetadata,
@@ -27,18 +27,6 @@ pub struct PreviewData {
     pub markers: Option<crate::engine::bext::MarkerConfig>,
     /// Raw 16-bit PCM samples for waveform zoom (None for non-16-bit files).
     pub pcm: Option<crate::engine::wav::PcmData>,
-}
-
-impl Default for PreviewData {
-    fn default() -> Self {
-        Self {
-            metadata: UnifiedMetadata::default(),
-            peaks: Vec::new(),
-            audio_info: None,
-            markers: None,
-            pcm: None,
-        }
-    }
 }
 
 /// Events that drive the TUI state machine.
@@ -790,11 +778,11 @@ impl App {
     /// updates `cursor_sample` so the next `play_program()` call starts from there.
     fn seek_relative(&mut self, delta: f64) {
         // Active playback: seek the engine directly.
-        if let Some(ref engine) = self.playback {
-            if engine.state() != PlaybackState::Stopped {
-                let _ = engine.seek_relative(delta);
-                return;
-            }
+        if let Some(ref engine) = self.playback
+            && engine.state() != PlaybackState::Stopped
+        {
+            let _ = engine.seek_relative(delta);
+            return;
         }
 
         // Stopped: update cursor_sample from preview audio info.
@@ -887,16 +875,16 @@ impl App {
     /// Get current markers from preview/row, or generate duration-aware defaults.
     pub fn current_markers_or_default(&self) -> crate::engine::bext::MarkerConfig {
         // 1. Check preview.
-        if let Some(ref preview) = self.preview {
-            if let Some(m) = preview.markers {
-                return m;
-            }
+        if let Some(ref preview) = self.preview
+            && let Some(m) = preview.markers
+        {
+            return m;
         }
         // 2. Check selected row.
-        if let Some(row) = self.results.get(self.selected) {
-            if let Some(m) = row.markers {
-                return m;
-            }
+        if let Some(row) = self.results.get(self.selected)
+            && let Some(m) = row.markers
+        {
+            return m;
         }
         // 3. Duration-aware default: short files get shot, longer files get loop.
         let total_samples = self
@@ -1030,17 +1018,17 @@ impl App {
 
     /// Ensure preview has markers (initialize from defaults if needed).
     fn ensure_markers(&mut self) {
-        if let Some(ref mut preview) = self.preview {
-            if preview.markers.is_none() {
-                let total = preview
-                    .audio_info
-                    .as_ref()
-                    .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32);
-                preview.markers = Some(match total {
-                    Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
-                    _ => crate::engine::bext::MarkerConfig::preset_shot(),
-                });
-            }
+        if let Some(ref mut preview) = self.preview
+            && preview.markers.is_none()
+        {
+            let total = preview
+                .audio_info
+                .as_ref()
+                .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32);
+            preview.markers = Some(match total {
+                Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
+                _ => crate::engine::bext::MarkerConfig::preset_shot(),
+            });
         }
     }
 
@@ -1062,11 +1050,11 @@ impl App {
 
         // Apply to active bank (and mirror if bank_sync is on).
         if self.bank_sync {
-            if let Some(ref mut preview) = self.preview {
-                if let Some(ref mut markers) = preview.markers {
-                    Self::set_bank_marker(&mut markers.bank_a, index, snapped);
-                    Self::set_bank_marker(&mut markers.bank_b, index, snapped);
-                }
+            if let Some(ref mut preview) = self.preview
+                && let Some(ref mut markers) = preview.markers
+            {
+                Self::set_bank_marker(&mut markers.bank_a, index, snapped);
+                Self::set_bank_marker(&mut markers.bank_b, index, snapped);
             }
         } else if let Some(bank) = self.active_bank_mut() {
             Self::set_bank_marker(bank, index, snapped);
@@ -1162,11 +1150,11 @@ impl App {
         if let Some(idx) = nearest_idx {
             let empty = crate::engine::bext::MARKER_EMPTY;
             if self.bank_sync {
-                if let Some(ref mut preview) = self.preview {
-                    if let Some(ref mut markers) = preview.markers {
-                        Self::set_bank_marker(&mut markers.bank_a, idx, empty);
-                        Self::set_bank_marker(&mut markers.bank_b, idx, empty);
-                    }
+                if let Some(ref mut preview) = self.preview
+                    && let Some(ref mut markers) = preview.markers
+                {
+                    Self::set_bank_marker(&mut markers.bank_a, idx, empty);
+                    Self::set_bank_marker(&mut markers.bank_b, idx, empty);
                 }
             } else if let Some(bank) = self.active_bank_mut() {
                 Self::set_bank_marker(bank, idx, empty);
@@ -1188,11 +1176,11 @@ impl App {
     /// Clear all markers in the active bank (or both if synced).
     fn clear_bank_markers(&mut self) {
         if self.bank_sync {
-            if let Some(ref mut preview) = self.preview {
-                if let Some(ref mut markers) = preview.markers {
-                    markers.bank_a = crate::engine::bext::MarkerBank::empty();
-                    markers.bank_b = crate::engine::bext::MarkerBank::empty();
-                }
+            if let Some(ref mut preview) = self.preview
+                && let Some(ref mut markers) = preview.markers
+            {
+                markers.bank_a = crate::engine::bext::MarkerBank::empty();
+                markers.bank_b = crate::engine::bext::MarkerBank::empty();
             }
             self.set_status("Banks A+B cleared".to_string());
         } else if let Some(bank) = self.active_bank_mut() {
@@ -1255,19 +1243,19 @@ impl App {
         self.ensure_markers();
 
         if self.bank_sync {
-            if let Some(ref mut preview) = self.preview {
-                if let Some(ref mut markers) = preview.markers {
-                    let cur = markers.bank_a.reps[seg];
-                    let new_val = (cur as i16 + delta as i16).clamp(0, 15) as u8;
-                    markers.bank_a.reps[seg] = new_val;
-                    markers.bank_b.reps[seg] = new_val;
-                    let label = if new_val == 15 {
-                        "inf".to_string()
-                    } else {
-                        format!("{new_val}")
-                    };
-                    self.set_status(format!("Segment {} rep: {label}", seg + 1));
-                }
+            if let Some(ref mut preview) = self.preview
+                && let Some(ref mut markers) = preview.markers
+            {
+                let cur = markers.bank_a.reps[seg];
+                let new_val = (cur as i16 + delta as i16).clamp(0, 15) as u8;
+                markers.bank_a.reps[seg] = new_val;
+                markers.bank_b.reps[seg] = new_val;
+                let label = if new_val == 15 {
+                    "inf".to_string()
+                } else {
+                    format!("{new_val}")
+                };
+                self.set_status(format!("Segment {} rep: {label}", seg + 1));
             }
         } else if let Some(bank) = self.active_bank_mut() {
             let current = bank.reps[seg];
@@ -1806,7 +1794,7 @@ impl App {
         };
         let sample = match idx {
             0 => 0u32,
-            1 | 2 | 3 => {
+            1..=3 => {
                 if let Some(bank) = self.active_bank_ref() {
                     let val = match idx {
                         1 => bank.m1,
@@ -1856,15 +1844,15 @@ impl App {
         self.ensure_markers();
 
         if self.bank_sync {
-            if let Some(ref mut preview) = self.preview {
-                if let Some(ref mut markers) = preview.markers {
-                    let cur = markers.bank_a.reps[seg];
-                    let new_val = if cur == 15 { 1 } else { 15 };
-                    markers.bank_a.reps[seg] = new_val;
-                    markers.bank_b.reps[seg] = new_val;
-                    let label = if new_val == 15 { "inf" } else { "1" };
-                    self.set_status(format!("Segment {} rep: {label}", seg + 1));
-                }
+            if let Some(ref mut preview) = self.preview
+                && let Some(ref mut markers) = preview.markers
+            {
+                let cur = markers.bank_a.reps[seg];
+                let new_val = if cur == 15 { 1 } else { 15 };
+                markers.bank_a.reps[seg] = new_val;
+                markers.bank_b.reps[seg] = new_val;
+                let label = if new_val == 15 { "inf" } else { "1" };
+                self.set_status(format!("Segment {} rep: {label}", seg + 1));
             }
         } else if let Some(bank) = self.active_bank_mut() {
             let cur = bank.reps[seg];
@@ -1938,11 +1926,11 @@ impl App {
 
         self.ensure_markers();
         if self.bank_sync {
-            if let Some(ref mut preview) = self.preview {
-                if let Some(ref mut markers) = preview.markers {
-                    Self::set_bank_marker(&mut markers.bank_a, sel - 1, new_sample);
-                    Self::set_bank_marker(&mut markers.bank_b, sel - 1, new_sample);
-                }
+            if let Some(ref mut preview) = self.preview
+                && let Some(ref mut markers) = preview.markers
+            {
+                Self::set_bank_marker(&mut markers.bank_a, sel - 1, new_sample);
+                Self::set_bank_marker(&mut markers.bank_b, sel - 1, new_sample);
             }
         } else if let Some(bank) = self.active_bank_mut() {
             Self::set_bank_marker(bank, sel - 1, new_sample);
@@ -2027,11 +2015,11 @@ impl App {
 
         self.ensure_markers();
         if self.bank_sync {
-            if let Some(ref mut preview) = self.preview {
-                if let Some(ref mut markers) = preview.markers {
-                    Self::set_bank_marker(&mut markers.bank_a, sel - 1, new_sample);
-                    Self::set_bank_marker(&mut markers.bank_b, sel - 1, new_sample);
-                }
+            if let Some(ref mut preview) = self.preview
+                && let Some(ref mut markers) = preview.markers
+            {
+                Self::set_bank_marker(&mut markers.bank_a, sel - 1, new_sample);
+                Self::set_bank_marker(&mut markers.bank_b, sel - 1, new_sample);
             }
         } else if let Some(bank) = self.active_bank_mut() {
             Self::set_bank_marker(bank, sel - 1, new_sample);
@@ -2061,10 +2049,11 @@ impl App {
         // Snap preset markers to zero-crossings when possible.
         for bank in [&mut preset.bank_a, &mut preset.bank_b] {
             for marker in [&mut bank.m1, &mut bank.m2, &mut bank.m3] {
-                if *marker != crate::engine::bext::MARKER_EMPTY && *marker > 0 {
-                    if let Some(snapped) = self.snap_sample_to_zc(*marker) {
-                        *marker = snapped;
-                    }
+                if *marker != crate::engine::bext::MARKER_EMPTY
+                    && *marker > 0
+                    && let Some(snapped) = self.snap_sample_to_zc(*marker)
+                {
+                    *marker = snapped;
                 }
             }
         }
@@ -2301,12 +2290,12 @@ impl App {
         self.zoom_level += 1;
 
         // Initialise ZoomCache lazily.
-        if self.zoom_cache.is_none() {
-            if let Some(preview) = &self.preview {
-                // Use first PEAK_COUNT elements (left-channel peaks from stereo BEXT peaks).
-                let peaks: Vec<u8> = preview.peaks.iter().copied().take(NUM_ZOOM_COLS).collect();
-                self.zoom_cache = Some(ZoomCache::new(&peaks));
-            }
+        if self.zoom_cache.is_none()
+            && let Some(preview) = &self.preview
+        {
+            // Use first PEAK_COUNT elements (left-channel peaks from stereo BEXT peaks).
+            let peaks: Vec<u8> = preview.peaks.iter().copied().take(NUM_ZOOM_COLS).collect();
+            self.zoom_cache = Some(ZoomCache::new(&peaks));
         }
 
         // Recompute viewport offset to keep zoom_center centred.
@@ -2346,21 +2335,21 @@ impl App {
         }
 
         // Re-centre on zoom_center.
-        if let Some(center) = self.zoom_center {
-            if let Some(preview) = &self.preview {
-                let total_samples = preview.pcm.as_ref().map(|p| p.samples.len()).unwrap_or(1);
-                let k_lvl0 = if total_samples < NUM_ZOOM_COLS {
-                    1usize
-                } else {
-                    total_samples / NUM_ZOOM_COLS
-                };
-                let k_current = (k_lvl0 >> self.zoom_level).max(1);
-                let total_cols = NUM_ZOOM_COLS << self.zoom_level;
-                let center_col = (center as usize / k_current).min(total_cols.saturating_sub(1));
-                self.zoom_offset = center_col
-                    .saturating_sub(NUM_ZOOM_COLS / 2)
-                    .min(total_cols.saturating_sub(NUM_ZOOM_COLS));
-            }
+        if let Some(center) = self.zoom_center
+            && let Some(preview) = &self.preview
+        {
+            let total_samples = preview.pcm.as_ref().map(|p| p.samples.len()).unwrap_or(1);
+            let k_lvl0 = if total_samples < NUM_ZOOM_COLS {
+                1usize
+            } else {
+                total_samples / NUM_ZOOM_COLS
+            };
+            let k_current = (k_lvl0 >> self.zoom_level).max(1);
+            let total_cols = NUM_ZOOM_COLS << self.zoom_level;
+            let center_col = (center as usize / k_current).min(total_cols.saturating_sub(1));
+            self.zoom_offset = center_col
+                .saturating_sub(NUM_ZOOM_COLS / 2)
+                .min(total_cols.saturating_sub(NUM_ZOOM_COLS));
         }
 
         self.update_zoom_peaks();
@@ -2412,11 +2401,11 @@ impl App {
         };
 
         // Ensure the cache is initialised.
-        if self.zoom_cache.is_none() {
-            if let Some(preview) = &self.preview {
-                let peaks: Vec<u8> = preview.peaks.iter().copied().take(NUM_ZOOM_COLS).collect();
-                self.zoom_cache = Some(crate::engine::wav::ZoomCache::new(&peaks));
-            }
+        if self.zoom_cache.is_none()
+            && let Some(preview) = &self.preview
+        {
+            let peaks: Vec<u8> = preview.peaks.iter().copied().take(NUM_ZOOM_COLS).collect();
+            self.zoom_cache = Some(crate::engine::wav::ZoomCache::new(&peaks));
         }
 
         if let (Some(cache), Some(samples)) = (&mut self.zoom_cache, pcm_samples) {
@@ -2479,24 +2468,23 @@ fn column_sort_key(row: &TableRow, key: &str) -> SortKey {
         }
     }
     // Duration: parse "M:SS" → total seconds.
-    if key == "duration" {
-        if let Some(secs) = parse_duration_sort(&value) {
-            return SortKey::Numeric(secs);
-        }
+    if key == "duration"
+        && let Some(secs) = parse_duration_sort(&value)
+    {
+        return SortKey::Numeric(secs);
     }
     // Sim "0.87" → numeric (×1000 for integer sort key).
-    if key == "sim" {
-        if let Ok(f) = value.parse::<f64>() {
-            return SortKey::Numeric((f * 1000.0) as i64);
-        }
+    if key == "sim"
+        && let Ok(f) = value.parse::<f64>()
+    {
+        return SortKey::Numeric((f * 1000.0) as i64);
     }
     // Sample rate "48k" → numeric.
-    if key == "sample_rate" {
-        if let Some(stripped) = value.strip_suffix('k') {
-            if let Ok(n) = stripped.parse::<i64>() {
-                return SortKey::Numeric(n * 1000);
-            }
-        }
+    if key == "sample_rate"
+        && let Some(stripped) = value.strip_suffix('k')
+        && let Ok(n) = stripped.parse::<i64>()
+    {
+        return SortKey::Numeric(n * 1000);
     }
     SortKey::Text(value.to_ascii_lowercase())
 }
@@ -2658,22 +2646,22 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
 
     let mut app = App::new(theme);
     app.db_path = db_path_for_peaks.clone();
-    if let Some(ref cols) = config.columns {
-        if !cols.is_empty() {
-            app.columns = cols.clone();
-        }
+    if let Some(ref cols) = config.columns
+        && !cols.is_empty()
+    {
+        app.columns = cols.clone();
     }
 
     // Apply default sort from config.
-    if let Some(ref sort_col) = config.default_sort {
-        if crate::engine::config::column_def(sort_col).is_some() {
-            app.sort_column = Some(sort_col.clone());
-            app.sort_ascending = config
-                .default_sort_order
-                .as_deref()
-                .map(|o| o != "desc")
-                .unwrap_or(true);
-        }
+    if let Some(ref sort_col) = config.default_sort
+        && crate::engine::config::column_def(sort_col).is_some()
+    {
+        app.sort_column = Some(sort_col.clone());
+        app.sort_ascending = config
+            .default_sort_order
+            .as_deref()
+            .map(|o| o != "desc")
+            .unwrap_or(true);
     }
 
     // Apply keymap overrides from config.
@@ -2777,34 +2765,34 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
             preview_debounce = None;
         }
 
-        if let Some(fire_at) = search_debounce {
-            if Instant::now() >= fire_at {
-                search_debounce = None;
+        if let Some(fire_at) = search_debounce
+            && Instant::now() >= fire_at
+        {
+            search_debounce = None;
 
-                // Cancel existing search.
-                if let Some(handle) = current_search.take() {
-                    handle.cancel();
-                }
-                // Don't clear results yet — keep them visible until the
-                // first batch of new results arrives (prevents flickering).
-                app.search_pending = true;
-                app.search_in_progress = true;
-
-                // Build new search: parse @field=value filters from query.
-                let (freetext, column_filters) = crate::engine::parse_column_filters(&app.query);
-                let query = crate::engine::SearchQuery {
-                    freetext: if freetext.is_empty() {
-                        None
-                    } else {
-                        Some(freetext)
-                    },
-                    column_filters,
-                    ..Default::default()
-                };
-
-                let mode = resolve_search_mode(&opts)?;
-                current_search = Some(SearchHandleTable::spawn(query, mode));
+            // Cancel existing search.
+            if let Some(handle) = current_search.take() {
+                handle.cancel();
             }
+            // Don't clear results yet — keep them visible until the
+            // first batch of new results arrives (prevents flickering).
+            app.search_pending = true;
+            app.search_in_progress = true;
+
+            // Build new search: parse @field=value filters from query.
+            let (freetext, column_filters) = crate::engine::parse_column_filters(&app.query);
+            let query = crate::engine::SearchQuery {
+                freetext: if freetext.is_empty() {
+                    None
+                } else {
+                    Some(freetext)
+                },
+                column_filters,
+                ..Default::default()
+            };
+
+            let mode = resolve_search_mode(&opts)?;
+            current_search = Some(SearchHandleTable::spawn(query, mode));
         }
 
         // Check if selection changed for preview debounce.
@@ -2814,40 +2802,38 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
             preview_debounce = Some(Instant::now() + debounce_duration);
         }
 
-        if let Some(fire_at) = preview_debounce {
-            if Instant::now() >= fire_at {
-                preview_debounce = None;
+        if let Some(fire_at) = preview_debounce
+            && Instant::now() >= fire_at
+        {
+            preview_debounce = None;
 
-                // Load peaks and audio info for the selected item.
-                if let Some(row) = app.results.get(app.selected).cloned() {
-                    let peaks = search::load_peaks_with_fallback(
-                        db_path_for_peaks.as_deref(),
-                        &row.meta.path,
-                    )
-                    .await;
-                    // Use audio_info from TableRow if available, otherwise JIT load.
-                    let audio_info = if row.audio_info.is_some() {
-                        row.audio_info.clone()
-                    } else {
-                        search::load_audio_info(&row.meta.path).await
-                    };
-                    // Load raw PCM samples for zoom support (16-bit files only).
-                    // Runs on blocking thread to avoid stalling the async executor.
-                    let pcm_path = row.meta.path.clone();
-                    let pcm = tokio::task::spawn_blocking(move || {
-                        crate::engine::wav::load_pcm_data(&pcm_path).ok()
-                    })
-                    .await
-                    .unwrap_or(None);
+            // Load peaks and audio info for the selected item.
+            if let Some(row) = app.results.get(app.selected).cloned() {
+                let peaks =
+                    search::load_peaks_with_fallback(db_path_for_peaks.as_deref(), &row.meta.path)
+                        .await;
+                // Use audio_info from TableRow if available, otherwise JIT load.
+                let audio_info = if row.audio_info.is_some() {
+                    row.audio_info.clone()
+                } else {
+                    search::load_audio_info(&row.meta.path).await
+                };
+                // Load raw PCM samples for zoom support (16-bit files only).
+                // Runs on blocking thread to avoid stalling the async executor.
+                let pcm_path = row.meta.path.clone();
+                let pcm = tokio::task::spawn_blocking(move || {
+                    crate::engine::wav::load_pcm_data(&pcm_path).ok()
+                })
+                .await
+                .unwrap_or(None);
 
-                    app.on_preview_ready(PreviewData {
-                        metadata: row.meta,
-                        peaks: peaks.unwrap_or_default(),
-                        audio_info,
-                        markers: row.markers,
-                        pcm,
-                    });
-                }
+                app.on_preview_ready(PreviewData {
+                    metadata: row.meta,
+                    peaks: peaks.unwrap_or_default(),
+                    audio_info,
+                    markers: row.markers,
+                    pcm,
+                });
             }
         }
 
@@ -5481,7 +5467,7 @@ mod tests {
             },
             peaks: peaks
                 .into_iter()
-                .chain(std::iter::repeat(0).take(PEAK_COUNT))
+                .chain(std::iter::repeat_n(0, PEAK_COUNT))
                 .collect(),
             audio_info: Some(AudioInfo {
                 total_samples: total_samples as u32,
@@ -5775,10 +5761,10 @@ mod tests {
     fn test_decrement_rep_uses_selected_marker_1() {
         let mut app = app_with_preview_and_markers();
         // Bump rep[1] to 3 so decrement is clearly visible.
-        if let Some(ref mut p) = app.preview {
-            if let Some(ref mut mc) = p.markers {
-                mc.bank_a.reps[1] = 3;
-            }
+        if let Some(ref mut p) = app.preview
+            && let Some(ref mut mc) = p.markers
+        {
+            mc.bank_a.reps[1] = 3;
         }
         app.selected_marker = Some(1);
         let initial = 3u8;
@@ -5804,10 +5790,10 @@ mod tests {
         // The old bug: reps always modified segment 3 regardless of selected_marker.
         let mut app = app_with_preview_and_markers();
         // Set all reps to 2.
-        if let Some(ref mut p) = app.preview {
-            if let Some(ref mut mc) = p.markers {
-                mc.bank_a.reps = [2, 2, 2, 2];
-            }
+        if let Some(ref mut p) = app.preview
+            && let Some(ref mut mc) = p.markers
+        {
+            mc.bank_a.reps = [2, 2, 2, 2];
         }
         app.selected_marker = Some(0); // target segment 0
         app.dispatch(actions::Action::IncrementRep);
@@ -5910,11 +5896,11 @@ mod tests {
         // Assert each reps[i] changes exactly once.
         let mut app = app_with_preview_and_markers();
         // Initialize all reps to 1.
-        if let Some(ref mut p) = app.preview {
-            if let Some(ref mut mc) = p.markers {
-                mc.bank_a.reps = [1, 1, 1, 1];
-                mc.bank_b.reps = [1, 1, 1, 1];
-            }
+        if let Some(ref mut p) = app.preview
+            && let Some(ref mut mc) = p.markers
+        {
+            mc.bank_a.reps = [1, 1, 1, 1];
+            mc.bank_b.reps = [1, 1, 1, 1];
         }
 
         for idx in 0..4 {

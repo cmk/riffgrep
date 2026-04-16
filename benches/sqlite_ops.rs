@@ -1,4 +1,5 @@
 //! Criterion benchmarks for SQLite operations.
+#![allow(missing_docs)]
 
 use std::path::PathBuf;
 
@@ -20,17 +21,17 @@ fn make_test_meta(i: usize) -> UnifiedMetadata {
         sound_id: format!("SID{i:06}"),
         description: format!("This is a sample description for file number {i}"),
         comment: format!("Comment {i}"),
-        key: if i % 12 == 0 {
+        key: if i.is_multiple_of(12) {
             "C".to_string()
         } else {
             "".to_string()
         },
-        bpm: if i % 3 == 0 {
+        bpm: if i.is_multiple_of(3) {
             Some((80 + (i % 100)) as u16)
         } else {
             None
         },
-        rating: if i % 4 == 0 {
+        rating: if i.is_multiple_of(4) {
             "****".to_string()
         } else {
             "".to_string()

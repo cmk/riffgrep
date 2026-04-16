@@ -645,24 +645,23 @@ impl PlaybackEngine {
     /// audio output buffer to fully drain before transitioning to Stopped.
     pub fn state(&self) -> PlaybackState {
         let state = PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
-        if state == PlaybackState::Playing {
-            if let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned") {
-                if sink.empty() {
-                    let mut drain = self.drain_start.lock().expect("playback lock poisoned");
-                    if drain.is_none() {
-                        *drain = Some(Instant::now());
-                        return PlaybackState::Playing;
-                    }
-                    if drain.unwrap().elapsed() < Duration::from_millis(DRAIN_GRACE_MS) {
-                        return PlaybackState::Playing;
-                    }
-                    // Grace period elapsed — transition to Stopped.
-                    *drain = None;
-                    self.state
-                        .store(PlaybackState::Stopped.to_u8(), Ordering::Relaxed);
-                    return PlaybackState::Stopped;
-                }
+        if state == PlaybackState::Playing
+            && let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned")
+            && sink.empty()
+        {
+            let mut drain = self.drain_start.lock().expect("playback lock poisoned");
+            if drain.is_none() {
+                *drain = Some(Instant::now());
+                return PlaybackState::Playing;
             }
+            if drain.unwrap().elapsed() < Duration::from_millis(DRAIN_GRACE_MS) {
+                return PlaybackState::Playing;
+            }
+            // Grace period elapsed — transition to Stopped.
+            *drain = None;
+            self.state
+                .store(PlaybackState::Stopped.to_u8(), Ordering::Relaxed);
+            return PlaybackState::Stopped;
         }
         state
     }
@@ -883,6 +882,7 @@ impl PlaybackEngine {
     }
 
     /// Test helper: set internal state directly (Playing/Paused/Stopped).
+    #[allow(dead_code)]
     pub fn test_set_state(&self, state: PlaybackState) {
         self.state.store(state.to_u8(), Ordering::Relaxed);
     }

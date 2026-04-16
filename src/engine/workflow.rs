@@ -21,17 +21,9 @@ fn lua_err(e: mlua::Error) -> anyhow::Error {
 }
 
 /// A loaded Lua script ready to execute against metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WorkflowScript {
     source: String,
-}
-
-impl Default for WorkflowScript {
-    fn default() -> Self {
-        Self {
-            source: String::new(),
-        }
-    }
 }
 
 /// Load a workflow script from either an eval string or a file path.
@@ -396,6 +388,83 @@ pub fn format_meta_diff(diff: &MetaDiff) -> String {
     diff.to_string()
 }
 
+/// Write metadata changes back to the file's BEXT chunk.
+///
+/// Performs surgical overwrites at fixed BEXT offsets — no re-encoding of
+/// audio data is needed. Only writes fields that actually changed between
+/// `before` and `after`.
+pub fn write_metadata_changes(
+    path: &Path,
+    before: &UnifiedMetadata,
+    after: &UnifiedMetadata,
+    force: bool,
+) -> anyhow::Result<()> {
+    // Guard: skip files that already have a file_id unless --force.
+    if !force && before.file_id != 0 {
+        anyhow::bail!("file already packed (use --force to overwrite)");
+    }
+
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::with_capacity(4096, file);
+    let map = bext::scan_chunks(&mut reader)?;
+    drop(reader);
+
+    // Helper: write a fixed-width ASCII field, right-padded with zeros.
+    let write_ascii = |offset: usize, len: usize, val: &str| -> anyhow::Result<()> {
+        let mut buf = vec![0u8; len];
+        let bytes = val.as_bytes();
+        let copy_len = bytes.len().min(len);
+        buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+        bext::write_bext_field(path, &map, offset, &buf)?;
+        Ok(())
+    };
+
+    // Standard BEXT fields (outside packed Description).
+    if before.vendor != after.vendor {
+        write_ascii(256, 32, &after.vendor)?;
+    }
+    if before.library != after.library {
+        write_ascii(288, 32, &after.library)?;
+    }
+
+    // Packed Description fields (offsets within the 256-byte Description block).
+    if before.comment != after.comment {
+        write_ascii(44, 32, &after.comment)?;
+    }
+    if before.rating != after.rating {
+        write_ascii(76, 4, &after.rating)?;
+    }
+    if before.bpm != after.bpm {
+        let bpm_str = after.bpm.map(|v| format!("{v:>4}")).unwrap_or_default();
+        write_ascii(80, 4, &bpm_str)?;
+    }
+    if before.subcategory != after.subcategory {
+        write_ascii(84, 4, &after.subcategory)?;
+    }
+    if before.category != after.category {
+        write_ascii(88, 4, &after.category)?;
+    }
+    if before.genre_id != after.genre_id {
+        write_ascii(92, 4, &after.genre_id)?;
+    }
+    if before.sound_id != after.sound_id {
+        write_ascii(96, 4, &after.sound_id)?;
+    }
+    if before.usage_id != after.usage_id {
+        write_ascii(100, 4, &after.usage_id)?;
+    }
+    if before.key != after.key {
+        write_ascii(104, 8, &after.key)?;
+    }
+
+    // Standard BEXT UMID field (bytes 348-411, 64 bytes).
+    if before.umid != after.umid {
+        write_ascii(348, 64, &after.umid)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,81 +800,4 @@ mod tests {
             result.unwrap_err()
         );
     }
-}
-
-/// Write metadata changes back to the file's BEXT chunk.
-///
-/// Performs surgical overwrites at fixed BEXT offsets — no re-encoding of
-/// audio data is needed. Only writes fields that actually changed between
-/// `before` and `after`.
-pub fn write_metadata_changes(
-    path: &Path,
-    before: &UnifiedMetadata,
-    after: &UnifiedMetadata,
-    force: bool,
-) -> anyhow::Result<()> {
-    // Guard: skip files that already have a file_id unless --force.
-    if !force && before.file_id != 0 {
-        anyhow::bail!("file already packed (use --force to overwrite)");
-    }
-
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::with_capacity(4096, file);
-    let map = bext::scan_chunks(&mut reader)?;
-    drop(reader);
-
-    // Helper: write a fixed-width ASCII field, right-padded with zeros.
-    let write_ascii = |offset: usize, len: usize, val: &str| -> anyhow::Result<()> {
-        let mut buf = vec![0u8; len];
-        let bytes = val.as_bytes();
-        let copy_len = bytes.len().min(len);
-        buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
-        bext::write_bext_field(path, &map, offset, &buf)?;
-        Ok(())
-    };
-
-    // Standard BEXT fields (outside packed Description).
-    if before.vendor != after.vendor {
-        write_ascii(256, 32, &after.vendor)?;
-    }
-    if before.library != after.library {
-        write_ascii(288, 32, &after.library)?;
-    }
-
-    // Packed Description fields (offsets within the 256-byte Description block).
-    if before.comment != after.comment {
-        write_ascii(44, 32, &after.comment)?;
-    }
-    if before.rating != after.rating {
-        write_ascii(76, 4, &after.rating)?;
-    }
-    if before.bpm != after.bpm {
-        let bpm_str = after.bpm.map(|v| format!("{v:>4}")).unwrap_or_default();
-        write_ascii(80, 4, &bpm_str)?;
-    }
-    if before.subcategory != after.subcategory {
-        write_ascii(84, 4, &after.subcategory)?;
-    }
-    if before.category != after.category {
-        write_ascii(88, 4, &after.category)?;
-    }
-    if before.genre_id != after.genre_id {
-        write_ascii(92, 4, &after.genre_id)?;
-    }
-    if before.sound_id != after.sound_id {
-        write_ascii(96, 4, &after.sound_id)?;
-    }
-    if before.usage_id != after.usage_id {
-        write_ascii(100, 4, &after.usage_id)?;
-    }
-    if before.key != after.key {
-        write_ascii(104, 8, &after.key)?;
-    }
-
-    // Standard BEXT UMID field (bytes 348-411, 64 bytes).
-    if before.umid != after.umid {
-        write_ascii(348, 64, &after.umid)?;
-    }
-
-    Ok(())
 }

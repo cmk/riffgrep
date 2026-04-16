@@ -1,4 +1,5 @@
 //! Criterion benchmarks for TUI rendering operations.
+#![allow(missing_docs)]
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 

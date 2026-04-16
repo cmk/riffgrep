@@ -998,7 +998,7 @@ pub fn key_display(code: &KeyCode, modifiers: &KeyModifiers) -> String {
         KeyCode::Down => s.push_str("Down"),
         KeyCode::Left => s.push_str("Left"),
         KeyCode::Right => s.push_str("Right"),
-        _ => s.push_str("?"),
+        _ => s.push('?'),
     }
     s
 }
