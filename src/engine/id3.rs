@@ -15,20 +15,30 @@ use lofty::tag::{Accessor, ItemKey, Tag, TagType};
 pub struct Id3Tags {
     /// TPE1 — Artist / Vendor.
     pub vendor: String,
-    /// TPE2 — Album Artist / Library.
+    /// TPE2 — Album Artist / Library (falls back to TALB if absent).
     pub library: String,
     /// TCON — Content type / Category.
     pub category: String,
     /// TIT2 — Title / Sound ID.
     pub sound_id: String,
-    /// TIT3 — Subtitle / Usage ID.
+    /// TIT3 — Subtitle / Usage ID (mapped from TrackSubtitle).
     pub usage_id: String,
     /// COMM — Comment / Description.
     pub description: String,
-    /// TBPM — Beats per minute.
+    /// TBPM — Beats per minute (tries TBPM then IntegerBpm).
     pub bpm: Option<u16>,
     /// TKEY — Musical key.
     pub key: String,
+    /// TDRC — Recording date.
+    pub date: String,
+    /// TCOM — Composer / Subcategory.
+    pub subcategory: String,
+    /// TIT1 — Content group / Genre ID.
+    pub genre_id: String,
+    /// TRCK — Track number.
+    pub track: String,
+    /// POPM — Rating (as string).
+    pub rating: String,
 }
 
 /// Read ID3v2 tags from a WAV file using lofty.
@@ -53,18 +63,34 @@ fn parse_tag(tag: &Tag) -> Id3Tags {
         tag.get_string(key).unwrap_or_default().trim().to_string()
     };
 
-    let bpm_str = get(&ItemKey::Bpm);
-    let bpm = bpm_str.parse::<u16>().ok();
+    let bpm = tag
+        .get_string(&ItemKey::Bpm)
+        .or_else(|| tag.get_string(&ItemKey::IntegerBpm))
+        .and_then(|s| s.trim().parse::<u16>().ok());
+
+    let library = {
+        let tpe2 = get(&ItemKey::AlbumArtist);
+        if tpe2.is_empty() {
+            get(&ItemKey::AlbumTitle)
+        } else {
+            tpe2
+        }
+    };
 
     Id3Tags {
         vendor: tag.artist().unwrap_or_default().trim().to_string(),
-        library: get(&ItemKey::AlbumArtist),
+        library,
         category: tag.genre().unwrap_or_default().trim().to_string(),
         sound_id: tag.title().unwrap_or_default().trim().to_string(),
-        usage_id: get(&ItemKey::ContentGroup),
+        usage_id: get(&ItemKey::TrackSubtitle),
         description: tag.comment().unwrap_or_default().trim().to_string(),
         bpm,
         key: get(&ItemKey::InitialKey),
+        date: get(&ItemKey::RecordingDate),
+        subcategory: get(&ItemKey::Composer),
+        genre_id: get(&ItemKey::ContentGroup),
+        track: get(&ItemKey::TrackNumber),
+        rating: String::new(),
     }
 }
 
@@ -72,7 +98,6 @@ fn parse_tag(tag: &Tag) -> Id3Tags {
 mod tests {
     use super::*;
     use crate::engine::UnifiedMetadata;
-    use std::path::PathBuf;
 
     fn test_files_exist() -> bool {
         std::path::Path::new("test_files").exists()
@@ -225,5 +250,20 @@ pub fn merge_id3_into_unified(meta: &mut super::UnifiedMetadata, id3: &Id3Tags) 
     }
     if meta.key.is_empty() && !id3.key.is_empty() {
         meta.key.clone_from(&id3.key);
+    }
+    if meta.date.is_empty() && !id3.date.is_empty() {
+        meta.date.clone_from(&id3.date);
+    }
+    if meta.genre_id.is_empty() && !id3.genre_id.is_empty() {
+        meta.genre_id.clone_from(&id3.genre_id);
+    }
+    if meta.subcategory.is_empty() && !id3.subcategory.is_empty() {
+        meta.subcategory.clone_from(&id3.subcategory);
+    }
+    if meta.track.is_empty() && !id3.track.is_empty() {
+        meta.track.clone_from(&id3.track);
+    }
+    if meta.rating.is_empty() && !id3.rating.is_empty() {
+        meta.rating.clone_from(&id3.rating);
     }
 }
