@@ -842,7 +842,16 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     } else if version < SCHEMA_VERSION {
         // v1 → v2: add embedding column for similarity search.
         if version < 2 {
-            conn.execute_batch("ALTER TABLE samples ADD COLUMN embedding BLOB;")?;
+            // Guard against re-migration (column already exists from partial upgrade).
+            let has_embedding: bool = conn
+                .prepare(
+                    "SELECT COUNT(*) FROM pragma_table_info('samples') WHERE name='embedding'",
+                )?
+                .query_row([], |row| row.get::<_, i64>(0))
+                .map(|c| c > 0)?;
+            if !has_embedding {
+                conn.execute_batch("ALTER TABLE samples ADD COLUMN embedding BLOB;")?;
+            }
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     } else if version > SCHEMA_VERSION {
@@ -1385,6 +1394,48 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_migrate_v1_to_v2_adds_embedding_column() {
+        // Simulate a v1 database: create schema, set user_version=1.
+        let conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn).unwrap();
+        create_schema(&conn).unwrap();
+        conn.pragma_update(None, "user_version", 1u32).unwrap();
+
+        // Run migration — should add embedding column.
+        migrate(&conn).unwrap();
+
+        // Verify version bumped.
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        // Verify embedding column exists.
+        let has_col: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('samples') WHERE name='embedding'")
+            .unwrap()
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)
+            .unwrap();
+        assert!(has_col, "embedding column should exist after migration");
+    }
+
+    #[test]
+    fn test_migrate_idempotent() {
+        // Simulate a v1 database, migrate twice — should not crash.
+        let conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn).unwrap();
+        create_schema(&conn).unwrap();
+        conn.pragma_update(None, "user_version", 1u32).unwrap();
+
+        migrate(&conn).unwrap();
+        // Second call: column already exists, should not error.
+        // Reset version to trigger migration logic again.
+        conn.pragma_update(None, "user_version", 1u32).unwrap();
+        migrate(&conn).unwrap();
     }
 
     // --- Ticket 2 tests: DB path resolution ---
