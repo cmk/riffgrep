@@ -37,8 +37,6 @@ pub struct Id3Tags {
     pub genre_id: String,
     /// TRCK — Track number.
     pub track: String,
-    /// POPM — Rating (as string).
-    pub rating: String,
 }
 
 /// Read ID3v2 tags from a WAV file using lofty.
@@ -90,7 +88,6 @@ fn parse_tag(tag: &Tag) -> Id3Tags {
         subcategory: get(&ItemKey::Composer),
         genre_id: get(&ItemKey::ContentGroup),
         track: get(&ItemKey::TrackNumber),
-        rating: String::new(),
     }
 }
 
@@ -205,6 +202,23 @@ mod tests {
     }
 
     #[test]
+    fn merge_fills_new_fields() {
+        let mut meta = UnifiedMetadata::default();
+        let id3 = Id3Tags {
+            date: "2026-01-15".to_string(),
+            subcategory: "PERC".to_string(),
+            genre_id: "GRP1".to_string(),
+            track: "3".to_string(),
+            ..Default::default()
+        };
+        merge_id3_into_unified(&mut meta, &id3);
+        assert_eq!(meta.date, "2026-01-15");
+        assert_eq!(meta.subcategory, "PERC");
+        assert_eq!(meta.genre_id, "GRP1");
+        assert_eq!(meta.track, "3");
+    }
+
+    #[test]
     fn integration_all_id3_files_parseable() {
         if !test_files_exist() {
             return;
@@ -220,6 +234,71 @@ mod tests {
         for path in &id3_files {
             let result = read_id3_tags(Path::new(path));
             assert!(result.is_ok(), "failed to read ID3 from {path}: {}", result.unwrap_err());
+        }
+    }
+
+    use proptest::prelude::*;
+
+    fn arb_id3_tags() -> impl Strategy<Value = Id3Tags> {
+        (
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+            proptest::option::of(any::<u16>()),
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+        )
+            .prop_map(
+                |(vendor, library, category, sound_id, usage_id, description, bpm, key, date, subcategory, genre_id, track)| {
+                    Id3Tags { vendor, library, category, sound_id, usage_id, description, bpm, key, date, subcategory, genre_id, track }
+                },
+            )
+    }
+
+    proptest! {
+        /// Merge never overwrites a non-empty UnifiedMetadata field.
+        #[test]
+        fn proptest_merge_no_overwrite(
+            id3 in arb_id3_tags(),
+            existing_vendor in "[a-z]{1,8}",
+            existing_library in "[a-z]{1,8}",
+            existing_bpm in 1u16..300,
+        ) {
+            let mut meta = UnifiedMetadata {
+                vendor: existing_vendor.clone(),
+                library: existing_library.clone(),
+                bpm: Some(existing_bpm),
+                ..Default::default()
+            };
+            merge_id3_into_unified(&mut meta, &id3);
+            prop_assert_eq!(&meta.vendor, &existing_vendor, "vendor was overwritten");
+            prop_assert_eq!(&meta.library, &existing_library, "library was overwritten");
+            prop_assert_eq!(meta.bpm, Some(existing_bpm), "bpm was overwritten");
+        }
+
+        /// Merge fills empty fields from Id3Tags.
+        #[test]
+        fn proptest_merge_fills_empty(id3 in arb_id3_tags()) {
+            let mut meta = UnifiedMetadata::default();
+            merge_id3_into_unified(&mut meta, &id3);
+            prop_assert_eq!(&meta.vendor, &id3.vendor);
+            prop_assert_eq!(&meta.library, &id3.library);
+            prop_assert_eq!(&meta.category, &id3.category);
+            prop_assert_eq!(&meta.sound_id, &id3.sound_id);
+            prop_assert_eq!(&meta.usage_id, &id3.usage_id);
+            prop_assert_eq!(&meta.description, &id3.description);
+            prop_assert_eq!(meta.bpm, id3.bpm);
+            prop_assert_eq!(&meta.key, &id3.key);
+            prop_assert_eq!(&meta.date, &id3.date);
+            prop_assert_eq!(&meta.subcategory, &id3.subcategory);
+            prop_assert_eq!(&meta.genre_id, &id3.genre_id);
+            prop_assert_eq!(&meta.track, &id3.track);
         }
     }
 }
@@ -262,8 +341,5 @@ pub fn merge_id3_into_unified(meta: &mut super::UnifiedMetadata, id3: &Id3Tags) 
     }
     if meta.track.is_empty() && !id3.track.is_empty() {
         meta.track.clone_from(&id3.track);
-    }
-    if meta.rating.is_empty() && !id3.rating.is_empty() {
-        meta.rating.clone_from(&id3.rating);
     }
 }
