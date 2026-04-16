@@ -14,7 +14,7 @@ use rusqlite::{Connection, params};
 use super::{MatchMode, Pattern, SearchQuery, UnifiedMetadata};
 
 /// Current schema version, tracked via `PRAGMA user_version`.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// SQL for inserting/replacing a sample row (30 parameters).
 const INSERT_SQL: &str = "INSERT OR REPLACE INTO samples (
@@ -629,13 +629,16 @@ impl Database {
 
     /// Store a 512×f32 embedding for a file (by path). The vector is
     /// serialized as a little-endian f32 BLOB (2048 bytes).
+    ///
+    /// Returns an error if the path does not exist in the database.
     #[allow(dead_code)]
     pub fn insert_embedding(&self, path: &str, vector: &[f32]) -> anyhow::Result<()> {
         let blob: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
-        self.conn.execute(
+        let changed = self.conn.execute(
             "UPDATE samples SET embedding = ? WHERE path = ?",
             rusqlite::params![blob, path],
         )?;
+        anyhow::ensure!(changed > 0, "no sample row for path: {path}");
         Ok(())
     }
 
@@ -662,12 +665,22 @@ impl Database {
         }
     }
 
+    /// Count rows that have embeddings.
+    pub fn embedding_count(&self) -> anyhow::Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM samples WHERE embedding IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
     /// Load all embeddings as `(row_id, path, vector)` triples.
     /// Skips rows where embedding is NULL.
     pub fn load_all_embeddings(&self) -> anyhow::Result<Vec<(i64, std::path::PathBuf, Vec<f32>)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, path, embedding FROM samples WHERE embedding IS NOT NULL")?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, path, embedding FROM samples WHERE embedding IS NOT NULL",
+        )?;
         let rows = stmt.query_map([], |row| {
             let id: i64 = row.get(0)?;
             let path: String = row.get(1)?;
@@ -819,17 +832,23 @@ fn create_schema(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check schema version and fail fast on mismatch. Pre-1.0: no deployed
-/// databases to migrate — re-index with `rfg --index --force-reindex`.
+/// Migrate schema to current version. Adds columns for new features
+/// without requiring a full re-index.
 fn migrate(conn: &Connection) -> anyhow::Result<()> {
     let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version == 0 {
         // Fresh database — stamp it.
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    } else if version != SCHEMA_VERSION {
+    } else if version < SCHEMA_VERSION {
+        // v1 → v2: add embedding column for similarity search.
+        if version < 2 {
+            conn.execute_batch("ALTER TABLE samples ADD COLUMN embedding BLOB;")?;
+        }
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    } else if version > SCHEMA_VERSION {
         anyhow::bail!(
-            "database schema version {version} does not match expected {SCHEMA_VERSION}; \
-             re-index with `rfg --index --force-reindex`"
+            "database schema version {version} is newer than expected {SCHEMA_VERSION}; \
+             upgrade riffgrep or re-index with `rfg --index --force-reindex`"
         );
     }
     Ok(())
