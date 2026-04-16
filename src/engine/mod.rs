@@ -721,7 +721,8 @@ fn run_similar(opts: &cli::Opts) -> anyhow::Result<()> {
     );
     let db = sqlite::Database::open(&db_path)?;
 
-    // Resolve the query path to match how it's stored in the DB.
+    // Canonicalize so the path matches how it was stored during indexing.
+    let query_path = query_path.canonicalize().unwrap_or_else(|_| query_path.to_path_buf());
     let query_str = query_path.to_string_lossy();
     let query_embedding = db
         .load_embedding(&query_str)?

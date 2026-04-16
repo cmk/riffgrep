@@ -192,7 +192,6 @@ impl LuaUserData for LuaDatabase {
                 .collect();
 
             // Bind the single parameter (if provided) and execute.
-            // Bind the single parameter and execute.
             let arg_owned: String = match &arg {
                 LuaValue::String(s) => s.to_str()
                     .map_err(|e| mlua::Error::RuntimeError(format!("UTF-8 error: {e}")))?
@@ -229,11 +228,17 @@ impl LuaUserData for LuaDatabase {
             let mlua_err = |e: mlua::Error| e;
             let table = lua.create_table().map_err(mlua_err)?;
             for (i, name) in col_names.iter().enumerate() {
-                let val: Option<String> = row.get(i).unwrap_or(None);
-                match val {
-                    Some(s) => table.set(name.as_str(), s).map_err(mlua_err)?,
-                    None => table.set(name.as_str(), LuaValue::Nil).map_err(mlua_err)?,
-                }
+                // Try text first, fall back to integer, then real, then nil.
+                let val: LuaValue = if let Ok(s) = row.get::<_, String>(i) {
+                    LuaValue::String(lua.create_string(&s).map_err(mlua_err)?)
+                } else if let Ok(n) = row.get::<_, i64>(i) {
+                    LuaValue::Integer(n)
+                } else if let Ok(f) = row.get::<_, f64>(i) {
+                    LuaValue::Number(f)
+                } else {
+                    LuaValue::Nil
+                };
+                table.set(name.as_str(), val).map_err(mlua_err)?;
             }
             Ok(LuaValue::Table(table))
         });
