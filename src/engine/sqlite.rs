@@ -620,7 +620,11 @@ impl Database {
         let mut stmt = self.conn.prepare_cached(
             "SELECT embedding FROM samples WHERE path = ?"
         )?;
-        let blob: Option<Vec<u8>> = stmt.query_row([path], |row| row.get(0))?;
+        let blob: Option<Vec<u8>> = match stmt.query_row([path], |row| row.get(0)) {
+            Ok(b) => b,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
         match blob {
             Some(b) if b.len() >= 4 => {
                 let vec: Vec<f32> = b.chunks_exact(4)
@@ -786,11 +790,19 @@ fn create_schema(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Migrate from older schema versions. Currently a no-op — the project is
-/// pre-1.0 and there are no deployed databases to migrate. If an old DB is
-/// found, just re-index (`rfg --index --force-reindex`).
+/// Check schema version and fail fast on mismatch. Pre-1.0: no deployed
+/// databases to migrate — re-index with `rfg --index --force-reindex`.
 fn migrate(conn: &Connection) -> anyhow::Result<()> {
-    conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version == 0 {
+        // Fresh database — stamp it.
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    } else if version != SCHEMA_VERSION {
+        anyhow::bail!(
+            "database schema version {version} does not match expected {SCHEMA_VERSION}; \
+             re-index with `rfg --index --force-reindex`"
+        );
+    }
     Ok(())
 }
 

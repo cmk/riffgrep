@@ -1256,14 +1256,16 @@ impl App {
     /// manually. Individual `rep = 0` values still mean "skip this segment" when
     /// other reps are non-zero.
     fn play_program(&mut self) {
-        // Sentinel: when the active bank has all reps == 0, or no markers exist
-        // at all (e.g. AIFF files without BEXT), play through the whole file as
-        // a single segment (ignoring markers entirely).
-        let active_reps_all_zero = self.active_bank_ref()
-            .map(|b| b.reps == [0u8; 4])
-            .unwrap_or(true);
+        // Sentinel: when the active bank has all reps == 0, play through the
+        // whole file as a single segment (ignoring markers entirely).
+        // None means "markers not loaded yet" — also fall through to whole-file
+        // playback rather than attempting segment-program with missing data.
+        let no_program_markers = match self.active_bank_ref() {
+            Some(b) => b.reps == [0u8; 4],
+            None => true, // no markers loaded — whole-file playback
+        };
 
-        if active_reps_all_zero {
+        if no_program_markers {
             if let Some(row) = self.results.get(self.selected) {
                 let path = row.meta.path.clone();
                 if let Some(ref engine) = self.playback {
@@ -1512,12 +1514,19 @@ impl App {
         }
 
         // Sort: rows with sim descending (highest first), None at bottom.
+        // Pin the query file to position 0 regardless of score ties.
         self.results.sort_by(|a, b| {
-            match (a.sim, b.sim) {
-                (Some(sa), Some(sb)) => sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
+            let a_is_query = a.meta.path == selected_path;
+            let b_is_query = b.meta.path == selected_path;
+            match (a_is_query, b_is_query) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => match (a.sim, b.sim) {
+                    (Some(sa), Some(sb)) => sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                },
             }
         });
 
