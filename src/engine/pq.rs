@@ -73,7 +73,12 @@ impl ProductQuantizer {
     ///
     /// For each sub-space, finds the nearest centroid by L2 distance.
     pub fn encode(&self, vector: &[f32]) -> [u8; M] {
-        debug_assert_eq!(vector.len(), DIM);
+        assert_eq!(
+            vector.len(),
+            DIM,
+            "PQ encode requires {DIM}-dim vector, got {}",
+            vector.len()
+        );
         let mut code = [0u8; M];
         for m in 0..M {
             let sub = &vector[m * DSUB..(m + 1) * DSUB];
@@ -113,7 +118,12 @@ impl ProductQuantizer {
     /// the squared L2 distance from the query's sub-vector `m` to
     /// centroid `k` of sub-quantizer `m`.
     pub fn adc_table(&self, query: &[f32]) -> Vec<f32> {
-        debug_assert_eq!(query.len(), DIM);
+        assert_eq!(
+            query.len(),
+            DIM,
+            "ADC table requires {DIM}-dim query, got {}",
+            query.len()
+        );
         let mut table = vec![0.0f32; M * K];
         for m in 0..M {
             let sub = &query[m * DSUB..(m + 1) * DSUB];
