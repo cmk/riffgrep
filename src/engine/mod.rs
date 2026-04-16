@@ -1,5 +1,6 @@
 //! Core search engine: metadata reading, matching, and output.
 
+pub mod api;
 pub mod bext;
 pub mod cli;
 pub mod config;

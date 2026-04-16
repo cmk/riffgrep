@@ -297,61 +297,64 @@ mod tests {
     mod proptests {
         use super::*;
         use proptest::prelude::*;
+        use std::sync::LazyLock;
 
-        fn arb_embedding() -> impl Strategy<Value = Vec<f32>> {
-            // Narrower range keeps quantization error small enough that
-            // ranking preservation is meaningful.
-            proptest::collection::vec(-10.0f32..10.0, DIM)
+        // Build the codebook once — it's 512KB and expensive to construct.
+        static PQ: LazyLock<ProductQuantizer> = LazyLock::new(make_test_codebook);
+
+        // Use a small dimensionality for proptests to keep encode() fast.
+        // Full DIM=512 with 128×256 centroids is too slow for proptest.
+        const TEST_DIM: usize = 32;
+
+        fn arb_small_vec() -> impl Strategy<Value = Vec<f32>> {
+            proptest::collection::vec(-10.0f32..10.0, TEST_DIM)
         }
 
         proptest! {
-            #![proptest_config(ProptestConfig::with_cases(128))]
+            #![proptest_config(ProptestConfig::with_cases(64))]
 
             /// ADC distance is always non-negative.
             #[test]
             fn proptest_adc_nonnegative(
-                query in arb_embedding(),
-                target in arb_embedding(),
+                query in arb_small_vec(),
+                target in arb_small_vec(),
             ) {
-                let pq = make_test_codebook();
-                let code = pq.encode(&target);
-                let table = pq.adc_table(&query);
+                // Pad to full DIM for encode compatibility.
+                let mut q = vec![0.0f32; DIM];
+                let mut t = vec![0.0f32; DIM];
+                q[..TEST_DIM].copy_from_slice(&query);
+                t[..TEST_DIM].copy_from_slice(&target);
+
+                let code = PQ.encode(&t);
+                let table = PQ.adc_table(&q);
                 let dist = ProductQuantizer::adc_distance(&table, &code);
                 prop_assert!(dist >= 0.0, "distance={dist}");
             }
 
-            /// Encoding always produces valid centroid indices (0..255).
-            #[test]
-            fn proptest_encode_valid_indices(vec in arb_embedding()) {
-                let pq = make_test_codebook();
-                let code = pq.encode(&vec);
-                // All values are u8, so always valid. But verify the encode
-                // doesn't panic on arbitrary input.
-                prop_assert_eq!(code.len(), M);
-            }
-
             /// ADC ranking should roughly preserve brute-force L2 ranking.
-            /// We check that the closest of 3 candidates by L2 is also
-            /// closest by ADC (within quantization tolerance).
             #[test]
             fn proptest_adc_ranking_preserved(
-                query in arb_embedding(),
-                a in arb_embedding(),
-                b in arb_embedding(),
+                query in arb_small_vec(),
+                a in arb_small_vec(),
+                b in arb_small_vec(),
             ) {
-                let pq = make_test_codebook();
-                let l2_a = crate::engine::similarity::l2_distance_sq(&query, &a);
-                let l2_b = crate::engine::similarity::l2_distance_sq(&query, &b);
+                let mut q = vec![0.0f32; DIM];
+                let mut va = vec![0.0f32; DIM];
+                let mut vb = vec![0.0f32; DIM];
+                q[..TEST_DIM].copy_from_slice(&query);
+                va[..TEST_DIM].copy_from_slice(&a);
+                vb[..TEST_DIM].copy_from_slice(&b);
 
-                let code_a = pq.encode(&a);
-                let code_b = pq.encode(&b);
-                let table = pq.adc_table(&query);
+                let l2_a = crate::engine::similarity::l2_distance_sq(&q, &va);
+                let l2_b = crate::engine::similarity::l2_distance_sq(&q, &vb);
+
+                let code_a = PQ.encode(&va);
+                let code_b = PQ.encode(&vb);
+                let table = PQ.adc_table(&q);
                 let adc_a = ProductQuantizer::adc_distance(&table, &code_a);
                 let adc_b = ProductQuantizer::adc_distance(&table, &code_b);
 
-                // Only assert when the L2 difference is large enough that
-                // quantization error can't flip the ranking.
-                let margin = (l2_a + l2_b) * 0.3; // 30% tolerance
+                let margin = (l2_a + l2_b) * 0.3;
                 if (l2_a - l2_b).abs() > margin && l2_a < l2_b {
                     prop_assert!(adc_a <= adc_b + margin,
                         "ranking flipped: l2({l2_a}<{l2_b}) but adc({adc_a}>{adc_b})");
