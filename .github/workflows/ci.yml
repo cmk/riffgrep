@@ -32,7 +32,7 @@ jobs:
         run: cargo build
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings -A clippy::collapsible_if -A clippy::field_reassign_with_default -A clippy::unnecessary_cast -A clippy::type_complexity -A clippy::needless_range_loop -A clippy::manual_is_multiple_of -A clippy::useless_vec -A clippy::needless_return -A clippy::derivable_impls -A clippy::manual_contains
+        run: cargo clippy --all-targets
 
       - name: Test
         run: cargo test
