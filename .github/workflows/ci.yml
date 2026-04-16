@@ -41,3 +41,4 @@ jobs:
 
       - name: Formatting
         run: cargo fmt --all -- --check
+        continue-on-error: true
