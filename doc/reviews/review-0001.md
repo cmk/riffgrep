@@ -1,12 +1,12 @@
 # PR #1 — Misc improvements + CLAP embedding prototype
 
 <!-- gh-id: 3090235015 -->
-### Copilot on `src/engine/workflow.rs` (2026-04-16 01:11 UTC)
+### Copilot on [`src/engine/workflow.rs`](https://github.com/cmk/riffgrep/pull/1#discussion_r3090235015) (2026-04-16 01:11 UTC)
 
 In `db:query_one`, `row.get(i).unwrap_or(None)` silently converts any type mismatch / conversion failure into `nil`, which can hide real SQL/data issues and make scripts behave incorrectly without an error. It would be safer to either (1) return an mlua runtime error on `row.get` failure, or (2) decode values into appropriate Lua types (string/integer/number/blob) instead of forcing `Option<String>` for every column.
 
 <!-- gh-id: 3090235038 -->
-### Copilot on `src/engine/workflow.rs` (2026-04-16 01:11 UTC)
+### Copilot on [`src/engine/workflow.rs`](https://github.com/cmk/riffgrep/pull/1#discussion_r3090235038) (2026-04-16 01:11 UTC)
 
 There are two consecutive, nearly identical comments above the parameter binding logic ("Bind the single parameter..."). Consider removing the duplicate to keep the block concise.
 ```suggestion
@@ -14,27 +14,27 @@ There are two consecutive, nearly identical comments above the parameter binding
 ```
 
 <!-- gh-id: 3090235051 -->
-### Copilot on `src/engine/sqlite.rs` (2026-04-16 01:11 UTC)
+### Copilot on [`src/engine/sqlite.rs`](https://github.com/cmk/riffgrep/pull/1#discussion_r3090235051) (2026-04-16 01:11 UTC)
 
 `migrate()` is now a no-op that only updates `PRAGMA user_version`, and `SCHEMA_VERSION` was reset to 1. For an existing on-disk DB created by earlier versions, `create_schema()` won’t add the new `embedding`/`metadata` columns/tables (because `CREATE TABLE IF NOT EXISTS` doesn’t alter schemas), so the app will mark the DB as "current" while still missing required schema elements, leading to runtime SQL errors. Either restore idempotent migrations (ALTER TABLE / CREATE TABLE for missing pieces) or detect old DBs and fail fast with an explicit "reindex required" error instead of silently updating `user_version`.
 
 <!-- gh-id: 3090235058 -->
-### Copilot on `src/engine/sqlite.rs:637` (2026-04-16 01:11 UTC)
+### Copilot on [`src/engine/sqlite.rs:637`](https://github.com/cmk/riffgrep/pull/1#discussion_r3090235058) (2026-04-16 01:11 UTC)
 
 `load_embedding()` uses `query_row(...)` and propagates `rusqlite::Error::QueryReturnedNoRows` when the path isn’t present in `samples`, but the doc comment says it returns `None` when no embedding is available. Consider explicitly mapping `QueryReturnedNoRows` to `Ok(None)` (and optionally distinguishing "file not indexed" vs "indexed but embedding NULL") so callers like `--similar` can produce a clear user-facing message instead of a SQL error.
 
 <!-- gh-id: 3090235062 -->
-### Copilot on `src/engine/mod.rs` (2026-04-16 01:11 UTC)
+### Copilot on [`src/engine/mod.rs`](https://github.com/cmk/riffgrep/pull/1#discussion_r3090235062) (2026-04-16 01:11 UTC)
 
 `--similar` resolves the query string via `query_path.to_string_lossy()`, but indexed paths are stored exactly as discovered during indexing (often absolute, based on the root passed to the walker). If the user passes a different representation (relative vs absolute, different case on case-insensitive FS, etc.), `load_embedding()` may miss and `query_id` may become -1, which makes the pinned subject result print with an empty/default path. Consider normalizing the query path the same way indexing does (e.g., canonicalize/absolutize consistently) and treat "path not in DB" as a dedicated error before calling `search_similar`.
 
 <!-- gh-id: 3090235074 -->
-### Copilot on `src/ui/mod.rs` (2026-04-16 01:11 UTC)
+### Copilot on [`src/ui/mod.rs`](https://github.com/cmk/riffgrep/pull/1#discussion_r3090235074) (2026-04-16 01:11 UTC)
 
 `active_reps_all_zero` now uses `.unwrap_or(true)`, so when `active_bank_ref()` is `None` (e.g., preview/markers not loaded yet), `play_program()` immediately takes the sentinel path and plays the whole file, skipping `ensure_markers()` and segment-program playback. Previously the comment explicitly relied on `None` falling through to marker initialization. If `None` can mean "markers not loaded" (not "no markers exist"), this changes behavior incorrectly; consider distinguishing these cases (e.g., check for format-without-markers separately, or treat `None` as `false` and let `ensure_markers()` initialize defaults).
 
 <!-- gh-id: 4117756858 -->
-### copilot-pull-request-reviewer[bot] — COMMENTED (2026-04-16 01:11 UTC)
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-16 01:11 UTC](https://github.com/cmk/riffgrep/pull/1#pullrequestreview-4117756858))
 
 ## Pull request overview
 
@@ -95,44 +95,44 @@ Copilot reviewed 32 out of 32 changed files in this pull request and generated 7
 
 ---
 
-💡 <a href="/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
 
 <!-- gh-id: 3090235077 -->
-### Copilot on `src/ui/mod.rs:1535` (2026-04-16 01:11 UTC)
+### Copilot on [`src/ui/mod.rs:1535`](https://github.com/cmk/riffgrep/pull/1#discussion_r3090235077) (2026-04-16 01:11 UTC)
 
 `sort_by_similarity()` claims to pin the selected file to position 0, but the implementation only assigns `sim` scores and sorts by `sim` descending. This doesn’t guarantee the selected row is first (ties at `sim=1.0`, or the selected path not found causing the subject result to have a default/empty path and thus not match any row). Consider explicitly moving the selected row to index 0 after scoring/sorting (or sorting with a primary key that forces `row.meta.path == selected_path` first).
 
 <!-- gh-id: 3090612369 -->
-#### ↳ cmk (2026-04-16 03:19 UTC)
+#### ↳ cmk ([2026-04-16 03:19 UTC](https://github.com/cmk/riffgrep/pull/1#discussion_r3090612369))
 
 Fixed in 25d8b11 — row values are now decoded to proper Lua types (string, integer, float) with a cascade fallback to Nil, instead of forcing everything through Option<String>.
 
 <!-- gh-id: 3090612687 -->
-#### ↳ cmk (2026-04-16 03:20 UTC)
+#### ↳ cmk ([2026-04-16 03:20 UTC](https://github.com/cmk/riffgrep/pull/1#discussion_r3090612687))
 
 Fixed in 25d8b11 — removed the duplicate comment.
 
 <!-- gh-id: 3090612769 -->
-#### ↳ cmk (2026-04-16 03:20 UTC)
+#### ↳ cmk ([2026-04-16 03:20 UTC](https://github.com/cmk/riffgrep/pull/1#discussion_r3090612769))
 
 Fixed in 25d8b11 — `migrate()` now reads `PRAGMA user_version` and fails fast with a descriptive error if it doesn't match `SCHEMA_VERSION`. Fresh databases (version 0) get stamped. This also resolved 6 pre-existing test failures caused by schema mismatch.
 
 <!-- gh-id: 3090612852 -->
-#### ↳ cmk (2026-04-16 03:20 UTC)
+#### ↳ cmk ([2026-04-16 03:20 UTC](https://github.com/cmk/riffgrep/pull/1#discussion_r3090612852))
 
 Fixed in 25d8b11 — `load_embedding()` now explicitly catches `QueryReturnedNoRows` and returns `Ok(None)`, distinguishing "path not in DB" from actual query errors.
 
 <!-- gh-id: 3090612921 -->
-#### ↳ cmk (2026-04-16 03:20 UTC)
+#### ↳ cmk ([2026-04-16 03:20 UTC](https://github.com/cmk/riffgrep/pull/1#discussion_r3090612921))
 
 Fixed in 25d8b11 — the query path is now canonicalized before lookup so it matches how paths were stored during indexing.
 
 <!-- gh-id: 3090613013 -->
-#### ↳ cmk (2026-04-16 03:20 UTC)
+#### ↳ cmk ([2026-04-16 03:20 UTC](https://github.com/cmk/riffgrep/pull/1#discussion_r3090613013))
 
 Fixed in 25d8b11 — renamed to `no_program_markers` with a clarifying comment. The `None` case (no markers loaded) intentionally falls through to whole-file playback rather than attempting segment-program with missing data.
 
 <!-- gh-id: 3090613061 -->
-#### ↳ cmk (2026-04-16 03:20 UTC)
+#### ↳ cmk ([2026-04-16 03:20 UTC](https://github.com/cmk/riffgrep/pull/1#discussion_r3090613061))
 
 Fixed in 25d8b11 — the sort comparator now checks if either row is the query file and pins it to position 0 before falling through to the sim-score comparison.
