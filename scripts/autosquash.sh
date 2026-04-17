@@ -14,10 +14,20 @@ set -euo pipefail
 
 base="${1:-origin/main}"
 
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "error: not inside a git worktree" >&2
+  exit 1
+fi
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "error: working tree not clean; commit or stash first" >&2
   exit 1
 fi
 
-git fetch --quiet origin
+if [[ "$base" == */* ]]; then
+  remote="${base%%/*}"
+  branch="${base#*/}"
+  git fetch --quiet "$remote" "$branch"
+fi
+
 GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash "$base"

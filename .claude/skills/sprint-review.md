@@ -28,7 +28,7 @@ Per CLAUDE.md, CI-repair commits are made as `--fixup`s and must be
 collapsed before review/push. Check for them:
 
 ```
-git log --oneline origin/main..HEAD | grep '^[a-f0-9]\+ fixup!' || true
+git -c color.ui=never log --oneline origin/main..HEAD | grep -E '^[0-9a-f]+ fixup!' || true
 ```
 
 If any fixups exist, run `scripts/autosquash.sh` to collapse them.
