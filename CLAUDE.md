@@ -134,6 +134,13 @@ skips any id already present, so running it repeatedly only appends new
 comments. The result is one file per PR containing the full local + GitHub
 review history in order.
 
+Once the findings are addressed in a fix commit and pushed, run
+`/reply-reviews <N>` to post short replies to each unresolved comment
+thread on GitHub, citing the fix commit SHA. This closes the loop for
+the reviewer and leaves an audit trail linking each finding to its
+resolution. Re-running `/pull-reviews <N>` afterward mirrors the replies
+back into `review-NNNN.md`.
+
 The local review catches design issues and convention violations early.
 The GitHub review catches anything that slipped through and validates in
 the CI environment. Joining them into a single file per PR preserves the
