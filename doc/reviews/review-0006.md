@@ -102,3 +102,13 @@ Copilot reviewed 4 out of 4 changed files in this pull request and generated 2 c
 ---
 
 💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3098810712 -->
+#### ↳ cmk ([2026-04-17 08:17 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098810712))
+
+Fixed in d09d5ea — the `<remote>/<branch>` heuristic now gates on `git remote get-url <remote>`, so a base like `sprint/foo` (local branch with a slash) falls through without a bogus fetch attempt.
+
+<!-- gh-id: 3098810943 -->
+#### ↳ cmk ([2026-04-17 08:17 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098810943))
+
+Fixed in d09d5ea — standardized on `origin/main` (not local `main`) for both the diff and commit-log commands so they can't drift from a stale local main. Took the opposite direction from the suggestion because the merge target is origin, not local.
