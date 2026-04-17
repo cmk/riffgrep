@@ -50,16 +50,28 @@ def gh_api(path: str) -> list | dict:
 
 
 def gh_repo() -> str:
-    return subprocess.check_output(
-        ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
-        text=True,
-    ).strip()
+    try:
+        return subprocess.check_output(
+            ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+    except FileNotFoundError:
+        print("error: `gh` CLI not found; install GitHub CLI and ensure it is on PATH", file=sys.stderr)
+        raise SystemExit(1)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip()
+        msg = f": {detail}" if detail else ""
+        print(f"error: failed to determine repository via `gh repo view`{msg}", file=sys.stderr)
+        raise SystemExit(1)
 
 
-def pr_title(n: int) -> str:
-    return subprocess.check_output(
-        ["gh", "pr", "view", str(n), "--json", "title", "--jq", ".title"], text=True
-    ).strip()
+def pr_title(n: int, repo: str | None = None) -> str:
+    cmd = ["gh", "pr", "view", str(n)]
+    if repo is not None:
+        cmd.extend(["--repo", repo])
+    cmd.extend(["--json", "title", "--jq", ".title"])
+    return subprocess.check_output(cmd, text=True).strip()
 
 
 def fmt_ts(t: str) -> str:
@@ -70,7 +82,10 @@ def fmt_ts(t: str) -> str:
 def existing_ids(path: pathlib.Path) -> set[int]:
     if not path.exists():
         return set()
-    return {int(h) for h in re.findall(r"<!-- gh-id: (\d+) -->", path.read_text())}
+    return {
+        int(h)
+        for h in re.findall(r"<!-- gh-id: (\d+) -->", path.read_text(encoding="utf-8"))
+    }
 
 
 def absolutize(body: str) -> str:
@@ -150,7 +165,9 @@ def main() -> int:
     path = out_dir / f"review-{args.pr:04d}.md"
 
     if not path.exists():
-        path.write_text(f"# PR #{args.pr} — {pr_title(args.pr)}\n")
+        path.write_text(
+            f"# PR #{args.pr} — {pr_title(args.pr, repo)}\n", encoding="utf-8"
+        )
 
     seen = existing_ids(path)
     new_items = [it for it in collect_items(repo, args.pr) if it["id"] not in seen]
@@ -159,7 +176,7 @@ def main() -> int:
         print(f"PR #{args.pr}: no new items ({len(seen)} already recorded)")
         return 0
 
-    with path.open("a") as f:
+    with path.open("a", encoding="utf-8") as f:
         for it in new_items:
             f.write(render(it))
 

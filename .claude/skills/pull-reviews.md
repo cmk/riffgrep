@@ -90,7 +90,8 @@ Reply (has `in_reply_to_id`):
 - **Idempotent** via set membership on `<!-- gh-id: -->` markers (not
   max-id, which would be unsound across review/comment sequences).
   Safe to re-run.
-- **Chronological, not grouped.** Comments appear in posted order; a
-  reply follows its parent because GitHub assigns monotonically
-  increasing ids within a PR. `in_reply_to_id` only controls the
-  `↳ reply` formatting, not the sort.
+- **Chronological, not grouped.** Items are appended in posted order
+  (by `created_at` / `submitted_at`). Replies are only indicated by
+  `↳` formatting based on `in_reply_to_id`; they are not guaranteed
+  to be adjacent to their parent — other comments posted in between
+  will interleave.
