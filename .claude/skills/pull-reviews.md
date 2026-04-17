@@ -97,7 +97,10 @@ Reply (has `in_reply_to_id`):
 
 ## Notes
 
-- **Do not commit the review file.** The user decides when to commit.
+- **The script does not auto-commit.** The agent must stage and commit
+  `review-NNNN.md` on the PR branch when new items were appended (see
+  Step 3). The file must ride along with the PR — don't leave it
+  untracked.
 - **Idempotent** via set membership on `<!-- gh-id: -->` markers (not
   max-id, which would be unsound across review/comment sequences).
   Safe to re-run.
