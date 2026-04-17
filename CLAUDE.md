@@ -120,7 +120,7 @@ The coding agent makes atomic commits as it works. Each commit must pass
 `.claude/settings.json`). Commits can be as small as desired.
 
 Before pushing to GitHub, run `/sprint-review`. This spawns an independent
-reviewer agent that examines `git diff main...HEAD` and the commit log. The
+reviewer agent that examines `git diff origin/main...HEAD` and the commit log. The
 reviewer flags must-fix issues and follow-ups. The review is appended to
 `doc/reviews/review-NNNN.md`, where `NNNN` is the zero-padded PR number
 for the branch (use `0000` as a placeholder pre-PR and rename once the PR
