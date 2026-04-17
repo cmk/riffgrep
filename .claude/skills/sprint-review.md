@@ -54,8 +54,8 @@ in **code-only mode** (no plan-conformance section).
 The review always targets the current branch against main:
 
 ```
-git diff main...HEAD
-git log main..HEAD --oneline
+git diff origin/main...HEAD
+git log origin/main..HEAD --oneline
 ```
 
 If the branch has not diverged from main, abort with a message — there's
@@ -117,11 +117,11 @@ You are an independent reviewer. You did not write this code and have no
 context beyond what is provided here. Review what you see, not what you
 assume.
 
-## Diff (main...HEAD)
+## Diff (origin/main...HEAD)
 
 {diff}
 
-## Commit log (main..HEAD)
+## Commit log (origin/main..HEAD)
 
 {commit log}
 

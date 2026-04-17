@@ -27,7 +27,9 @@ fi
 if [[ "$base" == */* ]]; then
   remote="${base%%/*}"
   branch="${base#*/}"
-  git fetch --quiet "$remote" "$branch"
+  if git remote get-url "$remote" >/dev/null 2>&1; then
+    git fetch --quiet "$remote" "$branch"
+  fi
 fi
 
 GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash "$base"
