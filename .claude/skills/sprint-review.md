@@ -22,6 +22,19 @@ the user push if the review passes.
 
 ---
 
+## Step 0: Autosquash any pending fixups
+
+Per CLAUDE.md, CI-repair commits are made as `--fixup`s and must be
+collapsed before review/push. Check for them:
+
+```
+git log --oneline origin/main..HEAD | grep '^[a-f0-9]\+ fixup!' || true
+```
+
+If any fixups exist, run `scripts/autosquash.sh` to collapse them.
+Abort if the working tree is dirty (the script checks this). After
+autosquash, re-run the fixup check to confirm the branch is clean.
+
 ## Step 1: Identify the plan (optional)
 
 Check for a plan doc associated with this branch:
