@@ -34,3 +34,8 @@ Copilot reviewed 3 out of 3 changed files in this pull request and generated 1 c
 ### Copilot on [`.claude/skills/pull-reviews.md:53`](https://github.com/cmk/riffgrep/pull/7#discussion_r3098771853) (2026-04-17 08:09 UTC)
 
 Step 3 instructs committing the updated review file, but the later "Notes" section still says "Do not commit the review file". This is internally contradictory guidance; update or remove the Notes bullet (or rephrase it to clarify that the skill/script doesn’t auto-commit, but the user should commit when the file changes).
+
+<!-- gh-id: 3098816174 -->
+#### ↳ cmk ([2026-04-17 08:18 UTC](https://github.com/cmk/riffgrep/pull/7#discussion_r3098816174))
+
+Fixed in 5f89a36 — replaced the contradictory Notes bullet with one that clarifies the script doesn't auto-commit; the agent is responsible for staging and committing review-NNNN.md on the PR branch per Step 3.
