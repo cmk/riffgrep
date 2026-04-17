@@ -54,3 +54,18 @@ Copilot reviewed 3 out of 3 changed files in this pull request and generated 3 c
 ### Copilot on [`scripts/autosquash.sh:20`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098739345) (2026-04-17 08:02 UTC)
 
 The dirty-tree check relies on `git status`, but if the script is run outside a git worktree (or in a repo without an `origin` remote) it will fail with git’s default error output under `set -e`, which is less actionable than a targeted message. Consider adding an early `git rev-parse --is-inside-work-tree` check (and optionally validating that the expected remote/ref exists) to emit a clear `error:` message before proceeding.
+
+<!-- gh-id: 3098772464 -->
+#### ↳ cmk ([2026-04-17 08:09 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098772464))
+
+Fixed in 1a31a1b — switched to `grep -E '^[0-9a-f]+ fixup!'` (portable ERE) and prefixed with `git -c color.ui=never` so user color config can't break the match.
+
+<!-- gh-id: 3098772684 -->
+#### ↳ cmk ([2026-04-17 08:09 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098772684))
+
+Fixed in 1a31a1b — when `base` matches `<remote>/<branch>`, the script now parses out the remote and fetches that specific ref. Callers passing `upstream/main` or similar get a fresh base.
+
+<!-- gh-id: 3098772880 -->
+#### ↳ cmk ([2026-04-17 08:09 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098772880))
+
+Fixed in 1a31a1b — added `git rev-parse --is-inside-work-tree` as the very first check, so running the script outside a worktree produces a one-line `error: not inside a git worktree` instead of git's default stderr under `set -e`.
