@@ -21,10 +21,20 @@ import sys
 
 
 def gh_repo() -> str:
-    return subprocess.check_output(
-        ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
-        text=True,
-    ).strip()
+    try:
+        return subprocess.check_output(
+            ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+    except FileNotFoundError:
+        print("error: `gh` CLI not found; install GitHub CLI and ensure it is on PATH", file=sys.stderr)
+        raise SystemExit(1)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip()
+        msg = f": {detail}" if detail else ""
+        print(f"error: failed to determine repository via `gh repo view`{msg}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def main() -> int:
