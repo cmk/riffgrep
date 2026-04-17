@@ -77,12 +77,14 @@ The reviewer should write like a thorough human PR reviewer, not a checklist
 robot. Good review comments share these qualities:
 
 - **Cite the contract, then the violation.** When the plan says X and the code
-  does Y, quote both. "The plan specifies `device = ["dep:tokio", ...]` as an
-  optional feature gate (T1), but `Cargo.toml` lists tokio as unconditional."
+  does Y, quote both. "The plan specifies a v1→v2 migration that adds the
+  `embedding` column (T2), but `sqlite.rs` calls `ALTER TABLE` without a
+  version check and will crash on re-run."
 
 - **Name the consequence.** Don't just say "this differs from the plan." Say
-  what breaks: "This means `driver-motu` links tokio/russh/mdns despite only
-  using HTTP+OSC, adding ~3s to clean builds."
+  what breaks: "Without the length guard, `load_all_embeddings` happily returns
+  vectors of the wrong dimension and `pq::encode` panics at runtime on those
+  rows."
 
 - **Distinguish severity.** Some findings block the merge, others are
   improvement opportunities. Be explicit: "Must fix before merge" vs
@@ -148,12 +150,13 @@ sentence is enough — don't pad.
 
 ### Code Quality
 
-- Does the code follow repo conventions (thiserror in libs, no unsafe,
-  lints via Cargo.toml)?
+- Does the code follow repo conventions (`unsafe_code = "forbid"`,
+  `anyhow`/`thiserror` for errors, lints in `Cargo.toml`)?
 - Are error messages specific enough to diagnose from a log line?
-  (e.g., "qu: tcp connect: {e}" is good; "operation failed" is not)
-- Is there unintended coupling between driver crates that should be
-  independent? (e.g., driver-qu importing types from driver-mpc)
+  (e.g., `"bext: chunk truncated at offset {n}"` is good;
+  `"parse failed"` is not)
+- Is there unintended coupling between modules that should be
+  independent? (e.g., `engine::ui_*` types leaking into parser modules)
 - Any dead code, redundant logic, or clippy-level issues?
 - Were any features, config options, or feature gates described in the
   plan but absent from the implementation? This is the highest-value
@@ -165,12 +168,12 @@ sentence is enough — don't pad.
 
 - For any module that parses, encodes, or transforms data: are there
   property tests? If not, flag this as a gap.
-- Do fixture-gated tests use `fixture_or_skip!` from
-  `studio_core::testing` (return early when fixture is absent, don't
-  panic, don't `#[ignore]`)?
+- Do fixture-gated tests skip cleanly when the fixture file is absent
+  (return early, don't panic, don't `#[ignore]`)? Per CLAUDE.md, a
+  fresh checkout must pass `cargo test` with zero setup.
 - What edge cases do the tests miss? Be specific — "what happens if the
-  TCP connection drops mid-NRPN" is useful; "more tests would be good"
-  is not.
+  BEXT chunk is truncated mid-marker" is useful; "more tests would be
+  good" is not.
 
 {IF plan exists:}
 ### Plan Conformance
