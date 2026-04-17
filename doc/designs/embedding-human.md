@@ -4,11 +4,14 @@
 
 Full-precision (512 × f32) CLAP embeddings stored in the SQLite index.
 Enables "find similar sounds" queries across the library. Product
-quantization is used as a search-time acceleration structure, not a
-storage format — embeddings are stored losslessly in the DB, and the
-PQ index is built in memory from the stored vectors.
+quantization is used as a search-time acceleration structure — embeddings
+are stored losslessly in the DB, and the PQ index is built from the
+stored vectors.
 
-BEXT Description `[128:256]` is left reserved (see Alternatives).
+The 128-byte PQ code for each file is **mirrored into BEXT Description
+`[128:256]`** as a belt-and-suspenders optimization. The DB is the source
+of truth; the BEXT copy enables similarity search in `--no-db` mode and
+avoids a 2KB blob read per candidate in DB mode.
 
 ---
 
@@ -357,13 +360,77 @@ This is ~100 lines of Rust. No FAISS dependency at runtime.
 
 ## BEXT Schema
 
-BEXT Description `[128:256]` remains **reserved**. Embeddings are DB-only.
+The 128-byte PQ code lives at BEXT Description `[128:256]` (previously
+"Reserved / future use" in `PICKER_SCHEMA.md`). The DB remains authoritative
+and stores the full-precision vector; the BEXT copy is a lossy mirror of
+the PQ-encoded form.
 
-This is intentional — unlike peaks (which are read on every file scan and
-are self-contained), embeddings are only used at query time, require a
-distance metric to interpret, and would be format-dependent (AIFF/MP3/FLAC
-have no BEXT chunk). DB-only storage is format-agnostic, lossless, and
-allows PQ retraining without re-running CLAP inference.
+```
+Byte Range   Size   Type           Field           Notes
+----------   ----   ------------   -------------   --------------------------
+[128:256]    128    uint8[128]     pq_code         PQ centroid indices, one
+                                                   u8 per subquantizer.
+                                                   Zero-filled when file is
+                                                   not yet embedded.
+```
+
+### Read path
+
+1. **DB mode, full-precision needed** (codebook retrain, sanity check):
+   load `samples.embedding` from DB.
+2. **DB mode, similarity search:** prefer the in-memory PQ code buffer
+   (built once per session from `samples.embedding`). BEXT is not read
+   on this path — the session-cached codes are already there.
+3. **`--no-db` mode, similarity search:** read `pq_code` directly out of
+   the BEXT header during the walk. This is the main win — the library
+   gains similarity search without a DB, at the cost of one 128-byte
+   read inside the existing BEXT scan (effectively free).
+4. **Query file without a DB entry** (e.g., a file the user drags in
+   from outside the indexed roots): read its `pq_code` from BEXT, run
+   ADC against session codes. No CLAP inference required for the query.
+
+### Write path
+
+BEXT `[128:256]` is written by the encoding pipeline, surgically, using
+the existing fixed-offset BEXT writer (no re-encode of audio). Order:
+
+1. `embed_encode.py` computes CLAP embedding, writes 2048-byte f32 BLOB
+   to `samples.embedding`.
+2. Same script PQ-encodes the vector against the active codebook and
+   writes 128 bytes to BEXT `[128:256]`.
+3. On codebook retrain: bulk rewrite pass regenerates every BEXT code
+   from the stored full-precision vectors. This is cheap (no CLAP
+   inference, just PQ encode + surgical BEXT write).
+
+### Codebook versioning
+
+The active codebook's version is stored in the DB `metadata` table
+(`key='pq_codebook_version'`, monotonic counter). BEXT does not carry a
+per-file version byte — we'd lose a subquantizer to do so, and the
+invariant "all BEXT codes match the active codebook" is cheaply
+enforceable by the rewrite pass on retrain.
+
+Readers trust BEXT codes unconditionally when the DB codebook is loaded.
+If a BEXT code turns out to be stale (rewrite pass incomplete after a
+retrain), the similarity ranking degrades gracefully — same failure
+mode as a lossy PQ approximation, which is what PQ search is anyway.
+
+### Non-WAV files
+
+AIFF / MP3 / FLAC have no BEXT chunk, so the mirror is WAV-only. Those
+files fall back to the DB-only path (load `samples.embedding`, PQ-encode
+at session start). The library is ≈100% WAV, so this is a rounding-error
+concern, not a design constraint.
+
+### Why mirror, rather than replace
+
+The DB still holds the full f32 vector. The BEXT code is derived state.
+This preserves every benefit of the DB-only design — lossless storage,
+PQ retraining without re-running CLAP, format-agnostic code path — and
+adds: (a) `--no-db` similarity search, (b) portable PQ codes that
+survive DB rebuild, (c) one fewer BLOB read per candidate in DB mode.
+The cost is 128 bytes of BEXT space (previously padding) and a rewrite
+pass on codebook retrain.
 
 ---
 
@@ -472,30 +539,19 @@ python scripts/embed_encode.py --db-path index.db
 
 ## Alternatives Considered
 
-### A: PQ codes in BEXT `[128:256]`
+### A: PQ codes only in BEXT (no DB mirror)
 
-The original design stored 128-byte PQ codes in the BEXT packed
-Description reserved field and mirrored them in the DB.
+An earlier draft stored 128-byte PQ codes *exclusively* in BEXT
+`[128:256]`, with no full-precision DB column.
 
-**Layout:** `[128:256]` → 128 × u8 PQ centroid indices.
+**Why rejected:** retraining the PQ codebook requires the full-precision
+vectors, which means re-running CLAP inference against every file —
+hours of GPU time for a 1.2M library. Keeping the f32 vector in the DB
+makes codebook retraining a cheap local pass.
 
-**Advantages:**
-- Embeddings travel with the file (portable)
-- Smaller DB (128 bytes/file vs 2048)
-- No need to load full vectors into memory
-
-**Why rejected:**
-- **Lossy storage.** PQ compression costs ~5-10% recall, permanently.
-  With DB-only full-precision storage, PQ is a search-time optimization
-  that can be retrained without re-running CLAP inference.
-- **Format-dependent.** AIFF, MP3, FLAC files have no BEXT chunk. DB-only
-  storage is format-agnostic — same code path for all file types.
-- **Not self-contained.** The 128 bytes are meaningless without the
-  matching PQ codebook. Unlike peaks (directly renderable), embeddings
-  require external state to interpret. Portability is illusory.
-- **Wastes BEXT space.** The reserved bytes could be used for something
-  that actually benefits from in-file storage (e.g., a perceptual hash
-  for deduplication, which *is* self-contained).
+The current design keeps both: full f32 in the DB (source of truth,
+enables retrain) and a 128-byte PQ mirror in BEXT (portable, enables
+`--no-db` similarity search). See `## BEXT Schema` above.
 
 ### B: VGGish (native 128-dim, no PQ)
 
