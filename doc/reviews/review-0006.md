@@ -137,3 +137,13 @@ Copilot reviewed 4 out of 4 changed files in this pull request and generated 2 c
 ### Copilot on [`.claude/skills/sprint-review.md:59`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098830539) (2026-04-17 08:21 UTC)
 
 These commands diff/log against `origin/main`, but the skill never fetches, so `origin/main` may be stale and the review can be computed against an outdated base. Consider explicitly fetching before generating the diff/log (e.g., a `git fetch --quiet origin main` step) or otherwise documenting that a fetch is required so the review reliably targets current main.
+
+<!-- gh-id: 3098839150 -->
+#### ↳ cmk ([2026-04-17 08:23 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098839150))
+
+Fixed in f0f0604 — the fetch is now gated on `git check-ref-format --branch <branch>` in addition to the remote check. Revisions like `origin/main~3` or `origin/main^{...}` fail the ref-format check and fall through to the rebase without a bogus fetch.
+
+<!-- gh-id: 3098839465 -->
+#### ↳ cmk ([2026-04-17 08:23 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098839465))
+
+Fixed in f0f0604 — Step 2 now runs `git fetch --quiet origin main` before the diff/log so the review base can't be stale.
