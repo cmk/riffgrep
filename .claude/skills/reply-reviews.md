@@ -93,11 +93,17 @@ Fixed in 3bea723 — ...
 EOF
 ```
 
-## Step 5: Mirror locally (optional)
+## Step 5: Mirror locally and commit
 
 After posting, run `scripts/pull_reviews.py <N>` to append your replies
 to the local review file. Set-membership de-dup ensures only the new
 replies get added.
+
+Then **commit the updated review file to the PR branch** — either as a
+standalone `doc: update review-NNNN.md` commit or folded into the fix
+commit that addressed the round's findings. The review file must ride
+along with the PR that generated it; landing it post-merge orphans the
+audit trail.
 
 ## Step 6: Report
 
@@ -111,6 +117,6 @@ review file. One paragraph max.
   reply closes the thread.
 - **One reply per thread, not per comment.** If a thread already has
   your reply buried three deep, don't post another.
-- **Don't commit the updated review file in the same push as the
-  replies.** The reply round-trip through `/pull-reviews` is a separate
-  operation from landing the fix.
+- **The review file belongs on the PR branch.** Every `/pull-reviews`
+  and `/reply-reviews` run that mutates `review-NNNN.md` should end in
+  a commit on the same branch as the PR. Don't leave it untracked.

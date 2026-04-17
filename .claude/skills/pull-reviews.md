@@ -44,7 +44,18 @@ the file is skipped. Note: it is **not** safe to assume a single
 different sequences, so max-id across both would silently drop later
 items from the lower-numbered sequence. Set membership avoids this.
 
-## Step 3: Report
+## Step 3: Commit the updated file
+
+If new items were appended, **commit `review-NNNN.md` to the PR branch**
+— either as a standalone `doc: update review-NNNN.md` commit or folded
+into the current round's fix commit. The review file must ride along
+with the PR that generated it; landing it post-merge orphans the audit
+trail.
+
+If there were no new items (script reported `no new items`), skip this
+step.
+
+## Step 4: Report
 
 Print a one-paragraph summary: how many new comments appended, from
 which reviewers, and the path to the review file. Pipe through the
