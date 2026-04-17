@@ -27,7 +27,8 @@ fi
 if [[ "$base" == */* ]]; then
   remote="${base%%/*}"
   branch="${base#*/}"
-  if git remote get-url "$remote" >/dev/null 2>&1; then
+  if git remote get-url "$remote" >/dev/null 2>&1 \
+      && git check-ref-format --branch "$branch" >/dev/null 2>&1; then
     git fetch --quiet "$remote" "$branch"
   fi
 fi
