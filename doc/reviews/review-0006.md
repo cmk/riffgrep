@@ -69,3 +69,36 @@ Fixed in 1a31a1b — when `base` matches `<remote>/<branch>`, the script now par
 #### ↳ cmk ([2026-04-17 08:09 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098772880))
 
 Fixed in 1a31a1b — added `git rev-parse --is-inside-work-tree` as the very first check, so running the script outside a worktree produces a one-line `error: not inside a git worktree` instead of git's default stderr under `set -e`.
+
+<!-- gh-id: 3098794698 -->
+### Copilot on [`scripts/autosquash.sh:30`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098794698) (2026-04-17 08:14 UTC)
+
+The fetch heuristic treats any `base` containing a slash as `<remote>/<branch>`. That breaks if a caller passes a local branch name that contains slashes (common in this repo, e.g. `sprint/foo`), because the script will try `git fetch sprint foo` and exit. Consider only fetching when the prefix is an actual configured remote (e.g., check `git remote get-url "$remote"` succeeds before fetching), or gate on `refs/remotes/<remote>/...` style instead of `*/*`.
+```suggestion
+  if git remote get-url "$remote" >/dev/null 2>&1; then
+    git fetch --quiet "$remote" "$branch"
+  fi
+```
+
+<!-- gh-id: 3098794735 -->
+### Copilot on [`.claude/skills/sprint-review.md:31`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098794735) (2026-04-17 08:14 UTC)
+
+Step 0 checks for fixups relative to `origin/main`, but later steps in this same skill use `main...HEAD` / `main..HEAD` as the review base. Using different bases can produce confusing results (e.g., fixups detected against `origin/main` but the diff/review is computed against a stale local `main`). Consider standardizing on one base throughout the skill (either use `origin/main` everywhere with an explicit fetch, or use `main` everywhere).
+```suggestion
+git -c color.ui=never log --oneline main..HEAD | grep -E '^[0-9a-f]+ fixup!' || true
+```
+
+<!-- gh-id: 4127151562 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-17 08:14 UTC](https://github.com/cmk/riffgrep/pull/6#pullrequestreview-4127151562))
+
+## Pull request overview
+
+Copilot reviewed 4 out of 4 changed files in this pull request and generated 2 comments.
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
