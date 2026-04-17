@@ -147,3 +147,38 @@ Fixed in f0f0604 — the fetch is now gated on `git check-ref-format --branch <b
 #### ↳ cmk ([2026-04-17 08:23 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098839465))
 
 Fixed in f0f0604 — Step 2 now runs `git fetch --quiet origin main` before the diff/log so the review base can't be stale.
+
+<!-- gh-id: 3098856668 -->
+### Copilot on [`.claude/skills/sprint-review.md:32`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098856668) (2026-04-17 08:27 UTC)
+
+Step 0 checks for pending fixups relative to `origin/main`, but it doesn’t refresh `origin/main` first. If the local remote-tracking ref is stale, this can produce false positives/negatives (and may cause an unnecessary autosquash) until Step 2 fetches later. Consider fetching `origin main` before running the `git log origin/main..HEAD | grep ...` check (or explicitly stating the requirement).
+
+<!-- gh-id: 3098856704 -->
+### Copilot on [`.claude/skills/sprint-review.md:56`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098856704) (2026-04-17 08:27 UTC)
+
+This skill now standardizes on `origin/main` for diff/log, but earlier text still says the reviewer compares against `main` (e.g., the Tier 1 bullet and the prompt template sentence about “diff between main and the branch HEAD”). To avoid confusing reviewers/users, update those earlier references to consistently say `origin/main` (or clarify that `origin/main` is fetched and used as the base).
+
+<!-- gh-id: 4127218995 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-17 08:27 UTC](https://github.com/cmk/riffgrep/pull/6#pullrequestreview-4127218995))
+
+## Pull request overview
+
+Copilot reviewed 4 out of 4 changed files in this pull request and generated 3 comments.
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3098856734 -->
+### Copilot on [`scripts/autosquash.sh:3`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098856734) (2026-04-17 08:27 UTC)
+
+The header comment says the script rebases onto `origin/main`, but the implementation supports a configurable `base` argument (defaulting to `origin/main`). Consider updating the first comment lines to describe rebasing onto the provided base to avoid misleading usage docs.
+```suggestion
+# Non-interactively rebase the current branch onto the provided base,
+# collapsing any `fixup!` commits into their targets via git's autosquash
+# machinery.
+```
