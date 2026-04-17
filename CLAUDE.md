@@ -150,6 +150,14 @@ the reviewer and leaves an audit trail linking each finding to its
 resolution. Re-running `/pull-reviews <N>` afterward mirrors the replies
 back into `review-NNNN.md`.
 
+**`review-NNNN.md` rides along with the PR that generated it.** Every
+`/pull-reviews` and `/reply-reviews` round that mutates the file must
+end in a commit on the PR branch (standalone `doc:` commit or folded
+into the round's fix commit). Don't leave it untracked between rounds
+— landing it after merge orphans the audit trail. Before final push,
+run `/pull-reviews <N>` one last time to capture any trailing comments
+and commit the result.
+
 The local review catches design issues and convention violations early.
 The GitHub review catches anything that slipped through and validates in
 the CI environment. Joining them into a single file per PR preserves the
