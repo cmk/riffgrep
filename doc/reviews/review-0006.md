@@ -112,3 +112,28 @@ Fixed in d09d5ea — the `<remote>/<branch>` heuristic now gates on `git remote 
 #### ↳ cmk ([2026-04-17 08:17 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098810943))
 
 Fixed in d09d5ea — standardized on `origin/main` (not local `main`) for both the diff and commit-log commands so they can't drift from a stale local main. Took the opposite direction from the suggestion because the merge target is origin, not local.
+
+<!-- gh-id: 4127189395 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-17 08:21 UTC](https://github.com/cmk/riffgrep/pull/6#pullrequestreview-4127189395))
+
+## Pull request overview
+
+Copilot reviewed 4 out of 4 changed files in this pull request and generated 2 comments.
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3098830502 -->
+### Copilot on [`scripts/autosquash.sh:32`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098830502) (2026-04-17 08:21 UTC)
+
+`base` is treated as `<remote>/<branch>` whenever it contains a slash and the prefix is a configured remote. This breaks for valid git revisions like `origin/main~3` (or `origin/main^{...}`), where `remote=origin` and `branch=main~3`, causing `git fetch origin main~3` to fail even though `git rebase origin/main~3` would work. Consider validating that the part after the slash is a valid branch/ref name (e.g., `git check-ref-format --branch "$branch"`) before attempting the fetch, or otherwise only fetching when `base` is exactly a remote-tracking branch name.
+
+<!-- gh-id: 3098830539 -->
+### Copilot on [`.claude/skills/sprint-review.md:59`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098830539) (2026-04-17 08:21 UTC)
+
+These commands diff/log against `origin/main`, but the skill never fetches, so `origin/main` may be stale and the review can be computed against an outdated base. Consider explicitly fetching before generating the diff/log (e.g., a `git fetch --quiet origin main` step) or otherwise documenting that a fetch is required so the review reliably targets current main.

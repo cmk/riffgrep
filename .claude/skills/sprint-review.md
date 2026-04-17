@@ -51,15 +51,17 @@ in **code-only mode** (no plan-conformance section).
 
 ## Step 2: Collect the diff
 
-The review always targets the current branch against main:
+The review always targets the current branch against `origin/main`.
+Refresh the ref first so the base isn't stale:
 
 ```
+git fetch --quiet origin main
 git diff origin/main...HEAD
 git log origin/main..HEAD --oneline
 ```
 
-If the branch has not diverged from main, abort with a message — there's
-nothing to review.
+If the branch has not diverged from `origin/main`, abort with a
+message — there's nothing to review.
 
 ## Step 3: Gather context
 
