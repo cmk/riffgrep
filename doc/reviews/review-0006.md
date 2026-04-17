@@ -222,3 +222,13 @@ Copilot reviewed 4 out of 4 changed files in this pull request and generated 2 c
 ### Copilot on [`.claude/skills/sprint-review.md:17`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098881377) (2026-04-17 08:32 UTC)
 
 The skill content now says Tier 1 reviews `origin/main...HEAD`, but the YAML description above still says it “examine[s] the branch diff against main.” Please update the description (and any other introductory text) to match the new `origin/main` base so users don’t get conflicting guidance.
+
+<!-- gh-id: 3099312696 -->
+#### ↳ cmk ([2026-04-17 09:49 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3099312696))
+
+Fixed in PR #9 (commit 337591d) — updated the CLAUDE.md Tier 1 paragraph to say `git diff origin/main...HEAD` so it matches the operative commands in the sprint-review skill.
+
+<!-- gh-id: 3099312856 -->
+#### ↳ cmk ([2026-04-17 09:49 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3099312856))
+
+Fixed in PR #9 (commit 337591d) — YAML description now says "the branch diff against `origin/main`" so the front-matter matches the skill body.
