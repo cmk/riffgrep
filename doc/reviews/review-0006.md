@@ -182,3 +182,18 @@ The header comment says the script rebases onto `origin/main`, but the implement
 # collapsing any `fixup!` commits into their targets via git's autosquash
 # machinery.
 ```
+
+<!-- gh-id: 3098864999 -->
+#### ↳ cmk ([2026-04-17 08:28 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098864999))
+
+Fixed in 38e9883 — Step 0 now fetches `origin main` before the fixup scan, matching what Step 2 does. Keeps the check from firing false positives/negatives against a stale remote-tracking ref.
+
+<!-- gh-id: 3098865190 -->
+#### ↳ cmk ([2026-04-17 08:28 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098865190))
+
+Fixed in 38e9883 — updated the Tier 1 summary bullet and the reviewer prompt template to say `origin/main` so the doc is consistent end-to-end with the operative commands.
+
+<!-- gh-id: 3098865340 -->
+#### ↳ cmk ([2026-04-17 08:28 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098865340))
+
+Fixed in 38e9883 — header now reads "rebase the current branch onto the provided base (default: origin/main)" so the doc matches the `base` arg the script actually supports.
