@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Non-interactively rebase the current branch onto origin/main, collapsing
-# any `fixup!` commits into their targets via git's autosquash machinery.
+# Non-interactively rebase the current branch onto the provided base
+# (default: origin/main), collapsing any `fixup!` commits into their
+# targets via git's autosquash machinery.
 #
 # Use this before pushing a branch that accumulated CI-repair fixups so
 # that main's linear history doesn't gain commits that temporarily broke
