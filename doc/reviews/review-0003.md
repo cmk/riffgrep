@@ -1,12 +1,12 @@
 # PR #3 — Pin toolchain to 1.94 and fix all lint/fmt gates
 
 <!-- gh-id: 3090903840 -->
-### Copilot on `.github/workflows/ci.yml:30` (2026-04-16 05:14 UTC)
+### Copilot on [`.github/workflows/ci.yml:30`](https://github.com/cmk/riffgrep/pull/3#discussion_r3090903840) (2026-04-16 05:14 UTC)
 
 CI installs Rust toolchain "1.94" while rust-toolchain.toml pins "1.94.0" (and the PR description says exact matching). This can either fail to resolve or drift if the action treats it as a floating patch; set the workflow toolchain to "1.94.0" or omit the explicit toolchain so it follows rust-toolchain.toml.
 
 <!-- gh-id: 4118456055 -->
-### copilot-pull-request-reviewer[bot] — COMMENTED (2026-04-16 05:14 UTC)
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-16 05:14 UTC](https://github.com/cmk/riffgrep/pull/3#pullrequestreview-4118456055))
 
 ## Pull request overview
 
@@ -61,15 +61,15 @@ Copilot reviewed 26 out of 26 changed files in this pull request and generated 1
 
 ---
 
-💡 <a href="/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
 
 <!-- gh-id: 3091086839 -->
-#### ↳ cmk (2026-04-16 06:09 UTC)
+#### ↳ cmk ([2026-04-16 06:09 UTC](https://github.com/cmk/riffgrep/pull/3#discussion_r3091086839))
 
 @claude can you update this to match rust-toolchain.toml?
 
 <!-- gh-id: 3091087680 -->
-#### ↳ claude[bot] (2026-04-16 06:09 UTC)
+#### ↳ claude[bot] ([2026-04-16 06:09 UTC](https://github.com/cmk/riffgrep/pull/3#discussion_r3091087680))
 
 **Claude encountered an error** —— [View job](https://github.com/cmk/riffgrep/actions/runs/24495034996)
 

@@ -29,12 +29,12 @@
 - Design docs are clear and actionable
 
 <!-- gh-id: 3091118907 -->
-### Copilot on `src/engine/sqlite.rs:647` (2026-04-16 06:18 UTC)
+### Copilot on [`src/engine/sqlite.rs:647`](https://github.com/cmk/riffgrep/pull/4#discussion_r3091118907) (2026-04-16 06:18 UTC)
 
 `insert_embedding` serializes whatever slice length is provided, but downstream code (PQ encode / L2 distance) assumes exactly 512 floats. This can store malformed embeddings and later cause incorrect similarity results or panics. Enforce `vector.len() == similarity::EMBEDDING_DIM` (or 512) before writing, and return an error if the length is wrong.
 
 <!-- gh-id: 4118671569 -->
-### copilot-pull-request-reviewer[bot] — COMMENTED (2026-04-16 06:18 UTC)
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-16 06:18 UTC](https://github.com/cmk/riffgrep/pull/4#pullrequestreview-4118671569))
 
 ## Pull request overview
 
@@ -122,51 +122,51 @@ Copilot reviewed 30 out of 31 changed files in this pull request and generated 3
 
 ---
 
-💡 <a href="/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
 
 <!-- gh-id: 3091118928 -->
-### Copilot on `src/engine/workflow.rs:468` (2026-04-16 06:18 UTC)
+### Copilot on [`src/engine/workflow.rs:468`](https://github.com/cmk/riffgrep/pull/4#discussion_r3091118928) (2026-04-16 06:18 UTC)
 
 `write_metadata_changes` writes several fields into the packed-Description offsets (e.g., 44..112), but it never initializes the packed schema markers (file_id / version_major+minor / bext_version). `parse_bext_buffer` only reads these fields when the packed schema is detected, so writes to those offsets on an unpacked file won’t be reflected on subsequent reads and can also inject NULs into the plain-text Description. Consider either: (1) only writing standard BEXT fields when the file is unpacked, or (2) initializing the packed schema (similar to `init_packed_and_write_markers`) before writing packed fields, and gating packed writes on packed detection.
 
 <!-- gh-id: 3091118958 -->
-### Copilot on `src/engine/workflow.rs:426` (2026-04-16 06:18 UTC)
+### Copilot on [`src/engine/workflow.rs:426`](https://github.com/cmk/riffgrep/pull/4#discussion_r3091118958) (2026-04-16 06:18 UTC)
 
 `write_ascii` copies raw UTF-8 bytes and truncates at an arbitrary byte boundary. For non-ASCII input this can split a multi-byte codepoint and write invalid UTF-8 into the BEXT chunk. Since these fields are specified as fixed-width ASCII in `BextFields`, validate `val.is_ascii()` (or sanitize/replace) and truncate on a character boundary (or explicitly document that non-ASCII will be lossy).
 
 <!-- gh-id: 3091406075 -->
-#### ↳ cmk (2026-04-16 07:20 UTC)
+#### ↳ cmk ([2026-04-16 07:20 UTC](https://github.com/cmk/riffgrep/pull/4#discussion_r3091406075))
 
 Fixed in 1e25d5d — insert_embedding now validates vector.len() == 512 before serializing. load_embedding and load_all_embeddings also tightened to exact 2048-byte blob check with warnings for malformed rows.
 
 <!-- gh-id: 3091406196 -->
-#### ↳ cmk (2026-04-16 07:20 UTC)
+#### ↳ cmk ([2026-04-16 07:20 UTC](https://github.com/cmk/riffgrep/pull/4#discussion_r3091406196))
 
 Fixed in 1e25d5d — packed Description writes (offsets 44..112) are now gated on `before.file_id != 0`, preventing corruption of the plain-text Description block on unpacked files.
 
 <!-- gh-id: 3091406341 -->
-#### ↳ cmk (2026-04-16 07:20 UTC)
+#### ↳ cmk ([2026-04-16 07:20 UTC](https://github.com/cmk/riffgrep/pull/4#discussion_r3091406341))
 
 Fixed in 1e25d5d — write_ascii now sanitizes non-ASCII characters to '?' before copying, preventing split multi-byte codepoints at field boundaries.
 
 <!-- gh-id: 3091432335 -->
-### Copilot on `src/engine/api.rs:137` (2026-04-16 07:25 UTC)
+### Copilot on [`src/engine/api.rs:137`](https://github.com/cmk/riffgrep/pull/4#discussion_r3091432335) (2026-04-16 07:25 UTC)
 
 Same issue as the CLI PQ path: `max_dist` is derived from `scored.last()` but `results.truncate(limit)` may drop the farthest neighbor due to the prepended subject, skewing similarity scaling. Compute `max_dist` from the last neighbor actually returned (post-skip, post-limit) or adjust the PQ search limit/truncation so the farthest used for scaling is included in the output window.
 
 <!-- gh-id: 3091432390 -->
-### Copilot on `src/engine/sqlite.rs:686` (2026-04-16 07:25 UTC)
+### Copilot on [`src/engine/sqlite.rs:686`](https://github.com/cmk/riffgrep/pull/4#discussion_r3091432390) (2026-04-16 07:25 UTC)
 
 `embedding_count()` counts any non-NULL embedding BLOB, but `load_all_embeddings()`/`load_embedding()` explicitly skip malformed blobs whose length != DIM*4. This means the 100K guard can reject a DB even when the number of *valid* embeddings is under the cap. Consider counting only well-formed embeddings in SQL (e.g., `WHERE embedding IS NOT NULL AND length(embedding)=?`) to keep the guard consistent with what will actually be loaded.
 
 
 <!-- gh-id: 3091432417 -->
-### Copilot on `src/engine/api.rs:59` (2026-04-16 07:25 UTC)
+### Copilot on [`src/engine/api.rs:59`](https://github.com/cmk/riffgrep/pull/4#discussion_r3091432417) (2026-04-16 07:25 UTC)
 
 `search()` runs `db.search()` / `finder.walk()` synchronously but uses a bounded channel and only drains `rx` after the producer finishes. Since both producers call `tx.send()` directly, this can deadlock once the channel buffer (2048) fills (e.g., >2048 matches). Consider spawning the producer on a thread and draining concurrently (dropping the receiver when `limit` is reached to stop early), or switch to an unbounded channel plus early truncation/stop logic.
 
 <!-- gh-id: 4118997779 -->
-### copilot-pull-request-reviewer[bot] — COMMENTED (2026-04-16 07:25 UTC)
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-16 07:25 UTC](https://github.com/cmk/riffgrep/pull/4#pullrequestreview-4118997779))
 
 ## Pull request overview
 
@@ -206,15 +206,15 @@ Copilot reviewed 10 out of 11 changed files in this pull request and generated 5
 
 ---
 
-💡 <a href="/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
 
 <!-- gh-id: 3091432437 -->
-### Copilot on `src/engine/api.rs:139` (2026-04-16 07:25 UTC)
+### Copilot on [`src/engine/api.rs:139`](https://github.com/cmk/riffgrep/pull/4#discussion_r3091432437) (2026-04-16 07:25 UTC)
 
 The brute-force fallback loads all embeddings without any row-count guard. For large libraries (or when no PQ codebook is present), this can allocate multiple GB and likely OOM/hang. Mirror the CLI hardening by checking `db.embedding_count()` against a cap (e.g., 100K) before calling `load_all_embeddings()`, and return a clear error suggesting training/providing a PQ codebook.
 
 
 <!-- gh-id: 3091432477 -->
-### Copilot on `src/engine/mod.rs:809` (2026-04-16 07:25 UTC)
+### Copilot on [`src/engine/mod.rs:809`](https://github.com/cmk/riffgrep/pull/4#discussion_r3091432477) (2026-04-16 07:25 UTC)
 
 In the PQ path, `max_dist` is computed from `scored.last()`, but then `results.truncate(limit)` drops the farthest neighbor (because the subject is prepended). This makes the returned window’s max distance smaller than `max_dist`, so similarity scores won’t scale to 0.0 for the last returned item. Compute `max_dist` from the last *returned* neighbor (after skipping the query and applying the `limit-1` cutoff), or adjust the PQ search limit/truncation to match `search_similar` semantics.

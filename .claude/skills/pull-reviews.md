@@ -34,18 +34,20 @@ If the file doesn't exist or has no markers, all items are new.
 
 ## Step 3: Fetch comments
 
-Fetch all review comments for the PR, sorted by creation time:
+Fetch all review comments for the PR, sorted by creation time. Capture
+`html_url` — it is the permalink to the comment on GitHub and is used
+to hyperlink the header in the local file.
 
 ```
 gh api repos/{owner}/{repo}/pulls/{N}/comments \
-  --jq 'sort_by(.created_at) | .[] | {id, user: .user.login, path, line, body, created_at, in_reply_to_id}'
+  --jq 'sort_by(.created_at) | .[] | {id, user: .user.login, path, line, body, created_at, in_reply_to_id, html_url}'
 ```
 
 Also fetch top-level review bodies (Copilot summaries, human approvals):
 
 ```
 gh api repos/{owner}/{repo}/pulls/{N}/reviews \
-  --jq 'sort_by(.submitted_at) | .[] | select(.body != "") | {id, user: .user.login, state, body, submitted_at}'
+  --jq 'sort_by(.submitted_at) | .[] | select(.body != "") | {id, user: .user.login, state, body, submitted_at, html_url}'
 ```
 
 Filter both lists to only entries with `id` greater than the high-water
@@ -54,13 +56,22 @@ mark.
 ## Step 4: Format and append
 
 Append new comments **chronologically** (by `created_at` / `submitted_at`)
-to the review file. Each comment is a self-contained block:
+to the review file. Each comment is a self-contained block. The
+timestamp in the header is a markdown link to the GitHub permalink
+(`html_url`); for inline comments the `path:line` is also linked.
+
+Before writing, **absolute-ify relative links in the body**: comments
+rendered by the GitHub UI sometimes contain `<a href="/owner/repo/...">`
+or `[text](/owner/repo/...)`. Rewrite any `href="/..."` →
+`href="https://github.com/..."` and any `](/...)` →
+`](https://github.com/...)` so the links resolve when the file is
+viewed outside GitHub.
 
 For a top-level review body:
 
 ```markdown
 <!-- gh-id: {id} -->
-### {user} — {state} ({YYYY-MM-DD HH:MM UTC})
+### {user} — {state} ([{YYYY-MM-DD HH:MM UTC}]({html_url}))
 
 {body}
 ```
@@ -69,7 +80,7 @@ For an inline comment (new thread):
 
 ```markdown
 <!-- gh-id: {id} -->
-### {user} on `{path}:{line}` ({YYYY-MM-DD HH:MM UTC})
+### {user} on [`{path}:{line}`]({html_url}) ({YYYY-MM-DD HH:MM UTC})
 
 {body}
 ```
@@ -78,7 +89,7 @@ For a reply (has `in_reply_to_id`):
 
 ```markdown
 <!-- gh-id: {id} -->
-#### ↳ {user} ({YYYY-MM-DD HH:MM UTC})
+#### ↳ {user} ([{YYYY-MM-DD HH:MM UTC}]({html_url}))
 
 {body}
 ```

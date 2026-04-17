@@ -67,12 +67,12 @@ The minimum required property would be: for any `Id3Tags`, `merge_id3_into_unifi
 - `claude-code-review.yml`: validate plugin marketplace URL and token scoping before re-enabling.
 
 <!-- gh-id: 3090628231 -->
-### Copilot on `.github/workflows/claude.yml:26` (2026-04-16 03:26 UTC)
+### Copilot on [`.github/workflows/claude.yml:26`](https://github.com/cmk/riffgrep/pull/2#discussion_r3090628231) (2026-04-16 03:26 UTC)
 
 This workflow grants `contents: write` to a job triggered by issue/pr comment content. That permission allows pushing commits/tags and modifying the repository, which is broader than needed for a comment-response automation and increases the impact of any action bug or prompt-injection. Consider scoping to `contents: read` (and only adding narrower permissions that are strictly required).
 
 <!-- gh-id: 4118186925 -->
-### copilot-pull-request-reviewer[bot] — COMMENTED (2026-04-16 03:26 UTC)
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-16 03:26 UTC](https://github.com/cmk/riffgrep/pull/2#pullrequestreview-4118186925))
 
 ## Pull request overview
 
@@ -146,4 +146,4 @@ Copilot reviewed 13 out of 14 changed files in this pull request and generated 1
 
 ---
 
-💡 <a href="/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
