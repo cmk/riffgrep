@@ -2,7 +2,7 @@
 name: sprint-review
 description: >
   Local pre-push code review (Tier 1). Spawns an independent reviewer agent
-  to examine the branch diff against main. Use when the user says
+  to examine the branch diff against `origin/main`. Use when the user says
   "/sprint-review", "review the branch", "review before push", or after
   completing work on a feature branch before pushing to GitHub.
 ---

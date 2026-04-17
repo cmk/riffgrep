@@ -197,3 +197,28 @@ Fixed in 38e9883 — updated the Tier 1 summary bullet and the reviewer prompt t
 #### ↳ cmk ([2026-04-17 08:28 UTC](https://github.com/cmk/riffgrep/pull/6#discussion_r3098865340))
 
 Fixed in 38e9883 — header now reads "rebase the current branch onto the provided base (default: origin/main)" so the doc matches the `base` arg the script actually supports.
+
+<!-- gh-id: 3098881354 -->
+### Copilot on [`CLAUDE.md:85`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098881354) (2026-04-17 08:32 UTC)
+
+This new section standardizes on `origin/main` as the base (and points to `rebase ... origin/main`), but later in this same document the Tier 1 workflow description still says the reviewer examines `git diff main...HEAD` / commit log. Please update the later reference(s) (or clarify why they differ) so the docs don’t contradict each other.
+
+<!-- gh-id: 4127244561 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-17 08:32 UTC](https://github.com/cmk/riffgrep/pull/6#pullrequestreview-4127244561))
+
+## Pull request overview
+
+Copilot reviewed 4 out of 4 changed files in this pull request and generated 2 comments.
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3098881377 -->
+### Copilot on [`.claude/skills/sprint-review.md:17`](https://github.com/cmk/riffgrep/pull/6#discussion_r3098881377) (2026-04-17 08:32 UTC)
+
+The skill content now says Tier 1 reviews `origin/main...HEAD`, but the YAML description above still says it “examine[s] the branch diff against main.” Please update the description (and any other introductory text) to match the new `origin/main` base so users don’t get conflicting guidance.
