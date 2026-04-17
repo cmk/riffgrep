@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Fetch GitHub PR review bodies and inline comments and append them
+chronologically to `doc/reviews/review-NNNN.md`.
+
+Idempotent: tracks a high-water mark via `<!-- gh-id: N -->` markers in the
+target file and only writes items with an id greater than the existing max.
+
+Requires: `gh` CLI authenticated for the current repo.
+
+Usage:
+    scripts/pull_reviews.py <PR_NUMBER> [--repo owner/name] [--out doc/reviews]
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+
+def gh_api(path: str) -> list | dict:
+    return json.loads(subprocess.check_output(["gh", "api", path], text=True))
+
+
+def gh_repo() -> str:
+    return subprocess.check_output(
+        ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+        text=True,
+    ).strip()
+
+
+def pr_title(n: int) -> str:
+    return subprocess.check_output(
+        ["gh", "pr", "view", str(n), "--json", "title", "--jq", ".title"], text=True
+    ).strip()
+
+
+def fmt_ts(t: str) -> str:
+    d = datetime.datetime.fromisoformat(t.replace("Z", "+00:00"))
+    return d.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def high_water_mark(path: pathlib.Path) -> int:
+    if not path.exists():
+        return -1
+    hits = re.findall(r"<!-- gh-id: (\d+) -->", path.read_text())
+    return max((int(h) for h in hits), default=-1)
+
+
+def absolutize(body: str) -> str:
+    """Rewrite relative GitHub links so they resolve outside github.com."""
+    body = re.sub(r'href="/([^"]*)"', r'href="https://github.com/\1"', body)
+    body = re.sub(r"href='/([^']*)'", r"href='https://github.com/\1'", body)
+    body = re.sub(r"\]\(/(?!/)([^)]*)\)", r"](https://github.com/\1)", body)
+    return body
+
+
+def collect_items(repo: str, n: int) -> list[dict]:
+    items: list[dict] = []
+    for r in gh_api(f"repos/{repo}/pulls/{n}/reviews"):
+        if not r.get("body"):
+            continue
+        items.append(
+            {
+                "kind": "review",
+                "ts": r["submitted_at"],
+                "id": r["id"],
+                "user": r["user"]["login"],
+                "state": r["state"],
+                "body": r["body"],
+                "html_url": r["html_url"],
+            }
+        )
+    for c in gh_api(f"repos/{repo}/pulls/{n}/comments"):
+        items.append(
+            {
+                "kind": "comment",
+                "ts": c["created_at"],
+                "id": c["id"],
+                "user": c["user"]["login"],
+                "path": c["path"],
+                "line": c.get("line"),
+                "body": c["body"],
+                "in_reply_to_id": c.get("in_reply_to_id"),
+                "html_url": c["html_url"],
+            }
+        )
+    items.sort(key=lambda x: x["ts"])
+    return items
+
+
+def render(it: dict) -> str:
+    ts = fmt_ts(it["ts"])
+    body = absolutize(it["body"])
+    url = it["html_url"]
+    out = [f"\n<!-- gh-id: {it['id']} -->"]
+    if it["kind"] == "review":
+        out.append(f"### {it['user']} — {it['state']} ([{ts}]({url}))")
+    else:
+        loc = it["path"] + (f":{it['line']}" if it["line"] else "")
+        if it.get("in_reply_to_id"):
+            out.append(f"#### ↳ {it['user']} ([{ts}]({url}))")
+        else:
+            out.append(f"### {it['user']} on [`{loc}`]({url}) ({ts})")
+    out.append("")
+    out.append(body)
+    return "\n".join(out) + "\n"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("pr", type=int, help="PR number")
+    ap.add_argument("--repo", default=None, help="owner/name (default: auto)")
+    ap.add_argument(
+        "--out",
+        default="doc/reviews",
+        help="directory for review-NNNN.md (default: doc/reviews)",
+    )
+    args = ap.parse_args()
+
+    repo = args.repo or gh_repo()
+    out_dir = pathlib.Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"review-{args.pr:04d}.md"
+
+    if not path.exists():
+        path.write_text(f"# PR #{args.pr} — {pr_title(args.pr)}\n")
+
+    hwm = high_water_mark(path)
+    new_items = [it for it in collect_items(repo, args.pr) if it["id"] > hwm]
+
+    if not new_items:
+        print(f"PR #{args.pr}: no new items (hwm={hwm})")
+        return 0
+
+    with path.open("a") as f:
+        for it in new_items:
+            f.write(render(it))
+
+    print(f"PR #{args.pr}: appended {len(new_items)} items -> {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
