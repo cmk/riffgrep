@@ -74,6 +74,15 @@ src/
   Never commit a red test suite. A pre-commit hook enforces this.
 - **No merge commits.** Always rebase onto main — never `git merge`. The
   history must be linear.
+- **CI-repair commits must be fixups.** If a commit on this branch broke
+  CI and the follow-up exists only to repair it, commit with
+  `git commit --fixup=<broken-sha>` instead of a standalone `fix:`.
+  Before pushing, run `scripts/autosquash.sh` (a thin wrapper over
+  `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main`) so the
+  fixups collapse into their targets. This keeps main's linear history
+  free of commits that temporarily broke the build. Review-round commits
+  (addressing reviewer feedback from an earlier push) remain standalone
+  so the audit trail survives.
 - **No unsafe code**: `unsafe_code = "forbid"` in Cargo.toml lints.
 - **Property-based testing is mandatory** for any module that parses,
   encodes, or transforms data. Use `proptest` (dev-dep).

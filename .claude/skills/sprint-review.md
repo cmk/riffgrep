@@ -12,7 +12,7 @@ description: >
 You are orchestrating a **local, pre-push** code review. This is Tier 1 of
 a two-tier system:
 
-- **Tier 1 (this skill):** Independent agent reviews `main...HEAD` locally.
+- **Tier 1 (this skill):** Independent agent reviews `origin/main...HEAD` locally.
   Gate before pushing.
 - **Tier 2 (GitHub):** After push, CI runs build/test/clippy/fmt. Claude
   Code Action and/or Copilot review the PR on GitHub.
@@ -21,6 +21,21 @@ Your job: gather inputs, launch the reviewer, place the output, then help
 the user push if the review passes.
 
 ---
+
+## Step 0: Autosquash any pending fixups
+
+Per CLAUDE.md, CI-repair commits are made as `--fixup`s and must be
+collapsed before review/push. Refresh the remote-tracking ref first so
+the check isn't against a stale base, then scan for fixups:
+
+```
+git fetch --quiet origin main
+git -c color.ui=never log --oneline origin/main..HEAD | grep -E '^[0-9a-f]+ fixup!' || true
+```
+
+If any fixups exist, run `scripts/autosquash.sh` to collapse them.
+Abort if the working tree is dirty (the script checks this). After
+autosquash, re-run the fixup check to confirm the branch is clean.
 
 ## Step 1: Identify the plan (optional)
 
@@ -38,15 +53,17 @@ in **code-only mode** (no plan-conformance section).
 
 ## Step 2: Collect the diff
 
-The review always targets the current branch against main:
+The review always targets the current branch against `origin/main`.
+Refresh the ref first so the base isn't stale:
 
 ```
-git diff main...HEAD
-git log main..HEAD --oneline
+git fetch --quiet origin main
+git diff origin/main...HEAD
+git log origin/main..HEAD --oneline
 ```
 
-If the branch has not diverged from main, abort with a message — there's
-nothing to review.
+If the branch has not diverged from `origin/main`, abort with a
+message — there's nothing to review.
 
 ## Step 3: Gather context
 
@@ -98,17 +115,17 @@ robot. Good review comments share these qualities:
 ~~~
 You are reviewing code on a local feature branch before it is pushed to
 GitHub. This is a pre-push quality gate — there is no PR yet. You are
-reviewing the diff between main and the branch HEAD.
+reviewing the diff between `origin/main` and the branch HEAD.
 
 You are an independent reviewer. You did not write this code and have no
 context beyond what is provided here. Review what you see, not what you
 assume.
 
-## Diff (main...HEAD)
+## Diff (origin/main...HEAD)
 
 {diff}
 
-## Commit log (main..HEAD)
+## Commit log (origin/main..HEAD)
 
 {commit log}
 
