@@ -70,7 +70,12 @@ Byte Range    Size   Type         Field             Notes
 [112:116]     4      ASCII        Take              e.g., "67  "
 [116:120]     4      ASCII        Track             e.g., "1   "
 [120:128]     8      ASCII        Item              e.g., "12345678"
-[128:256]     128    ASCII        Reserved          (padding / future use)
+[128:256]     128    uint8[128]   pq_code           CLAP embedding, PQ-encoded:
+                                                    128 subquantizers × u8
+                                                    centroid index.
+                                                    Zero-filled when file is
+                                                    not yet embedded.
+                                                    See doc/designs/embedding-human.md.
 ```
 
 **file_id semantics:**
