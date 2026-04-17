@@ -112,8 +112,10 @@ The coding agent makes atomic commits as it works. Each commit must pass
 
 Before pushing to GitHub, run `/sprint-review`. This spawns an independent
 reviewer agent that examines `git diff main...HEAD` and the commit log. The
-reviewer flags must-fix issues and follow-ups. The review is saved to
-`doc/reviews/review-YYYY-MM-DD-nn.md`.
+reviewer flags must-fix issues and follow-ups. The review is appended to
+`doc/reviews/review-NNNN.md`, where `NNNN` is the zero-padded PR number
+for the branch (use `0000` as a placeholder pre-PR and rename once the PR
+is created).
 
 If must-fix items exist, resolve them before pushing. If the review is
 clean, push and create a PR.
@@ -124,9 +126,17 @@ Once pushed, CI (`.github/workflows/ci.yml`) runs build, clippy, test, and
 fmt checks. Claude Code Action and/or GitHub Copilot perform a second-round
 review on the PR automatically.
 
+After GitHub review activity, run `/pull-reviews <N>` to fetch the PR's
+review bodies and inline comments and **append them chronologically to the
+same `doc/reviews/review-NNNN.md`** used by Tier 1. The skill is idempotent
+— it tracks a high-water mark via `<!-- gh-id: NNNNN -->` markers, so
+running it repeatedly only appends new comments. The result is one file
+per PR containing the full local + GitHub review history in order.
+
 The local review catches design issues and convention violations early.
 The GitHub review catches anything that slipped through and validates in
-the CI environment.
+the CI environment. Joining them into a single file per PR preserves the
+conversational flow and keeps the review record in one place.
 
 ## TDD workflow
 

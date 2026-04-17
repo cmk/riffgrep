@@ -52,7 +52,8 @@ nothing to review.
 
 Read these files and include them in the reviewer prompt:
 
-- `CLAUDE.md` — repo conventions
+- `CLAUDE.md` — repo conventions, workspace layout, TDD workflow, commit
+  style, feature-gate conventions
 - `doc/refs/review-calibration.md` — if it exists, include as few-shot
   examples. If absent, skip (the reviewer prompt has built-in guidance).
 
@@ -69,6 +70,26 @@ The prompt must be self-contained. Include:
 4. The plan text (if found), clearly labeled as optional context
 5. Calibration examples from `doc/refs/review-calibration.md` (if found)
 6. The review instructions (below)
+
+### Reviewer voice and calibration
+
+The reviewer should write like a thorough human PR reviewer, not a checklist
+robot. Good review comments share these qualities:
+
+- **Cite the contract, then the violation.** When the plan says X and the code
+  does Y, quote both. "The plan specifies `device = ["dep:tokio", ...]` as an
+  optional feature gate (T1), but `Cargo.toml` lists tokio as unconditional."
+
+- **Name the consequence.** Don't just say "this differs from the plan." Say
+  what breaks: "This means `driver-motu` links tokio/russh/mdns despite only
+  using HTTP+OSC, adding ~3s to clean builds."
+
+- **Distinguish severity.** Some findings block the merge, others are
+  improvement opportunities. Be explicit: "Must fix before merge" vs
+  "Consider for a follow-up."
+
+- **Don't pad.** If a section has no findings, one sentence: "All N planned
+  tests are present and correctly gated." Don't invent concerns to fill space.
 
 ### Reviewer prompt template
 
@@ -108,8 +129,9 @@ tested, and follows conventions. If the plan specifies verification criteria
 
 {doc/refs/review-calibration.md contents}
 
-Match this style: cite the source (doc, convention, or naming pattern),
-show how the code violates it, and name the consequence.
+Match this style: cite the contract (doc, plan, or naming), show how the
+code violates it, and name the consequence. When something is fine, one
+sentence is enough. Don't invent concerns to fill space.
 {END IF}
 
 ## Review instructions
@@ -121,16 +143,21 @@ sentence is enough — don't pad.
 ### Commit Hygiene
 
 - Does each commit leave the repo in a buildable, testable state?
-- Are commit messages conventional (feat/fix/test/doc/task prefix)?
+- Are commit messages conventional (feat/fix/test/refactor/doc/chore prefix)?
 - Are commits reasonably atomic, or are unrelated changes mixed?
 
 ### Code Quality
 
-- Does the code follow repo conventions (thiserror for errors, no unsafe,
+- Does the code follow repo conventions (thiserror in libs, no unsafe,
   lints via Cargo.toml)?
 - Are error messages specific enough to diagnose from a log line?
+  (e.g., "qu: tcp connect: {e}" is good; "operation failed" is not)
+- Is there unintended coupling between driver crates that should be
+  independent? (e.g., driver-qu importing types from driver-mpc)
 - Any dead code, redundant logic, or clippy-level issues?
-- Is there unintended coupling between modules?
+- Were any features, config options, or feature gates described in the
+  plan but absent from the implementation? This is the highest-value
+  check — plans often specify build configuration that gets lost.
 
 ### Test Coverage
 
@@ -138,15 +165,19 @@ sentence is enough — don't pad.
 
 - For any module that parses, encodes, or transforms data: are there
   property tests? If not, flag this as a gap.
-- Do fixture-dependent tests return early when fixtures are absent
-  (not `#[ignore]`, not panic)?
-- What edge cases do the tests miss? Be specific.
+- Do fixture-gated tests use `fixture_or_skip!` from
+  `studio_core::testing` (return early when fixture is absent, don't
+  panic, don't `#[ignore]`)?
+- What edge cases do the tests miss? Be specific — "what happens if the
+  TCP connection drops mid-NRPN" is useful; "more tests would be good"
+  is not.
 
 {IF plan exists:}
 ### Plan Conformance
 
-- Walk each task/chunk in the plan: was it implemented?
-- Walk each verification criterion: does a corresponding test exist?
+- Walk each task (T1, T2, ...) and each row in the Verification table:
+  was it implemented?
+- For each planned test, does a corresponding test exist in the diff?
 - Is there code in the diff that wasn't in the plan? Justified emergent
   requirement or undocumented scope creep?
 {END IF}
@@ -154,8 +185,9 @@ sentence is enough — don't pad.
 ### Risks
 
 - TODOs, stubs, or placeholder implementations?
-- Could any change break existing functionality?
-- Security: path traversal, command injection, unsanitized input?
+- Could any change break existing functionality in other crates?
+- Security: path traversal in file operations? Command injection in SSH
+  exec calls? Unsanitized input passed to shell commands?
 - New dependencies justified and maintained?
 
 ### Recommendations
@@ -177,13 +209,23 @@ and specific. Cite file paths and line numbers. Keep the total review under
 
 ## Step 5: Place the output
 
+Review files are organized by PR number: `doc/reviews/review-NNNN.md` where
+`NNNN` is the zero-padded PR number (e.g., `review-0017.md`). Each file
+accumulates all review rounds — local and GitHub — as dated sections.
+
 When the reviewer agent returns:
 
-1. **Save the review** to `doc/reviews/review-YYYY-MM-DD-nn.md` where `nn`
-   is an incrementing counter for that day (01, 02, ...). Include a header:
+1. **Determine the review file path.** If a PR already exists for this
+   branch, use its number. If not (pre-push), ask the user for the
+   expected PR number, or use `0000` as a placeholder and rename after
+   the PR is created.
+
+2. **Append** (do not overwrite) a dated section to
+   `doc/reviews/review-NNNN.md` (create `doc/reviews/` and the file if
+   they don't exist):
 
    ```markdown
-   # Review: <branch-name> (YYYY-MM-DD)
+   ## Local review (YYYY-MM-DD)
 
    **Branch:** <branch>
    **Commits:** <count> (main..<branch>)
@@ -194,14 +236,20 @@ When the reviewer agent returns:
    {reviewer output}
    ```
 
-2. **Print a summary** to the conversation: how many must-fix items, how
+   If the file is new, add a top-level header first:
+
+   ```markdown
+   # PR #<N> — <PR title or branch name>
+   ```
+
+3. **Print a summary** to the conversation: how many must-fix items, how
    many follow-ups, and the path to the review file. One paragraph max.
 
-3. **If zero must-fix items:**
+4. **If zero must-fix items:**
    Tell the user the branch is clear to push. Offer to push and create a
    PR (but don't do it without confirmation). Remind them that Tier 2
    (CI + GitHub review) will run automatically on the PR.
 
-4. **If must-fix items exist:**
+5. **If must-fix items exist:**
    Stop. Do not push. Do not offer to fix the issues. The user reads the
    review and decides what to do next.
