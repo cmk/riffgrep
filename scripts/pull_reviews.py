@@ -2,8 +2,14 @@
 """Fetch GitHub PR review bodies and inline comments and append them
 chronologically to `doc/reviews/review-NNNN.md`.
 
-Idempotent: tracks a high-water mark via `<!-- gh-id: N -->` markers in the
-target file and only writes items with an id greater than the existing max.
+Idempotent via set-membership on `<!-- gh-id: N -->` markers: any item
+whose id is already present in the target file is skipped. This avoids
+the trap of a single "high-water mark" — GitHub assigns review IDs and
+inline-comment IDs from different sequences, so a max-id across both
+would silently drop later items from the lower-numbered sequence.
+
+Paginated: both `/reviews` and `/comments` use `gh api --paginate` so
+PRs with more than one page of items are fetched fully.
 
 Requires: `gh` CLI authenticated for the current repo.
 
@@ -23,7 +29,24 @@ import sys
 
 
 def gh_api(path: str) -> list | dict:
-    return json.loads(subprocess.check_output(["gh", "api", path], text=True))
+    """Fetch a paginated `gh api` endpoint. With `--paginate --slurp`, list
+    endpoints return a list-of-pages which we flatten; scalar endpoints
+    return a single-element list which we unwrap."""
+    raw = json.loads(
+        subprocess.check_output(["gh", "api", "--paginate", "--slurp", path], text=True)
+    )
+    if not isinstance(raw, list):
+        return raw
+    if not raw:
+        return []
+    if all(isinstance(page, list) for page in raw):
+        flat: list = []
+        for page in raw:
+            flat.extend(page)
+        return flat
+    if len(raw) == 1 and isinstance(raw[0], dict):
+        return raw[0]
+    return raw
 
 
 def gh_repo() -> str:
@@ -44,11 +67,10 @@ def fmt_ts(t: str) -> str:
     return d.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def high_water_mark(path: pathlib.Path) -> int:
+def existing_ids(path: pathlib.Path) -> set[int]:
     if not path.exists():
-        return -1
-    hits = re.findall(r"<!-- gh-id: (\d+) -->", path.read_text())
-    return max((int(h) for h in hits), default=-1)
+        return set()
+    return {int(h) for h in re.findall(r"<!-- gh-id: (\d+) -->", path.read_text())}
 
 
 def absolutize(body: str) -> str:
@@ -130,11 +152,11 @@ def main() -> int:
     if not path.exists():
         path.write_text(f"# PR #{args.pr} — {pr_title(args.pr)}\n")
 
-    hwm = high_water_mark(path)
-    new_items = [it for it in collect_items(repo, args.pr) if it["id"] > hwm]
+    seen = existing_ids(path)
+    new_items = [it for it in collect_items(repo, args.pr) if it["id"] not in seen]
 
     if not new_items:
-        print(f"PR #{args.pr}: no new items (hwm={hwm})")
+        print(f"PR #{args.pr}: no new items ({len(seen)} already recorded)")
         return 0
 
     with path.open("a") as f:

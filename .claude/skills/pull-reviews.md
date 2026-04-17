@@ -32,14 +32,17 @@ scripts/pull_reviews.py <N>
 ```
 
 The script handles everything: fetches reviews and inline comments via
-`gh api`, merges them chronologically, enforces the high-water mark
-(`<!-- gh-id: -->` markers), hyperlinks headers to GitHub permalinks,
-absolute-ifies relative links in bodies, and creates `review-NNNN.md`
-with a `# PR #N — <title>` header if it doesn't exist.
+`gh api --paginate` (so PRs with >30 items aren't truncated), merges
+them chronologically, de-dupes via set membership on `<!-- gh-id: -->`
+markers, hyperlinks headers to GitHub permalinks, absolute-ifies
+relative links in bodies, and creates `review-NNNN.md` with a
+`# PR #N — <title>` header if it doesn't exist.
 
-The script is idempotent: running it twice on the same PR appends only
-items newer than the last `gh-id` already in the file. If there are no
-new items, it prints `no new items (hwm=…)` and exits 0.
+The script is idempotent: any item whose `gh-id` is already present in
+the file is skipped. Note: it is **not** safe to assume a single
+"high-water mark" — GitHub draws review IDs and inline-comment IDs from
+different sequences, so max-id across both would silently drop later
+items from the lower-numbered sequence. Set membership avoids this.
 
 ## Step 3: Report
 
@@ -84,7 +87,9 @@ Reply (has `in_reply_to_id`):
 ## Notes
 
 - **Do not commit the review file.** The user decides when to commit.
-- **Idempotent** via `<!-- gh-id: -->` markers. Safe to re-run.
+- **Idempotent** via set membership on `<!-- gh-id: -->` markers (not
+  max-id, which would be unsound across review/comment sequences).
+  Safe to re-run.
 - **Chronological, not grouped.** Comments appear in posted order; a
   reply follows its parent because GitHub assigns monotonically
   increasing ids within a PR. `in_reply_to_id` only controls the

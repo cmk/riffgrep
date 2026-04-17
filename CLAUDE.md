@@ -129,9 +129,10 @@ review on the PR automatically.
 After GitHub review activity, run `/pull-reviews <N>` to fetch the PR's
 review bodies and inline comments and **append them chronologically to the
 same `doc/reviews/review-NNNN.md`** used by Tier 1. The skill is idempotent
-— it tracks a high-water mark via `<!-- gh-id: NNNNN -->` markers, so
-running it repeatedly only appends new comments. The result is one file
-per PR containing the full local + GitHub review history in order.
+— it records `<!-- gh-id: NNNNN -->` markers for each appended item and
+skips any id already present, so running it repeatedly only appends new
+comments. The result is one file per PR containing the full local + GitHub
+review history in order.
 
 The local review catches design issues and convention violations early.
 The GitHub review catches anything that slipped through and validates in
