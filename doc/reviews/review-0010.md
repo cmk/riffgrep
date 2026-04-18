@@ -1,0 +1,160 @@
+# PR #10 — feat/embed-pipeline (Plan 1: Python CLAP + PQ codebook)
+
+## Local review (2026-04-17)
+
+**Branch:** feat/embed-pipeline
+**Commits:** 4 (origin/main..feat/embed-pipeline)
+**Reviewer:** Claude (sonnet, independent)
+
+---
+
+### Commit Hygiene
+
+All four commits use correct conventional prefixes (`test:`, `feat:`, `doc:`, `doc:`) with present-tense imperative subjects under 72 characters. They are reasonably atomic: documentation changes are split from implementation, and tests are a separate commit from the feature code. Since there are no Rust changes, `cargo test` remains unaffected by any commit. The Python-only additions don't break any existing gate.
+
+One minor issue: the `test:` commit (`b072501`) includes only tests, which presupposes the feature code from `b86e78a`. That ordering is backwards — `b86e78a` (`feat:`) comes before `b072501` (`test:`) in the log, which is correct, but the commit message says "Add Plan 1 property tests" after the feature commit. That's fine; linear order is respected.
+
+---
+
+### Code Quality
+
+**`embed_preprocess.py` — preprocess signature deviation from plan (Confidence: 85)**
+
+The plan specifies `target_sr: int = 48000` as a positional-keyword argument. The implementation uses `*` to force keyword-only: `preprocess(path, *, target_sr=..., window_seconds=...)`. This is a better Python convention, but it's a deliberate deviation from the plan signature. Not a bug — callers in `embed_encode.py` call `preprocess(row[1])` with no kwargs, so it works. Flagging only because the plan is explicit about the API surface.
+
+**`embed_encode.py` — tqdm bar accounting on preprocess failures**
+
+```python
+pbar.update(len(audios) + (len(batch) - len(audios)))
+```
+
+This simplifies to `pbar.update(len(batch))`. The expression is correct but needlessly opaque. The math is right; the readability is poor but not a bug.
+
+**`embed_train.py` `_fetch_training_vectors` — full table load before sampling (Confidence: 90)**
+
+`scripts/embed_train.py` lines around 810-833: the function executes `SELECT id, embedding FROM samples WHERE embedding IS NOT NULL AND ...` with no `LIMIT`, fetches all rows into memory, then samples `n_train` from them in Python. At 1.2M files × 2048 bytes per embedding BLOB = approximately 2.4 GB held in a Python list of tuples. SQLite will also hold intermediate read buffers. This is a real memory pressure issue on a machine that may already be under load during a training run.
+
+The plan's pseudocode used `ORDER BY random_seeded(?) LIMIT ?`, noting SQLite has no seeded random, and the implementation substitutes Python-side sampling as the workaround. The workaround is correct for reproducibility but the memory cost is not flagged anywhere in the implementation. At 100k embedded files (early library state) this is fine; at 1.2M it is not.
+
+**`embed_train.py` `train()` — FAISS centroid layout relies on undocumented behavior (Confidence: 85)**
+
+`scripts/embed_train.py` line ~850: `faiss.vector_to_array(pq.centroids)` is documented to return a flat numpy array from the FAISS internal C++ vector. The layout claim — that it is `(M, K, DSUB)` C-order, i.e., sub-quantizer outer — is structurally correct per FAISS source (it stores centroids as `[M * K, DSUB]` contiguously) but there is no runtime assertion that confirms it before serialization. The `centroids.size` check validates count but not order. If a future FAISS version reorders the layout (unlikely but possible), the bytes produced will pass all size checks and silently corrupt search results.
+
+The `test_codebook_rust_compat.py` `test_faiss_codebook_matches_layout` test calls `train()` and decodes the blob but only checks `np.isfinite(cb).all()` — it does not cross-check any specific centroid value against what FAISS placed at a known index. This means a layout transposition would not be caught by the test. Confidence 85 because FAISS is stable in practice, but the absence of a round-trip assertion is a gap given the "P1.1 Rust-compat" claim.
+
+**`embed_encode.py` — `conn` not opened with WAL mode (Confidence: 80)**
+
+`sqlite3.connect(args.db)` uses the default journal mode. For a long-running batch job writing embeddings for 1.2M files, WAL mode (`PRAGMA journal_mode=WAL`) would improve write throughput and allow concurrent reads. This is a performance concern, not a correctness bug, but on a 4TB library this matters operationally.
+
+**Version byte layout — Python/Rust agreement (verified correct)**
+
+`embed_train.py` `write_codebook` encodes the version as `new_version.to_bytes(8, "little", signed=False)`. The plan pseudocode had `version.to_bytes(8, 'little')` (omitting `signed`). The implementation correctly adds `signed=False`. The 8-byte LE encoding matches. No issue.
+
+**`embed_encode.py` — silent preprocess failures (Confidence: 80)**
+
+`encode_rows()` docstring says "Rows that fail preprocessing are skipped silently." The implementation logs nothing when `preprocess()` returns `None`. For a batch job over 1.2M files, silent skips accumulate invisibly. A debug-level count of skipped files per batch (even just a final summary) would be operationally important. `preprocess()` itself catches all exceptions (`except Exception: return None`) with no logging.
+
+---
+
+### Test Coverage
+
+**P1.1 — Rust round-trip gap (Confidence: 90)**
+
+The plan states P1.1 "invokes `cargo test -p riffgrep pq::tests::codebook_roundtrip` on a file fixture." The actual `test_codebook_rust_compat.py` does NOT invoke Rust at all. The two tests that run without the `requires_clap_model` gate (`test_codebook_layout_round_trips`, `test_rust_offset_formula_matches_flat_buffer`) only exercise Python-side serialization and a Python-reimplemented version of the Rust offset formula. They never call `pq::ProductQuantizer::from_bytes`. The commit message says "Rust-compat" but the cross-language round-trip is not tested.
+
+This is the most significant test gap. The claim in the commit and P1.1 description is not met: a layout bug in FAISS's centroid ordering that Python gets right but Rust reads with a different assumption would not be caught.
+
+**`requires_clap_model` marker — no automatic skip hook (Confidence: 85)**
+
+`pyproject.toml` registers the `requires_clap_model` marker, but there is no `pytest_configure` or `pytest_collection_modifyitems` hook in `conftest.py` that automatically skips tests carrying it. The `test_ranking_sanity.py` tests will skip cleanly because they all depend on the `ranking_env` fixture, which calls `pytest.skip()` when the env vars are absent. But `test_codebook_rust_compat.py:test_faiss_codebook_matches_layout` uses `@pytest.mark.requires_clap_model` as its only marker, then relies on `pytest.importorskip("faiss")` to skip if FAISS is absent. In an environment where FAISS is installed but the CLAP checkpoint is not, this test will run (it doesn't need a checkpoint), so the marker is misleading but not broken.
+
+**`hypothesis`/`proptest` for Python transforms — absent (Confidence: 85)**
+
+Per CLAUDE.md: "Property-based testing is mandatory for any module that parses, encodes, or transforms data." `embed_preprocess.py` and the serialization path in `embed_train.py::train()` are data-transform modules. All five tests are example-based with fixed inputs. No `hypothesis` strategies are present. The plan does not invoke `hypothesis` either, so this was an intentional choice — but the CLAUDE.md convention is not met for the Python side.
+
+**Edge cases missing from `embed_preprocess.py`:**
+- Zero-length file (empty audio)
+- Mono vs stereo (tested by `data.ndim == 2` but no test covers stereo input)
+- File shorter than 1 sample after trim (covered implicitly by `len(data) == 0` guard but no explicit test)
+- Non-WAV format fallback (soundfile exception path is silently `None`; no test)
+
+**P1.2 idempotence test correctness**
+
+`test_second_run_is_noop` correctly verifies zero writes on second call. The `_run` helper uses `_select_rows(conn, limit=None)` which returns zero rows when all are populated. The `encode_rows` call with an empty list returns 0. Pass.
+
+**P1.5 loop filtering**
+
+The `test_loop_rows_never_embedded` test uses `category='LOOP/BREAKS'` and `category='LOOP/DNB'`. These start with `LOOP` so they match the `NOT LIKE 'LOOP%'` SQL gate. The test correctly asserts `written == 3`. Pass.
+
+---
+
+### Plan Conformance
+
+| Task | Landed | Notes |
+|------|--------|-------|
+| 1. pyproject.toml | Yes | Missing `pytest-xdist>=3.0` from plan's dev deps |
+| 2. embed_preprocess.py | Yes | Signature uses `*` keyword-only vs plan's positional — acceptable |
+| 3. embed_encode.py | Yes | Matches plan algorithm |
+| 4. embed_train.py | Yes | Uses Python-side sampling instead of SQL `random_seeded` (documented in code) |
+| 5. P1.1 test | Partial | Python-only layout test; no actual Rust invocation |
+| 5. P1.2 test | Yes | |
+| 5. P1.3 test | Yes | Gated correctly |
+| 5. P1.4 test | Yes | |
+| 5. P1.5 test | Yes | |
+
+The plan explicitly defers BEXT `[128:256]` mirror to Plan 2. However, `doc/designs/embedding-human.md` and `doc/PICKER_SCHEMA.md` have been updated in this diff to describe the BEXT mirror as already designed and adopted (the schema doc now says `pq_code` instead of "Reserved"). This is documentation work only — no code writes to BEXT — but it represents a design pivot that was supposed to be Plan 2 work. The `Deferred` section of the plan still says "BEXT `[128:256]` mirror — Plan 2" while the design docs now present it as a done decision. This contradiction is acceptable (design docs are ahead of implementation) but reviewers should note the plan's deferred section is now stale.
+
+**`pytest-xdist` missing:** Plan task 1 specifies `dev = ["pytest>=8.0", "pytest-xdist>=3.0"]`. Pyproject has only `pytest>=8.0`. The tests don't use `pytest-xdist` features, so this is a minor conformance miss.
+
+**Out-of-plan additions:** The `doc/designs/embedding-human.md` BEXT schema section (64 lines added) was not in the plan's tasks. It's documentation only and consistent with the sprint's direction, but strictly it was a deferred item being pre-specified.
+
+---
+
+### Risks
+
+**Memory risk in `_fetch_training_vectors` at scale (Confidence: 90)**
+
+`scripts/embed_train.py` lines ~810-833. At 1.2M embedded rows × 2048 bytes = 2.46 GB of raw BLOB data loaded into a Python list before sampling. At 100k rows (early state) this is fine. This should be addressed before the library reaches full scale. A streaming approach using `SELECT id FROM samples ... ORDER BY RANDOM() LIMIT ?` with a fixed seed approximation, or SQLite's `RANDOM()` with a Python re-seed, would cap memory to `n_train * 2048` bytes.
+
+**CLAP model + checkpoint mismatch — no runtime validation (Confidence: 80)**
+
+`embed_encode.py` `_load_laion_clap` loads with `enable_fusion=False, amodel="HTSAT-base"`. The plan and design docs reference `music_audioset_epoch_15_esc_90.14.pt` as the target checkpoint. This checkpoint was trained with those parameters, so the pairing is correct. However, if a user points `LAION_CLAP_CHECKPOINT` at a fusion checkpoint or a different architecture, `load_ckpt` will either fail with a cryptic PyTorch error or silently load with shape mismatches that produce garbage embeddings without a clear error. No validation of the checkpoint filename or architecture metadata is performed.
+
+**Security — no path traversal guard on audio files (low severity)**
+
+`preprocess(row[1])` passes the DB-stored path directly to `soundfile.read()`. If an attacker can inject a path into the `samples` table (e.g., via a malicious DB file), they can cause the script to read arbitrary files. The risk is low in the operational context (the DB is the user's own index) but worth noting if the tooling is ever exposed to untrusted input.
+
+**Pickle/model loading:** `laion_clap` uses PyTorch `torch.load()` internally, which deserializes pickles. Loading a `.pt` checkpoint from an untrusted source is a known arbitrary-code-execution vector. The default path is `~/Library/Application Support/riffgrep/models/` (user-owned), so the risk is low in practice.
+
+---
+
+### Recommendations
+
+**Must fix before push:**
+
+1. **P1.1 Rust round-trip is not tested.** The plan says P1.1 "invokes `cargo test -p riffgrep pq::tests::codebook_roundtrip`." The test does not. Either: (a) add a subprocess call to `cargo test` with a known-value fixture blob, or (b) amend the plan's P1.1 description to accurately describe what the test actually proves (Python-side layout only), so the commit message "Rust-compat" is not misleading. Option (b) is acceptable if invoking Rust from Python tests is not practical, but the discrepancy between the plan and the implementation must be resolved.
+   - File: `scripts/tests/test_codebook_rust_compat.py`
+   - File: `doc/plans/plan-2026-04-17-01.md`
+
+2. **`requires_clap_model` marker has no skip hook.** Add a `pytest_collection_modifyitems` hook to `conftest.py` that auto-skips tests with this marker when `LAION_CLAP_CHECKPOINT` is absent. Without it, `test_faiss_codebook_matches_layout` coincidentally skips via `importorskip` but the marker's semantics are inconsistent.
+   - File: `scripts/tests/conftest.py`
+
+3. **`pytest-xdist` missing from pyproject.toml dev deps.** Plan task 1 specifies it. Add `"pytest-xdist>=3.0"` to `[project.optional-dependencies].dev`.
+   - File: `pyproject.toml`
+
+**Follow-up (future work):**
+
+4. **`_fetch_training_vectors` memory ceiling.** At full 1.2M library scale, loading all embedding BLOBs before sampling consumes ~2.5 GB. Stream row IDs first, sample in Python, then fetch only the sampled BLOBs in batches.
+   - File: `scripts/embed_train.py`
+
+5. **FAISS centroid layout — add a round-trip spot check.** Add a check that `_reference_decode(blob)[0, 0, :]` equals the result of calling the FAISS PQ's `decode` on a hand-crafted code `[0, 0, 0, ..., 0]` (all-zeros centroid indices). This would catch a layout transposition.
+   - File: `scripts/tests/test_codebook_rust_compat.py`
+
+6. **Silent preprocess failures.** Add a logged count of skipped files at the end of `encode_rows()`. A single `print(f"skipped {n_skipped} files (preprocess failed)")` in `encode_rows` is sufficient.
+   - File: `scripts/embed_encode.py`
+
+7. **Plan deferred section is stale.** The BEXT mirror design is now documented as adopted in `embedding-human.md` and `PICKER_SCHEMA.md`, but the plan's `Deferred` section still says "BEXT `[128:256]` mirror — Plan 2." Update the plan's deferred section or add a note that the design decision was made in Plan 1 and implementation is Plan 2.
+   - File: `doc/plans/plan-2026-04-17-01.md`
+
+8. **`hypothesis` property tests for `embed_preprocess.py` transforms.** CLAUDE.md mandates property-based testing for modules that transform data. Add tests for: invariant that output length == `n_samples` regardless of input length; invariant that peak amplitude after normalize is within tolerance of `_db_to_amp(PEAK_DB)`; invariant that all-silence input returns `None`.
+   - File: new `scripts/tests/test_preprocess_properties.py`
