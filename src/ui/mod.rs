@@ -423,7 +423,13 @@ impl App {
         // `set_status` needs below. Same reason the snapshot borrow
         // is taken *after* the status update.
         let raw: String = self.query.trim().to_string();
-        if raw.contains('@')
+        // Narrow to queries that *look like* a column filter — i.e.
+        // start with `@`. `parse_column_filters` accepts `@field=value`
+        // tokens anywhere in the query, but catching the leading-`@`
+        // case covers the common typo path and avoids false-positives
+        // on substrings like `at-replaced-with-@.wav` where the `@`
+        // is part of the path name itself.
+        if raw.starts_with('@')
             && self
                 .status_message
                 .as_deref()
@@ -2872,7 +2878,12 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
             let db = crate::engine::sqlite::Database::open(db_path)?;
             let rows = db.load_table_rows_for_paths(&paths)?;
             if rows.len() != sim_results.len() {
-                // Some paths didn't resolve — trim sims to match.
+                // Some paths from `similar()` didn't resolve to rows
+                // in `samples` — the DB was probably partially cleaned
+                // between index and query. Bail rather than silently
+                // pair up sims and rows that don't describe the same
+                // files; the caller falls back to normal browse mode
+                // with an error in the status bar.
                 anyhow::bail!(
                     "similarity result count ({}) differs from loaded row count ({})",
                     sim_results.len(),

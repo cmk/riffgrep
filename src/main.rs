@@ -51,15 +51,26 @@ enum Dispatch {
 ///
 /// Precedence rules (first match wins):
 /// 1. Any output-forcing flag or non-TTY stdout → `Headless`.
-/// 2. `--similar PATH` → `TuiSimilar(PATH)`.
-/// 3. Any non-empty search filter → `Headless`.
+/// 2. `--similar PATH` set → `TuiSimilar` (the query path lives on
+///    `opts.similar`; this variant is unit-shaped because it only
+///    routes — `run_tui` re-reads `opts.similar` for the path).
+/// 3. Any non-empty search filter, when `--similar` is NOT set
+///    → `Headless`.
 /// 4. Otherwise → `TuiBrowse`.
 ///
 /// Rule 1 subsumes `--no-tui`, `--verbose`, `--json`, `--count`,
 /// `--index`, `--db-stats`, any workflow flag (`--eval`/`--workflow`),
 /// and stdout-not-a-TTY. Rule 3 preserves the historical behavior
 /// where filter flags at a terminal go headless (e.g. `rfg --vendor
-/// Mars` prints paths instead of launching the TUI).
+/// Mars` prints paths instead of launching the TUI), but only reaches
+/// the filter check because rule 2 didn't match —
+/// `rfg --similar PATH --vendor Mars` routes to `TuiSimilar`, not
+/// `Headless`. Note that the vendor filter is NOT re-applied
+/// interactively inside the similarity TUI; the TUI search bar only
+/// substring-filters on path in similarity mode (see
+/// `App::filter_similarity_results`). That deliberate tension between
+/// "rule 2 wins over rule 3" and "filter is ignored inside the TUI"
+/// is documented on the relevant test case.
 fn dispatch(opts: &engine::cli::Opts, is_tty: bool) -> Dispatch {
     if opts.no_tui
         || opts.verbose
@@ -177,12 +188,23 @@ mod tests {
     }
 
     #[test]
-    fn similar_with_filter_at_tty_still_routes_to_similar() {
+    fn similar_with_filter_at_tty_still_routes_to_similar_but_filter_is_ignored() {
         // Precedence: --similar wins over --vendor. If both are set we
         // still launch the TUI in similarity mode rather than falling
-        // through to the filter-triggered headless path. This matches
-        // user intent — the filter can be applied interactively via
-        // the search bar after the similarity list is loaded.
+        // through to the filter-triggered headless path.
+        //
+        // Note: this test documents *dispatch precedence only*. Once
+        // inside the TUI, the similarity-mode search bar performs a
+        // substring match on path and does NOT honor column-style
+        // filters like `--vendor`. So `rfg --similar PATH --vendor
+        // Mars` opens the similarity TUI and the `--vendor Mars`
+        // portion is silently inert — the user would need to re-type
+        // "Mars" into the search bar to filter paths containing it.
+        // If that interactive gap becomes a footgun in practice, the
+        // fix is either (a) honor the flag by pre-populating the
+        // search-bar query with a substring derived from filters at
+        // launch, or (b) route filters-plus-similar to Headless — but
+        // (a) is the better UX.
         let opts = parse(&["--similar", "/path/foo.wav", "--vendor", "Mars"]);
         assert_eq!(dispatch(&opts, true), Dispatch::TuiSimilar);
     }
