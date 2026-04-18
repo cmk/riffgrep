@@ -92,3 +92,55 @@ def test_faiss_codebook_matches_layout() -> None:
     # Decode sanity: centroids are finite real numbers.
     cb = _reference_decode(blob)
     assert np.isfinite(cb).all()
+
+
+def test_faiss_decode_matches_python_reshape() -> None:
+    """T2 — cross-check that FAISS's own decoder agrees with the Python
+    `_reference_decode` layout on a hand-crafted code.
+
+    Decoding the all-zero code `[0, 0, 0, ..., 0]` in FAISS should
+    produce a 512-dim vector that is the concatenation of
+    `centroids[m][0]` for m in 0..M. If Python's (M, K, DSUB) reshape
+    doesn't match FAISS's internal (M, K, DSUB) memory order, the
+    per-subquantizer centroids returned by the two decoders won't line
+    up and this test catches the layout transposition — whereas
+    `test_faiss_codebook_matches_layout` only checks finiteness and
+    byte length and would pass under a silent transposition.
+    """
+    faiss = pytest.importorskip("faiss")
+    from embed_train import train
+
+    rng = np.random.default_rng(0)
+    vectors = rng.standard_normal((4096, 512)).astype(np.float32)
+
+    # Train a pq directly (without going through `train()`'s byte
+    # serialization) so we can ask FAISS to decode in its native form.
+    pq = faiss.ProductQuantizer(PQ_DSUB * PQ_M, PQ_M, 8)
+    pq.train(np.ascontiguousarray(vectors, dtype=np.float32))
+
+    # Serialize through our path and reconstruct via the reference decoder.
+    blob = train(vectors)
+    cb = _reference_decode(blob)
+
+    # Ask FAISS to decode the all-zero PQ code.
+    zero_code = np.zeros((1, PQ_M), dtype=np.uint8)
+    faiss_decoded = pq.decode(zero_code).reshape(PQ_DSUB * PQ_M)
+
+    # Expected: concatenation of `centroids[m][0]` across m.
+    python_decoded = np.concatenate([cb[m, 0] for m in range(PQ_M)])
+
+    # FAISS stores the same centroids we serialize, so these should
+    # agree exactly — not just "within tolerance". Any drift here
+    # indicates a (M, K, DSUB) / (K, M, DSUB) / other layout mismatch.
+    np.testing.assert_array_equal(
+        faiss_decoded,
+        python_decoded,
+        err_msg=(
+            "FAISS decode of all-zero code disagrees with the Python "
+            "`_reference_decode` at centroid-0-per-subquantizer. This "
+            "means the (M, K, DSUB) C-order reshape in _reference_decode "
+            "is not the actual layout FAISS uses; Rust's "
+            "`pq::ProductQuantizer::from_bytes` would misinterpret the "
+            "byte stream we serialize here."
+        ),
+    )
