@@ -942,6 +942,23 @@ mod tests {
         out
     }
 
+    /// Monotonic per-process counter for temp-file names. Combined with
+    /// `std::process::id()` it gives cross-process + in-process uniqueness
+    /// without depending on `SystemTime::now()` resolution (which is coarse
+    /// enough on some platforms to collide when proptests create many
+    /// files in rapid succession).
+    static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn temp_wav_path(suffix: &str) -> PathBuf {
+        let n = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "riffgrep_wf_{}_{}_{}.wav",
+            suffix,
+            std::process::id(),
+            n,
+        ))
+    }
+
     /// Write a temp WAV with an unpacked (all-zero) BEXT chunk and return its path.
     fn temp_unpacked_wav(suffix: &str) -> PathBuf {
         let bext = vec![0u8; BEXT_STANDARD_SIZE];
@@ -950,15 +967,7 @@ mod tests {
             (b"bext", &bext),
             (b"data", &[0u8; 256]),
         ]);
-        let path = std::env::temp_dir().join(format!(
-            "riffgrep_wf_{}_{}_{}.wav",
-            suffix,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        ));
+        let path = temp_wav_path(suffix);
         std::fs::write(&path, &riff).unwrap();
         path
     }
@@ -966,15 +975,7 @@ mod tests {
     /// Write a temp WAV with no BEXT chunk.
     fn temp_wav_no_bext(suffix: &str) -> PathBuf {
         let riff = build_riff(&[(b"fmt ", &[0u8; 16]), (b"data", &[0u8; 256])]);
-        let path = std::env::temp_dir().join(format!(
-            "riffgrep_wf_{}_{}_{}.wav",
-            suffix,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        ));
+        let path = temp_wav_path(suffix);
         std::fs::write(&path, &riff).unwrap();
         path
     }
@@ -1043,14 +1044,7 @@ mod tests {
         // A file that isn't a RIFF/WAVE container at all (e.g., AIFF bytes or
         // random data mislabeled as .wav). scan_chunks must reject it before
         // any write is attempted.
-        let path = std::env::temp_dir().join(format!(
-            "riffgrep_wf_notriff_{}_{}.wav",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        ));
+        let path = temp_wav_path("notriff");
         let bogus: Vec<u8> = b"FORM\x00\x00\x00\x10AIFF".to_vec();
         std::fs::write(&path, &bogus).unwrap();
         let original = std::fs::read(&path).unwrap();
