@@ -222,4 +222,53 @@ Fixed the docstring in 171ae50 rather than widening the strategy. The 0..10_000 
 <!-- gh-id: 3105041630 -->
 #### ↳ cmk ([2026-04-18 11:04 UTC](https://github.com/cmk/riffgrep/pull/16#discussion_r3105041630))
 
-Fixed in 171ae50 — replaced the two absolute `/Users/cmk/...` paths with repo-relative `src/engine/...` ones. Kept the line numbers since they still point to the correct context and rot is no worse than the commit SHA pinning; remove them if that policy changes.
+Fixed in 171ae50 — replaced the two absolute filesystem paths with repo-relative `src/engine/...` ones. Kept the line numbers since they still point to the correct context and rot is no worse than the commit SHA pinning; remove them if that policy changes.
+
+<!-- gh-id: 3105047423 -->
+### Copilot on [`src/engine/bext.rs:460`](https://github.com/cmk/riffgrep/pull/16#discussion_r3105047423) (2026-04-18 11:09 UTC)
+
+`PACKED_COMMENT_LEN` is documented as the “sole authoritative source”, but the packed comment parsing logic still hard-codes `buf[44..76]` (32 bytes). Either update the parser to use `PACKED_COMMENT_LEN` (and derive the slice end from it) or soften this doc comment so it doesn’t claim full authority while other code paths can drift.
+
+
+<!-- gh-id: 4134231444 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 11:09 UTC](https://github.com/cmk/riffgrep/pull/16#pullrequestreview-4134231444))
+
+## Pull request overview
+
+This PR prevents silent dropping of packed BEXT Description writes in the Lua workflow path by auto-activating the packed schema on previously-unpacked WAVs when any packed-field diffs are present, and it tightens safety/idempotence of packed-schema initialization.
+
+**Changes:**
+- Auto-activate packed schema in `write_metadata_changes` for unpacked files when packed fields differ; rescan chunk map after activation.
+- Centralize ASCII sanitization/truncation and enforce packed `comment` width at the Rust boundary; fix BPM formatting to avoid leading-space parse failures.
+- Update SoundMiner ETL to rescue existing plain-text BEXT Description into packed `comment`, and add workflow-layer tests/proptests for activation + round-trips.
+
+### Reviewed changes
+
+Copilot reviewed 4 out of 4 changed files in this pull request and generated 2 comments.
+
+| File | Description |
+| ---- | ----------- |
+| src/engine/workflow.rs | Adds packed-schema auto-activation, shared ASCII sanitization/truncation, BPM formatting fix, plus extensive unit + property tests. |
+| src/engine/bext.rs | Adds `PACKED_COMMENT_LEN` and reorders init writes so `file_id` is written last; adds idempotence test for partial prior state. |
+| scripts/etl_soundminer.lua | Rescues pre-activation plain-text Description into packed `comment`; clarifies UMID stamping behavior. |
+| doc/reviews/review-0016.md | Adds/updates local review artifact transcript for the PR. |
+
+
+
+
+
+<!-- gh-id: 3105047445 -->
+### Copilot on [`doc/reviews/review-0016.md:225`](https://github.com/cmk/riffgrep/pull/16#discussion_r3105047445) (2026-04-18 11:09 UTC)
+
+nit: This embedded reply text includes an absolute local path fragment (`/Users/cmk/...`). Even as an example, it leaks a local username; consider redacting to `/Users/<user>/...` (or keeping only repo-relative paths) to keep the review artifact portable and non-identifying.
+
+
+<!-- gh-id: 3105063956 -->
+#### ↳ cmk ([2026-04-18 11:24 UTC](https://github.com/cmk/riffgrep/pull/16#discussion_r3105063956))
+
+Fixed in-flight — the packed-comment parser at src/engine/bext.rs:318 now reads `buf[44..44 + PACKED_COMMENT_LEN]` so the length constant is the single source of truth in all three callers (parser, workflow writer, Lua setter). The `44` offset remains a literal because no other field shares it; adding a `PACKED_COMMENT_OFFSET` constant for one caller felt like over-engineering.
+
+<!-- gh-id: 3105064094 -->
+#### ↳ cmk ([2026-04-18 11:24 UTC](https://github.com/cmk/riffgrep/pull/16#discussion_r3105064094))
+
+Redacted — edited the original reply via `gh api PATCH` to drop the user-identifying absolute-path prefix (now reads 'absolute filesystem paths'), and the local mirror in review-0016.md is updated to match. No code change, just the comment text.
