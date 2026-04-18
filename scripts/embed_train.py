@@ -145,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
 
+    args.db = args.db.expanduser()
     if not args.db.exists():
         print(f"error: db not found: {args.db}", file=sys.stderr)
         return 2

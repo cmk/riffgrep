@@ -27,7 +27,6 @@ import numpy as np
 import pytest
 
 import embed_encode
-import embed_train
 
 pytestmark = pytest.mark.requires_clap_model
 

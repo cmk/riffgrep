@@ -123,11 +123,11 @@ def encode_rows(
         for row in batch:
             audio = preprocess(row[1])
             if audio is None:
-                if pbar:
-                    pbar.update(1)
                 continue
             audios.append((row, audio))
         if not audios:
+            if pbar:
+                pbar.update(len(batch))
             continue
 
         stacked = np.stack([a for _, a in audios])
@@ -149,7 +149,7 @@ def encode_rows(
             conn.commit()
         written += len(audios)
         if pbar:
-            pbar.update(len(audios) + (len(batch) - len(audios)))
+            pbar.update(len(batch))
 
     if pbar:
         pbar.close()
@@ -169,13 +169,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    args.db = args.db.expanduser()
     if not args.db.exists():
         print(f"error: db not found: {args.db}", file=sys.stderr)
         return 2
 
-    model_path = args.model or Path(
-        os.environ.get("LAION_CLAP_CHECKPOINT", str(DEFAULT_MODEL))
-    )
+    model_path = (
+        args.model
+        or Path(os.environ.get("LAION_CLAP_CHECKPOINT", str(DEFAULT_MODEL)))
+    ).expanduser()
     if not model_path.exists():
         print(
             f"error: CLAP checkpoint not found: {model_path}\n"
