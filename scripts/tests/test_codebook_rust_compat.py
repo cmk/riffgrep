@@ -21,7 +21,7 @@ by the Python path.
 When `faiss-cpu` is installed (dev dep), a second test trains a small
 codebook via `embed_train.train()` and asserts the blob length plus
 finite decoded centroids. A stricter centroid-value spot check is
-listed as a follow-up in `doc/reviews/review-0008.md`.
+listed as a follow-up in `doc/reviews/review-0010.md`.
 """
 
 from __future__ import annotations

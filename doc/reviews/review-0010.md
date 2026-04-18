@@ -159,6 +159,18 @@ The plan explicitly defers BEXT `[128:256]` mirror to Plan 2. However, `doc/desi
 8. **`hypothesis` property tests for `embed_preprocess.py` transforms.** CLAUDE.md mandates property-based testing for modules that transform data. Add tests for: invariant that output length == `n_samples` regardless of input length; invariant that peak amplitude after normalize is within tolerance of `_db_to_amp(PEAK_DB)`; invariant that all-silence input returns `None`.
    - File: new `scripts/tests/test_preprocess_properties.py`
 
+### Resolution (pre-push)
+
+All three must-fix items above were addressed before the initial push to PR #10:
+
+| # | Item | Fix commit |
+|---|------|------------|
+| 1 | P1.1 Rust round-trip claim | `7f91e9a` — plan description + test docstring now accurately describe what each side proves |
+| 2 | `requires_clap_model` skip hook | `443a751` — `pytest_collection_modifyitems` added to `conftest.py` |
+| 3 | `pytest-xdist` missing from dev deps | `c48d488` — added `"pytest-xdist>=3.0"` to `[project.optional-dependencies].dev` |
+
+Follow-ups 4–8 remain open and are tracked for a later sprint.
+
 <!-- gh-id: 3104265037 -->
 ### Copilot on [`scripts/embed_encode.py:152`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265037) (2026-04-18 02:01 UTC)
 
@@ -524,3 +536,69 @@ Fixed in c0e0a46 — added per-category enforcement (≥5 categories, ≥10 WAVs
 #### ↳ cmk ([2026-04-18 02:25 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104313391))
 
 Fixed in c0e0a46 — marker description now matches the conftest hook's actual semantics (checkpoint only; individual tests may add env-var gates at runtime).
+
+<!-- gh-id: 3104322910 -->
+### Copilot on [`scripts/tests/test_codebook_rust_compat.py:24`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104322910) (2026-04-18 02:30 UTC)
+
+The docstring references `doc/reviews/review-0008.md`, but that file doesn't exist in the repo (reviews jump from review-0007 to review-0010). Update the reference to the correct review doc (likely `doc/reviews/review-0010.md`) or remove the link so contributors can find the follow-up item.
+
+
+<!-- gh-id: 4133310353 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 02:30 UTC](https://github.com/cmk/riffgrep/pull/10#pullrequestreview-4133310353))
+
+## Pull request overview
+
+Implements Plan 1 of the embedding roadmap by adding a Python pipeline that (a) preprocesses audio for LAION-CLAP, (b) encodes/stores CLAP embeddings into SQLite `samples.embedding`, and (c) trains/serializes a FAISS PQ codebook into SQLite `metadata`, with a pytest suite and supporting docs/config so existing Rust similarity paths can operate once the DB is populated.
+
+**Changes:**
+- Add Python scripts for CLAP preprocessing/encoding and FAISS PQ codebook training + metadata installation.
+- Add pytest fixtures and tests for codebook byte layout, encode idempotence, LOOP skipping, embedding blob invariants, and a gated real-model ranking sanity check.
+- Add Python project configuration (`pyproject.toml`), documentation updates for Plan 1 + embedding design/schema, and Python-related `.gitignore` entries.
+
+### Reviewed changes
+
+Copilot reviewed 14 out of 16 changed files in this pull request and generated 3 comments.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| scripts/embed_preprocess.py | Audio load/resample/trim/window/normalize preprocessing for CLAP inference. |
+| scripts/embed_encode.py | Batch CLAP inference, embedding serialization (LE f32), and DB updates for eligible rows. |
+| scripts/embed_train.py | Sample embeddings, train FAISS PQ, serialize codebook blob, and write codebook + version to `metadata`. |
+| scripts/tests/conftest.py | Minimal SQLite schema/fixtures + marker-based skip hook for CLAP-gated tests. |
+| scripts/tests/test_codebook_rust_compat.py | Validates codebook blob layout matches Rust indexing assumptions (plus optional FAISS training sanity). |
+| scripts/tests/test_encode_idempotent.py | Tests encode idempotence via `embedding IS NULL` gating. |
+| scripts/tests/test_embedding_norm.py | Verifies embedding blob size/endianness and near-unit-norm invariant. |
+| scripts/tests/test_loop_skipped.py | Ensures LOOP-category rows are excluded from embedding writes. |
+| scripts/tests/test_ranking_sanity.py | Gated real-model ranking sanity test using brute-force L2 over stored embeddings. |
+| scripts/tests/__init__.py | Marks `scripts/tests` as a package. |
+| pyproject.toml | Declares Python deps/dev-deps and pytest config/marker registration. |
+| doc/reviews/review-0010.md | Local review notes and follow-ups for this Plan 1 work. |
+| doc/plans/plan-2026-04-17-01.md | Plan/spec describing algorithms and test invariants for Plan 1. |
+| doc/designs/embedding-human.md | Embedding design documentation, including PQ + BEXT mirroring contract for Plan 2. |
+| doc/PICKER_SCHEMA.md | Documents BEXT `[128:256]` as `pq_code` layout for future implementation. |
+| .gitignore | Adds ignores for common Python cache/venv/pytest artifacts. |
+</details>
+
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3104322921 -->
+### Copilot on [`doc/reviews/review-0010.md:107`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104322921) (2026-04-18 02:30 UTC)
+
+This review doc says `pytest-xdist` is missing from `pyproject.toml` (and lists it as a must-fix), but `pyproject.toml` in this PR already includes `pytest-xdist>=3.0` under `dev`. Either update these sections to reflect the current state (e.g., mark the item as resolved with a commit id) or remove the now-stale finding to avoid misleading readers.
+
+
+<!-- gh-id: 3104322926 -->
+### Copilot on [`doc/reviews/review-0010.md:142`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104322926) (2026-04-18 02:30 UTC)
+
+The "Must fix before push" list still includes items that appear to be resolved in the current PR (e.g., adding the `requires_clap_model` skip hook and adding `pytest-xdist`). Consider annotating each must-fix with its resolution (commit hash) or moving resolved items into a separate "Resolved" subsection so this doc reads consistently end-to-end.
+
