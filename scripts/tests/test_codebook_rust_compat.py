@@ -1,19 +1,27 @@
-"""P1.1 — the codebook blob layout matches Rust's `pq::ProductQuantizer`.
+"""P1.1 (Python side) — the codebook blob layout matches Rust's
+`pq::ProductQuantizer::from_bytes` offset formula.
 
-The Rust side (`src/engine/pq.rs`) expects a flat little-endian f32 blob
-of M * K * DSUB floats (524288 bytes) with memory layout
-`centroids[(m * K + k) * DSUB .. +DSUB]`. That is a `(M, K, DSUB)`
-C-order numpy array, which is exactly what
-`faiss.vector_to_array(pq.centroids)` produces.
+This test does NOT invoke Rust. The Rust side of P1.1 —
+`from_bytes → to_bytes` symmetry — lives in `pq::tests::codebook_roundtrip`
+in `src/engine/pq.rs`. Together these pin both halves of the format
+contract:
 
-This test proves the Python-side layout by round-tripping a synthetic
-codebook with distinguishable centroid values and checking that a naive
-Rust-style reader (`chunks_exact(4) → f32::from_le_bytes → reshape(
-M, K, DSUB)`) returns the original array.
+- Rust: reading bytes as M * K * DSUB little-endian f32s and round-tripping
+  through `to_bytes` is the identity.
+- Python (here): the bytes we produce from our serialization path decode
+  correctly when indexed with Rust's `(m * K + k) * DSUB .. +DSUB` offset
+  formula. The decoder used here is a Python reimplementation of
+  `pq.rs:43-53` — kept tiny and inspectable so drift is easy to spot.
 
-When a real FAISS codebook is present (dev dep installed), a second test
-asserts that `embed_train.train(vectors)` produces a blob of exactly
-CODEBOOK_BYTES with the same layout semantics.
+The linkage is by inspection: `_reference_decode` below is a direct
+transcription of Rust's `from_bytes`. If that assumption is ever in
+doubt, add a Rust integration test that reads a fixture file written
+by the Python path.
+
+When `faiss-cpu` is installed (dev dep), a second test trains a small
+codebook via `embed_train.train()` and asserts the blob length plus
+finite decoded centroids. A stricter centroid-value spot check is
+listed as a follow-up in `doc/reviews/review-0008.md`.
 """
 
 from __future__ import annotations
