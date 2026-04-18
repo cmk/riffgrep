@@ -5,9 +5,10 @@ fixed-window numpy float32 array suitable for LAION-CLAP inference.
 
 The preprocessing pipeline is intentionally conservative:
 
-1. Load via soundfile (falls back to librosa's audioread for non-PCM).
+1. Load via soundfile. Unreadable files return `None`; there is no
+   fallback decoder in this sprint (librosa is used only for resampling).
 2. Mono mixdown (mean across channels).
-3. Resample to 48 kHz if needed.
+3. Resample to 48 kHz via librosa if needed.
 4. Trim leading and trailing samples below -60 dBFS.
 5. Window to `window_seconds` (pad with zeros if shorter, center-truncate
    if longer).

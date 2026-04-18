@@ -1,9 +1,13 @@
 """P1.3 — hand-labeled ranking sanity check.
 
 Gated on `@pytest.mark.requires_clap_model` — skipped by default so the
-test suite doesn't require a ~600MB checkpoint download. When the marker
-env is set, runs the real CLAP pipeline on a labeled fixture dir and
-asserts ≥8 of top-10 results share the query's category label.
+test suite doesn't require a ~600MB checkpoint download. When the
+checkpoint + fixture env vars are set, runs `embed_encode` with the
+real CLAP encoder on a labeled fixture dir, then computes pairwise L2
+rankings in Python over the stored full-precision embeddings. This
+sprint does NOT invoke PQ training or the `rfg --similar` CLI — that
+coverage is Plan 3's integration gate. Assertion: ≥80% of queries have
+≥8/10 top neighbors matching the query's category label.
 
 Fixture expectations (set these before running):
 
