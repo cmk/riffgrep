@@ -18,7 +18,9 @@ transcription of Rust's `from_bytes`. If that assumption is ever in
 doubt, add a Rust integration test that reads a fixture file written
 by the Python path.
 
-When `faiss-cpu` is installed (dev dep), a second test trains a small
+When `faiss-cpu` is importable (declared in `pyproject.toml` under
+`[project].dependencies`; `importorskip` guards against environments
+where the native wheel is unavailable), a second test trains a small
 codebook via `embed_train.train()` and asserts the blob length plus
 finite decoded centroids. A stricter centroid-value spot check is
 listed as a follow-up in `doc/reviews/review-0010.md`.

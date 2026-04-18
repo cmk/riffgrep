@@ -142,10 +142,17 @@ def write_codebook(conn: sqlite3.Connection, blob: bytes) -> int:
     return new_version
 
 
+def _positive_int(s: str) -> int:
+    v = int(s)
+    if v < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {v}")
+    return v
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
-    parser.add_argument("--n-train", type=int, default=10_000)
+    parser.add_argument("--n-train", type=_positive_int, default=10_000)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
 
