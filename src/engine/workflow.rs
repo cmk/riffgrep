@@ -20,6 +20,23 @@ fn lua_err(e: mlua::Error) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
+/// Sanitize a free-form string for storage in a fixed-width BEXT packed
+/// ASCII field and truncate to `max_bytes`.
+///
+/// Non-ASCII characters become `'?'` so we never split a multi-byte
+/// codepoint at the field boundary. After sanitization the string is pure
+/// ASCII, so byte-length equals char-count and truncation is boundary-safe.
+///
+/// Used by packed-field setters (e.g. `sample:set_comment`) and by the
+/// writer's `write_ascii` helper, so Lua scripts never have to know or
+/// enforce the field width.
+fn sanitize_ascii_field(val: &str, max_bytes: usize) -> String {
+    val.chars()
+        .map(|c| if c.is_ascii() { c } else { '?' })
+        .take(max_bytes)
+        .collect()
+}
+
 /// A loaded Lua script ready to execute against metadata.
 #[derive(Debug, Clone, Default)]
 pub struct WorkflowScript {
@@ -119,7 +136,11 @@ impl LuaUserData for SampleUserData {
             Ok(())
         });
         methods.add_method_mut("set_comment", |_, this, val: String| {
-            this.meta.comment = val;
+            // Truncate + ASCII-sanitize at the Rust boundary so Lua scripts
+            // don't have to know the 32-byte field width. Subsequent reads
+            // via `sample:comment()` return the truncated value, so the
+            // diff display matches what will actually land on disk.
+            this.meta.comment = sanitize_ascii_field(&val, bext::PACKED_COMMENT_LEN);
             Ok(())
         });
         methods.add_method_mut("set_bpm", |_, this, val: Option<u16>| {
@@ -459,17 +480,13 @@ pub fn write_metadata_changes(
     }
 
     // Helper: write a fixed-width ASCII field, right-padded with zeros.
-    // Non-ASCII characters are replaced with '?' to avoid writing invalid
-    // UTF-8 or splitting multi-byte codepoints at field boundaries.
+    // Delegates to `sanitize_ascii_field` so the truncation + sanitization
+    // policy is shared with Lua setters like `set_comment`.
     let write_ascii = |offset: usize, len: usize, val: &str| -> anyhow::Result<()> {
         let mut buf = vec![0u8; len];
-        let sanitized: String = val
-            .chars()
-            .map(|c| if c.is_ascii() { c } else { '?' })
-            .collect();
+        let sanitized = sanitize_ascii_field(val, len);
         let bytes = sanitized.as_bytes();
-        let copy_len = bytes.len().min(len);
-        buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+        buf[..bytes.len()].copy_from_slice(bytes);
         bext::write_bext_field(path, &map, offset, &buf)?;
         Ok(())
     };
@@ -486,7 +503,7 @@ pub fn write_metadata_changes(
     // (either `before.file_id != 0` already, or activation above succeeded).
     if packed_diffs {
         if before.comment != after.comment {
-            write_ascii(44, 32, &after.comment)?;
+            write_ascii(44, bext::PACKED_COMMENT_LEN, &after.comment)?;
         }
         if before.rating != after.rating {
             write_ascii(76, 4, &after.rating)?;
@@ -607,6 +624,35 @@ mod tests {
         assert_eq!(result.category, "SFX");
         // Other fields unchanged.
         assert_eq!(result.vendor, "Mars");
+    }
+
+    #[test]
+    fn lua_set_comment_truncates_to_field_width() {
+        // Lua passes 50 ASCII chars; setter must truncate to PACKED_COMMENT_LEN (32).
+        let long = "X".repeat(50);
+        let script = WorkflowScript {
+            source: format!("sample:set_comment('{long}')"),
+        };
+        let result = run_lua_script(&script, sample_meta(), false, false).unwrap();
+        assert_eq!(result.comment.len(), bext::PACKED_COMMENT_LEN);
+        assert_eq!(result.comment, "X".repeat(bext::PACKED_COMMENT_LEN));
+    }
+
+    #[test]
+    fn lua_set_comment_sanitizes_non_ascii() {
+        // Multi-byte UTF-8 must be replaced with '?' so the on-disk ASCII
+        // field never contains a split codepoint. Also guards against a
+        // naive byte-truncation slicing a multi-byte char.
+        let script = WorkflowScript {
+            source: "sample:set_comment('caf\\xc3\\xa9 résumé 日本')".to_string(),
+        };
+        let result = run_lua_script(&script, sample_meta(), false, false).unwrap();
+        assert!(
+            result.comment.is_ascii(),
+            "comment must be ASCII after sanitize"
+        );
+        assert!(result.comment.contains("caf"));
+        assert!(result.comment.contains('?'));
     }
 
     #[test]
@@ -1167,6 +1213,23 @@ mod tests {
                     .trim_end()
                     .to_string();
                 prop_assert_eq!(post.category, expected);
+            }
+
+            /// `sanitize_ascii_field` never exceeds `max_bytes`, always
+            /// returns pure ASCII, and is idempotent when the input is
+            /// already short enough. Invariants for the shared helper
+            /// backing both `set_comment` and the writer.
+            #[test]
+            fn sanitize_ascii_field_bounded_and_ascii(
+                raw in any::<String>(),
+                max in 0usize..64,
+            ) {
+                let out = sanitize_ascii_field(&raw, max);
+                prop_assert!(out.len() <= max);
+                prop_assert!(out.is_ascii());
+                // Idempotent when the sanitized form already fits.
+                let out2 = sanitize_ascii_field(&out, max);
+                prop_assert_eq!(out, out2);
             }
         }
     }
