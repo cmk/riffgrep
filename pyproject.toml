@@ -2,20 +2,42 @@
 name = "riffgrep-scripts"
 version = "0.1.0"
 description = "Python helpers for riffgrep: CLAP embedding encoding and FAISS PQ codebook training."
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
+
+# Core: the minimum needed to import any script in `scripts/` and run
+# the default test suite (which mocks CLAP + FAISS). Heavy inference
+# deps live in opt-in extras — see below.
 dependencies = [
-    "laion-clap>=1.1.6",
-    "faiss-cpu>=1.8.0",
-    "librosa>=0.10.0",
     "numpy>=1.24",
-    "soundfile>=0.12",
-    "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.0",
+]
+# Real CLAP encoding pipeline for `scripts/embed_encode.py`.
+# Heavy: pulls torch + numba + llvmlite. llvmlite lacks prebuilt wheels
+# for some platform/Python combos (notably recent Python on macOS x86_64)
+# and falls back to a source build that needs `cmake` + LLVM. Install
+# only when actually running embed_encode.py.
+encode = [
+    "laion-clap>=1.1.6",
+    "librosa>=0.10.0",
+    "soundfile>=0.12",
+    "tqdm>=4.66",
+]
+# Real PQ codebook training for `scripts/embed_train.py`. faiss-cpu
+# wheel coverage varies by platform; on macOS x86_64 it occasionally
+# requires a build. Install only when running embed_train.py.
+train = [
+    "faiss-cpu>=1.8.0",
+]
+# Convenience umbrella for a full inference-capable install:
+#   uv sync --extra ml --extra dev
+ml = [
+    "riffgrep-scripts[encode]",
+    "riffgrep-scripts[train]",
 ]
 
 [tool.pytest.ini_options]
