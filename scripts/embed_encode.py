@@ -110,10 +110,15 @@ def encode_rows(
     dry_run: bool = False,
     progress: bool = True,
 ) -> int:
-    """Encode `rows` and UPDATE `samples.embedding`. Returns count written.
+    """Encode `rows` and UPDATE `samples.embedding`.
 
-    Rows that fail preprocessing are skipped silently. On a commit
-    boundary (once per batch), the transaction is flushed.
+    Returns the number of embeddings actually committed to the DB. The
+    count is always 0 when `dry_run=True`, and can be less than the
+    number of rows encoded when a concurrent writer has already populated
+    an embedding between the SELECT and the UPDATE — the write guards on
+    `embedding IS NULL` so it is idempotent under that race.
+
+    Rows that fail preprocessing are skipped silently.
     """
     rows = list(rows)
     if progress:
@@ -148,7 +153,6 @@ def encode_rows(
             )
 
         if not dry_run:
-            updates = []
             for i, (row, _) in enumerate(audios):
                 blob = embeddings[i].astype("<f4", copy=False).tobytes()
                 if len(blob) != EMBED_BYTES:
@@ -156,12 +160,14 @@ def encode_rows(
                         f"serialized embedding for row {row[0]} is "
                         f"{len(blob)} bytes, expected {EMBED_BYTES}"
                     )
-                updates.append((blob, row[0]))
-            conn.executemany(
-                "UPDATE samples SET embedding = ? WHERE id = ?", updates
-            )
+                cur = conn.execute(
+                    "UPDATE samples SET embedding = ? "
+                    "WHERE id = ? AND embedding IS NULL",
+                    (blob, row[0]),
+                )
+                if cur.rowcount == 1:
+                    written += 1
             conn.commit()
-        written += len(audios)
         if pbar:
             pbar.update(len(batch))
 
@@ -211,7 +217,10 @@ def main(argv: list[str] | None = None) -> int:
         written = encode_rows(
             conn, rows, encoder, batch_size=args.batch_size, dry_run=args.dry_run
         )
-        print(f"wrote {written} embeddings")
+        if args.dry_run:
+            print(f"dry run — skipped DB writes for {len(rows)} candidate rows")
+        else:
+            print(f"wrote {written} embeddings (of {len(rows)} candidates)")
     finally:
         conn.close()
     return 0

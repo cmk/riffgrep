@@ -709,3 +709,62 @@ Fixed in fd376f0 — `EMBED_BYTES` is now used in a serialization invariant chec
 #### ↳ cmk ([2026-04-18 02:43 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104338710))
 
 Fixed in fd376f0 — `--batch-size` uses the same `_positive_int` type, and `_chunks` guards `n >= 1` for library callers.
+
+<!-- gh-id: 4133332812 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 02:47 UTC](https://github.com/cmk/riffgrep/pull/10#pullrequestreview-4133332812))
+
+## Pull request overview
+
+Implements Plan 1 of the embedding roadmap by adding a Python pipeline to (1) preprocess audio, (2) encode/store LAION-CLAP embeddings into `samples.embedding`, and (3) train/store a Rust-compatible FAISS PQ codebook into SQLite `metadata`, plus pytest coverage and supporting docs/config so existing Rust similarity search can use the populated DB.
+
+**Changes:**
+- Add Python scripts: audio preprocessing, embedding encoding into SQLite, and FAISS PQ codebook training/versioned install.
+- Add `scripts/tests/` pytest suite (with CLAP-gated integration test) validating layout/idempotence/LOOP skipping/embedding invariants.
+- Add Python packaging/test config (`pyproject.toml`), docs updates (plan + embedding design + schema), and Python-related `.gitignore` entries.
+
+### Reviewed changes
+
+Copilot reviewed 14 out of 16 changed files in this pull request and generated 2 comments.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| scripts/embed_preprocess.py | Audio load/resample/trim/window/normalize preprocessing for CLAP inference. |
+| scripts/embed_encode.py | Batch CLAP inference, LE-f32 serialization, and DB updates for eligible rows (skipping LOOP). |
+| scripts/embed_train.py | Sampling + FAISS PQ training, Rust-compatible centroid blob serialization, and atomic metadata writes/version bump. |
+| scripts/tests/conftest.py | Shared fixtures: minimal SQLite schema, insert helper, and CLAP-checkpoint marker skip hook. |
+| scripts/tests/test_codebook_rust_compat.py | Verifies codebook blob layout matches Rust indexing expectations; optional FAISS training sanity. |
+| scripts/tests/test_encode_idempotent.py | Ensures second encode pass is a no-op via `embedding IS NULL` gating. |
+| scripts/tests/test_embedding_norm.py | Validates stored embedding blob length/endianness and near-unit-norm invariant. |
+| scripts/tests/test_loop_skipped.py | Ensures LOOP-category rows do not receive embeddings in this plan. |
+| scripts/tests/test_ranking_sanity.py | Gated real-model ranking sanity check using brute-force L2 over stored embeddings. |
+| scripts/tests/__init__.py | Marks `scripts/tests` as a package. |
+| pyproject.toml | Declares Python deps/dev-deps and pytest configuration/markers for scripts tests. |
+| doc/plans/plan-2026-04-17-01.md | Plan/spec for Plan 1 pipeline, algorithms, and test invariants. |
+| doc/designs/embedding-human.md | Embedding design update including PQ+BEXT mirroring contract and rationale. |
+| doc/PICKER_SCHEMA.md | Documents BEXT `[128:256]` reserved region as `pq_code` layout. |
+| doc/reviews/review-0010.md | Local review log with resolutions and tracked follow-ups. |
+| .gitignore | Adds ignores for common Python cache/venv/pytest artifacts. |
+</details>
+
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3104344179 -->
+### Copilot on [`scripts/embed_encode.py:163`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104344179) (2026-04-18 02:47 UTC)
+
+`encode_rows()` selects only rows with `embedding IS NULL`, but the UPDATE statement writes unconditionally (`WHERE id = ?`). If two encoder runs overlap (or another process backfills embeddings), this can overwrite an already-populated embedding and break the intended idempotence gate. Consider updating with `WHERE id = ? AND embedding IS NULL` (and treating a 0-row update as a skip) to make the write path safe under concurrency/retries.
+
+<!-- gh-id: 3104344185 -->
+### Copilot on [`scripts/embed_encode.py:214`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104344185) (2026-04-18 02:47 UTC)
+
+When `--dry-run` is enabled, `encode_rows()` still returns a non-zero count (it increments `written` even though no UPDATEs run), and this CLI path prints `wrote {written} embeddings`. That’s misleading for dry runs and also conflicts with the `encode_rows()` docstring (“Returns count written”). Consider tracking separate `encoded` vs `written` counts (or returning 0 for dry-run) and adjusting the printed message based on `args.dry_run`.
+
