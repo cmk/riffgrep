@@ -24,6 +24,20 @@ dev = [
 # only when actually running embed_encode.py.
 encode = [
     "laion-clap>=1.1.6",
+    # laion-clap declares torchlibrosa but not torch itself — ML-package
+    # convention is to let the user pick CPU/CUDA/MPS. For this repo's
+    # personal-use case plain CPU torch is fine, so pull it explicitly.
+    # Upper bound: torch 2.7+ dropped macOS x86_64 wheels; 2.3-2.6 ships
+    # them. Revisit with the numba/llvmlite pin when upstream catches up.
+    "torch>=2.0,<2.3",
+    # laion-clap's clap_module/utils.py imports from torchvision.ops.misc.
+    # Keep the same 2.2.x range so the torch/torchvision ABI matches.
+    "torchvision>=0.15,<0.18",
+    # transformers 5.x requires torch>=2.4 internally, which breaks our
+    # torch 2.2.x pin needed for macOS x86_64 wheels. Cap at the 4.x
+    # line where laion-clap was developed (its setup says >=4.20.1
+    # with no upper bound). Revisit when the torch pin moves.
+    "transformers>=4.30,<5",
     "librosa>=0.10.0",
     "soundfile>=0.12",
     "tqdm>=4.66",
