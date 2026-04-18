@@ -60,13 +60,10 @@ pub enum InputMode {
 }
 
 /// Active marker bank for editing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Bank {
-    /// Bank A (top half of waveform).
-    A,
-    /// Bank B (bottom half of waveform).
-    B,
-}
+///
+/// Re-exported from [`crate::engine::marker_fsm::Bank`]; that is the
+/// canonical definition going forward.
+pub use crate::engine::marker_fsm::Bank;
 
 /// A playback segment derived from marker boundaries.
 ///
