@@ -278,3 +278,68 @@ This plan doc says `test_ranking_sanity.py` "runs encode + train + query", but t
 ### Copilot on [`scripts/embed_encode.py:174`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265148) (2026-04-18 02:01 UTC)
 
 `--db` is parsed as a `Path` but `~` is not expanded for user-provided values, so `--db ~/...` will fail the `exists()` check even when the file exists. Consider normalizing with `.expanduser()` (and optionally `.resolve()`) after parsing.
+
+<!-- gh-id: 3104278056 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278056))
+
+Fixed in fcf96c1 — removed the inner-loop `pbar.update(1)` and advance by `len(batch)` exactly once per batch, including the all-failed short-circuit path.
+
+<!-- gh-id: 3104278103 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278103))
+
+Fixed in d5c196a — docstring now describes actual behavior (soundfile load, `None` on failure, librosa used only for resampling). No decoder fallback in this sprint.
+
+<!-- gh-id: 3104278195 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278195))
+
+Deferred — valid but broader than this PR. Splitting `laion-clap`/`faiss-cpu` into optional extras touches the default `uv sync` path and wants its own round. Tracked as follow-up.
+
+<!-- gh-id: 3104278291 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278291))
+
+Fixed in fcf96c1 — removed the unused import.
+
+<!-- gh-id: 3104278450 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278450))
+
+Intentional. The BEXT mirror is Plan 2's implementation target; the design doc is the contract that unblocks it. Not flipping to "planned/future" because this repo's flow is design-first-then-implement, and `pq_code` at `[128:256]` is the locked decision for Plan 2.
+
+<!-- gh-id: 3104278548 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278548))
+
+Intentional — same rationale as the `embedding-human.md` thread. Schema doc describes the locked layout Plan 2 will implement; keeping the schema ahead of the code is the repo convention.
+
+<!-- gh-id: 3104278618 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278618))
+
+Accepted as follow-up — same finding appeared in the local review (`doc/reviews/review-0010.md`, follow-up 4). Fine at the current ~100K scale; a streaming ID-sample rewrite goes in before the library hits full 1.2M.
+
+<!-- gh-id: 3104278720 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278720))
+
+Fixed in fcf96c1 — `model_path` now `.expanduser()`s the CLI and env-var paths together.
+
+<!-- gh-id: 3104278777 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278777))
+
+Fixed in d5c196a — docstring now states brute-force L2 in Python over stored full-precision embeddings; no PQ training, no CLI invocation (those belong to Plan 3).
+
+<!-- gh-id: 3104278817 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278817))
+
+Fixed in fcf96c1 — dropped the `requires_clap_model` marker. `importorskip('faiss')` is the only gate this test needs.
+
+<!-- gh-id: 3104278854 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278854))
+
+Fixed in d5c196a — plan P1.3 description now matches what the test actually does, and calls out that PQ training + CLI coverage are Plan 3's integration gate.
+
+<!-- gh-id: 3104278909 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278909))
+
+Fixed in fcf96c1 — `args.db = args.db.expanduser()` immediately after argparse.
+
+<!-- gh-id: 3104278957 -->
+#### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278957))
+
+Fixed in fcf96c1 — `args.db = args.db.expanduser()` immediately after argparse.
