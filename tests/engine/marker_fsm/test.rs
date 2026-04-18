@@ -20,7 +20,7 @@ mod unit;
 use proptest::test_runner::Config as ProptestConfig;
 use proptest_state_machine::prop_state_machine;
 
-use prop::SyncedSutTest;
+use prop::{BankSyncPreservationTest, DisabledFixedPointTest, SyncedSutTest};
 
 /// Central knob for the property suite.
 #[derive(Debug, Clone)]
@@ -75,4 +75,10 @@ prop_state_machine! {
     #![proptest_config(default_config())]
     #[test]
     fn synced_sut_matches_reference(sequential 1..32 => SyncedSutTest);
+
+    #[test]
+    fn p6_bank_sync_preservation(sequential 1..32 => BankSyncPreservationTest);
+
+    #[test]
+    fn p7_markers_disabled_fixed_point(sequential 1..32 => DisabledFixedPointTest);
 }
