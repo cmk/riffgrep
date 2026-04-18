@@ -42,3 +42,25 @@ jobs:
 
       - name: Formatting
         run: cargo fmt --all -- --check
+
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install test dependencies
+        # Only the lightweight deps needed for the default suite. CLAP-
+        # and FAISS-gated tests skip cleanly via the `requires_clap_model`
+        # marker (see scripts/tests/conftest.py). Installing the full
+        # pyproject dep set (laion-clap, faiss-cpu, librosa) would add
+        # significant CI time and is not required to run the suite.
+        run: pip install pytest numpy soundfile
+
+      - name: Run tests
+        run: pytest scripts/tests/ -v
