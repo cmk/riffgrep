@@ -14,7 +14,7 @@
 * Use proptest combinators (e.g. prop_oneof) to build a library of action stream generators
   - Gens should obey the necessary constraints for testing the properties below 
   - Consider the desired shrinking behavior (proptest-state-machine may handle this well enough to skip it)
-  - Make size, complexity, & contraint specifics configurable whereever possible
+  - Make size, complexity, & constraint specifics configurable wherever possible
   - Place these gens in gen.rs files for each FSM (e.g. riffgrep/test/engine/gen.rs)
 * Implement a large and varied collection of properties:
   - Unreachable States: certain 'impossible' states are never reached regardless of input

@@ -749,11 +749,21 @@ impl Database {
 
         // Input-order preservation: build `path → index` so we can slot
         // each returned row into the right position regardless of
-        // SQLite's return order for `WHERE path IN (...)`.
+        // SQLite's return order for `WHERE path IN (...)`. Duplicate
+        // input paths would silently collapse — `WHERE path IN (...)`
+        // only returns one row per distinct path, and the HashMap only
+        // remembers one index per key. Bail rather than produce a
+        // shorter-than-requested Vec that callers would misread.
         let mut pos_for_path: std::collections::HashMap<&str, usize> =
             std::collections::HashMap::with_capacity(paths.len());
         for (i, p) in paths.iter().enumerate() {
-            pos_for_path.insert(*p, i);
+            if pos_for_path.insert(*p, i).is_some() {
+                anyhow::bail!(
+                    "load_table_rows_for_paths: duplicate path {:?} \
+                     (callers must deduplicate upstream)",
+                    p
+                );
+            }
         }
 
         let placeholders = vec!["?"; paths.len()].join(",");
@@ -2935,6 +2945,22 @@ mod tests {
         let err = db.load_table_rows_for_paths(&refs).unwrap_err();
         assert!(
             err.to_string().contains("exceeds the 500-path batch cap"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_load_table_rows_for_paths_rejects_duplicates() {
+        let db = Database::open_in_memory().unwrap();
+        seed_samples(&db, &["/test/a.wav", "/test/b.wav"]);
+
+        // Duplicate "/test/a.wav" in input — order-preservation would
+        // break because SQL returns one row per distinct path; bail.
+        let err = db
+            .load_table_rows_for_paths(&["/test/a.wav", "/test/b.wav", "/test/a.wav"])
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate path"),
             "unexpected error: {err}"
         );
     }
