@@ -12,6 +12,10 @@ __pycache__/
 .venv/
 uv.lock
 
+# External models / submodule-style clones (HuggingFace repos, reference
+# implementations, etc.). Anything under ext/ is not repo content.
+ext/
+
 # macOS
 .DS_Store
 .localized
