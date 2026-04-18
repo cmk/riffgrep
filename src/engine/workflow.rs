@@ -393,6 +393,12 @@ pub fn format_meta_diff(diff: &MetaDiff) -> String {
 /// Performs surgical overwrites at fixed BEXT offsets — no re-encoding of
 /// audio data is needed. Only writes fields that actually changed between
 /// `before` and `after`.
+///
+/// If the file is unpacked (`before.file_id == 0`) and any packed-Description
+/// field differs, the packed schema is activated first via
+/// [`bext::init_packed_and_write_markers`] with default (empty) markers.
+/// Files without a BEXT chunk cause that activation to surface a
+/// `NoBextChunk` error rather than silently dropping the packed writes.
 pub fn write_metadata_changes(
     path: &Path,
     before: &UnifiedMetadata,
@@ -406,8 +412,34 @@ pub fn write_metadata_changes(
 
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::with_capacity(4096, file);
-    let map = bext::scan_chunks(&mut reader)?;
+    let mut map = bext::scan_chunks(&mut reader)?;
     drop(reader);
+
+    // Packed Description field diffs. Kept in sync with the write block
+    // below — if more packed fields get wired up, add them here too.
+    let packed_diffs = before.comment != after.comment
+        || before.rating != after.rating
+        || before.bpm != after.bpm
+        || before.subcategory != after.subcategory
+        || before.category != after.category
+        || before.genre_id != after.genre_id
+        || before.sound_id != after.sound_id
+        || before.usage_id != after.usage_id
+        || before.key != after.key;
+
+    // On unpacked files with packed-field diffs, activate the schema first.
+    // The ETL scripts in scripts/etl_soundminer*.lua depend on this —
+    // their header comments document the assumed auto-activation contract.
+    if before.file_id == 0 && packed_diffs {
+        bext::init_packed_and_write_markers(path, &bext::MarkerConfig::default())?;
+        // Re-scan so subsequent writes see a fresh chunk map. Activation is
+        // in-place today (offsets unchanged), but the re-scan is cheap
+        // insurance against future schema evolution.
+        let file = std::fs::File::open(path)?;
+        let mut reader = std::io::BufReader::with_capacity(4096, file);
+        map = bext::scan_chunks(&mut reader)?;
+        drop(reader);
+    }
 
     // Helper: write a fixed-width ASCII field, right-padded with zeros.
     // Non-ASCII characters are replaced with '?' to avoid writing invalid
@@ -433,10 +465,9 @@ pub fn write_metadata_changes(
         write_ascii(288, 32, &after.library)?;
     }
 
-    // Packed Description fields — only valid when the file uses the packed
-    // schema (file_id != 0). Writing these offsets on an unpacked file would
-    // corrupt the plain-text Description block.
-    if before.file_id != 0 {
+    // Packed Description fields. By this point the file is guaranteed packed
+    // (either `before.file_id != 0` already, or activation above succeeded).
+    if packed_diffs {
         if before.comment != after.comment {
             write_ascii(44, 32, &after.comment)?;
         }
@@ -444,7 +475,9 @@ pub fn write_metadata_changes(
             write_ascii(76, 4, &after.rating)?;
         }
         if before.bpm != after.bpm {
-            let bpm_str = after.bpm.map(|v| format!("{v:>4}")).unwrap_or_default();
+            // Left-align so the reader (which trims only trailing whitespace)
+            // sees a digit-prefix it can parse.
+            let bpm_str = after.bpm.map(|v| format!("{v:<4}")).unwrap_or_default();
             write_ascii(80, 4, &bpm_str)?;
         }
         if before.subcategory != after.subcategory {
@@ -809,5 +842,191 @@ mod tests {
             "Lua sqlite string param failed: {}",
             result.unwrap_err()
         );
+    }
+
+    // --- write_metadata_changes: auto-activation path ---
+
+    /// Standard BWF v2 BEXT chunk size (from the BWF spec). Matches the
+    /// private `BEXT_STANDARD_SIZE` constant in `super::bext`.
+    const BEXT_STANDARD_SIZE: usize = 602;
+
+    /// Build a minimal RIFF/WAVE byte stream with the given chunks.
+    fn build_riff(chunks: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (id, payload) in chunks {
+            body.extend_from_slice(*id);
+            body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            body.extend_from_slice(payload);
+            if payload.len() % 2 != 0 {
+                body.push(0);
+            }
+        }
+        let mut out = Vec::with_capacity(body.len() + 12);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(4 + body.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// Write a temp WAV with an unpacked (all-zero) BEXT chunk and return its path.
+    fn temp_unpacked_wav(suffix: &str) -> PathBuf {
+        let bext = vec![0u8; BEXT_STANDARD_SIZE];
+        let riff = build_riff(&[
+            (b"fmt ", &[0u8; 16]),
+            (b"bext", &bext),
+            (b"data", &[0u8; 256]),
+        ]);
+        let path = std::env::temp_dir().join(format!(
+            "riffgrep_wf_{}_{}_{}.wav",
+            suffix,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::write(&path, &riff).unwrap();
+        path
+    }
+
+    /// Write a temp WAV with no BEXT chunk.
+    fn temp_wav_no_bext(suffix: &str) -> PathBuf {
+        let riff = build_riff(&[(b"fmt ", &[0u8; 16]), (b"data", &[0u8; 256])]);
+        let path = std::env::temp_dir().join(format!(
+            "riffgrep_wf_{}_{}_{}.wav",
+            suffix,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::write(&path, &riff).unwrap();
+        path
+    }
+
+    #[test]
+    fn write_activates_packed_schema_on_unpacked_wav() {
+        let path = temp_unpacked_wav("activate");
+
+        // Confirm the file reads as unpacked before the write.
+        let pre = crate::engine::read_metadata_riff(&path).unwrap();
+        assert_eq!(pre.file_id, 0, "fixture must start unpacked");
+
+        let before = UnifiedMetadata {
+            path: path.clone(),
+            ..Default::default()
+        };
+        let mut after = before.clone();
+        after.category = "LOOP".to_string();
+        after.key = "Cmin".to_string();
+        after.bpm = Some(128);
+
+        write_metadata_changes(&path, &before, &after, false).unwrap();
+
+        // Re-read: the file should now be packed, with the fields we wrote.
+        let post = crate::engine::read_metadata_riff(&path).unwrap();
+        assert_ne!(
+            post.file_id, 0,
+            "file should be packed after auto-activation"
+        );
+        assert_eq!(post.category, "LOOP");
+        assert_eq!(post.key, "Cmin");
+        assert_eq!(post.bpm, Some(128));
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn write_no_bext_chunk_errors_and_preserves_bytes() {
+        let path = temp_wav_no_bext("nobext");
+        let original = std::fs::read(&path).unwrap();
+
+        let before = UnifiedMetadata {
+            path: path.clone(),
+            ..Default::default()
+        };
+        let mut after = before.clone();
+        after.category = "LOOP".to_string();
+
+        let result = write_metadata_changes(&path, &before, &after, false);
+        assert!(
+            result.is_err(),
+            "packed-field write on no-BEXT file must error, not silently no-op"
+        );
+
+        let after_bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            original, after_bytes,
+            "file must be byte-identical when packed write is refused"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn write_invalid_riff_errors_and_preserves_bytes() {
+        // A file that isn't a RIFF/WAVE container at all (e.g., AIFF bytes or
+        // random data mislabeled as .wav). scan_chunks must reject it before
+        // any write is attempted.
+        let path = std::env::temp_dir().join(format!(
+            "riffgrep_wf_notriff_{}_{}.wav",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let bogus: Vec<u8> = b"FORM\x00\x00\x00\x10AIFF".to_vec();
+        std::fs::write(&path, &bogus).unwrap();
+        let original = std::fs::read(&path).unwrap();
+
+        let before = UnifiedMetadata {
+            path: path.clone(),
+            ..Default::default()
+        };
+        let mut after = before.clone();
+        after.category = "LOOP".to_string();
+
+        let result = write_metadata_changes(&path, &before, &after, false);
+        assert!(result.is_err(), "non-RIFF file must error");
+        assert_eq!(
+            original,
+            std::fs::read(&path).unwrap(),
+            "non-RIFF file must be byte-identical after refused write"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn write_idempotent_on_rerun_after_activation() {
+        // Second run on a now-packed file with the same `before` state produces
+        // a clean no-op (no changes) — confirming is_packed() gates work.
+        let path = temp_unpacked_wav("idempotent");
+
+        let before = UnifiedMetadata {
+            path: path.clone(),
+            ..Default::default()
+        };
+        let mut after = before.clone();
+        after.category = "LOOP".to_string();
+
+        write_metadata_changes(&path, &before, &after, false).unwrap();
+        let post_first = crate::engine::read_metadata_riff(&path).unwrap();
+        assert_ne!(post_first.file_id, 0);
+
+        // On a real workflow rerun, the new `before` reflects the now-packed
+        // state. Without --force, the function bails — the caller loop treats
+        // that as a normal skip (ETL scripts early-exit via is_packed()).
+        let before2 = post_first.clone();
+        let result = write_metadata_changes(&path, &before2, &before2, false);
+        assert!(
+            result.is_err(),
+            "re-run without --force on packed file must bail"
+        );
+
+        std::fs::remove_file(&path).unwrap();
     }
 }
