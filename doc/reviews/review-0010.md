@@ -158,3 +158,123 @@ The plan explicitly defers BEXT `[128:256]` mirror to Plan 2. However, `doc/desi
 
 8. **`hypothesis` property tests for `embed_preprocess.py` transforms.** CLAUDE.md mandates property-based testing for modules that transform data. Add tests for: invariant that output length == `n_samples` regardless of input length; invariant that peak amplitude after normalize is within tolerance of `_db_to_amp(PEAK_DB)`; invariant that all-silence input returns `None`.
    - File: new `scripts/tests/test_preprocess_properties.py`
+
+<!-- gh-id: 3104265037 -->
+### Copilot on [`scripts/embed_encode.py:152`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265037) (2026-04-18 02:01 UTC)
+
+Progress accounting is incorrect: skipped rows already call `pbar.update(1)` in the inner loop, but this update adds `len(batch)` again (via `len(audios) + (len(batch) - len(audios))`). That double-counts any preprocess failures and can push the progress bar past 100%. Update the bar exactly once per input row (either only here with `len(batch)` or only in the inner loop).
+
+
+<!-- gh-id: 3104265048 -->
+### Copilot on [`scripts/embed_preprocess.py:8`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265048) (2026-04-18 02:01 UTC)
+
+The module docstring says soundfile "falls back to librosa's audioread for non-PCM", but the implementation only uses `soundfile.read()` and returns `None` on failure (no fallback path). Either implement the documented fallback (e.g., try librosa.load on exception) or adjust the docstring to match actual behavior.
+
+
+<!-- gh-id: 3104265063 -->
+### Copilot on [`pyproject.toml:13`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265063) (2026-04-18 02:01 UTC)
+
+`laion-clap` and `faiss-cpu` are listed as unconditional runtime dependencies, but the PR description/test setup suggests the default developer workflow should run the test suite without heavy/fragile deps. Consider moving heavyweight/optional packages (at least `faiss-cpu`, possibly `laion-clap`) into optional extras (e.g., `clap`/`faiss`) so contributors on unsupported platforms can still install and run the lightweight tests.
+
+<!-- gh-id: 3104265071 -->
+### Copilot on [`scripts/tests/test_ranking_sanity.py:30`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265071) (2026-04-18 02:01 UTC)
+
+`embed_train` is imported but never used in this test. If this was intended to ensure the module is importable, a clearer assertion/comment would help; otherwise please remove the unused import to keep the test focused.
+
+
+<!-- gh-id: 3104265080 -->
+### Copilot on [`doc/designs/embedding-human.md:14`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265080) (2026-04-18 02:01 UTC)
+
+This doc now states that PQ codes are mirrored into BEXT `[128:256]` and used for `--no-db` similarity search, but this PR's implementation explicitly defers the BEXT mirror to Plan 2 and there is no code writing/reading `pq_code` yet. Please clarify that the BEXT mirror is a planned/future capability (or split this doc update into the Plan 2 PR) to avoid documenting behavior that doesn't exist.
+
+<!-- gh-id: 3104265085 -->
+### Copilot on [`doc/PICKER_SCHEMA.md:79`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265085) (2026-04-18 02:01 UTC)
+
+This schema change documents `pq_code` living in BEXT Description `[128:256]`, but Plan 1 code in this PR does not write/read BEXT at all (and the PR description says the BEXT mirror is Plan 2). Please mark this field as planned/future until the implementation lands, or defer the schema doc change to the Plan 2 PR to keep docs aligned with shipped behavior.
+
+<!-- gh-id: 3104265088 -->
+### Copilot on [`scripts/embed_train.py:72`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265088) (2026-04-18 02:01 UTC)
+
+`_fetch_training_vectors()` calls `.fetchall()` on `SELECT id, embedding ...` without a LIMIT, which loads *all* embeddings into Python memory before sampling. On a large library this is likely to be multi-GB of BLOB data and can OOM or stall due to massive I/O. Prefer sampling in SQL (deterministic pseudo-random order using `id` + `seed`, then `LIMIT n_train`) so only `n_train` embeddings are read, or use a streaming/reservoir sampler that doesn't materialize the full result set.
+
+
+<!-- gh-id: 3104265099 -->
+### Copilot on [`scripts/embed_encode.py:177`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265099) (2026-04-18 02:01 UTC)
+
+`model_path` is not normalized/expanded when provided via `--model` (argparse leaves `~` unexpanded). That makes `--model ~/...` fail even when the checkpoint exists. Consider applying `.expanduser()` to `args.model` / `model_path` (and similarly for the env-var path if you want to support `~` there too).
+
+
+<!-- gh-id: 3104265116 -->
+### Copilot on [`scripts/tests/test_ranking_sanity.py:7`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265116) (2026-04-18 02:01 UTC)
+
+The docstring claims this test "runs the real CLAP pipeline ..." and implies a full similar-search ranking, but the body only does brute-force L2 over the stored embeddings (no PQ training and no call into `rfg --similar`). Please update the docstring so it reflects what the test actually validates, to avoid misleading future debugging/calibration work.
+
+
+<!-- gh-id: 3104265123 -->
+### Copilot on [`scripts/tests/test_codebook_rust_compat.py:81`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265123) (2026-04-18 02:01 UTC)
+
+This FAISS-only test is marked `requires_clap_model`, but it doesn't require a CLAP checkpoint (it only `importorskip("faiss")` and trains on random vectors). With the current `pytest_collection_modifyitems` hook, it will be skipped unless `LAION_CLAP_CHECKPOINT` is set, reducing coverage unnecessarily. Consider using a separate marker (e.g., `requires_faiss`) or dropping the marker and relying solely on `importorskip`.
+
+
+<!-- gh-id: 4133231540 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 02:01 UTC](https://github.com/cmk/riffgrep/pull/10#pullrequestreview-4133231540))
+
+## Pull request overview
+
+Implements “Plan 1” of the embedding roadmap by adding a Python pipeline to (1) preprocess audio for LAION-CLAP, (2) encode and store 512-dim embeddings into `samples.embedding`, and (3) train/serialize a FAISS PQ codebook into the SQLite `metadata` table, plus a new pytest suite and accompanying docs.
+
+**Changes:**
+- Add Python scripts for audio preprocessing, CLAP embedding encoding into SQLite, and FAISS PQ codebook training/metadata installation.
+- Add pytest fixtures + property/integration tests (with CLAP/FAISS-gated tests) for idempotency, LOOP skipping, embedding blob invariants, and Rust/PQ layout compatibility.
+- Add/adjust documentation for the embedding plan and BEXT schema notes; add Python project config + ignore rules.
+
+### Reviewed changes
+
+Copilot reviewed 14 out of 16 changed files in this pull request and generated 13 comments.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| scripts/embed_preprocess.py | Audio loading/resampling/trimming/windowing/normalization used by embedding encode. |
+| scripts/embed_encode.py | Batch CLAP inference + embedding serialization and DB updates for eligible rows. |
+| scripts/embed_train.py | FAISS PQ training + Rust-compatible codebook serialization and metadata writes. |
+| scripts/tests/conftest.py | SQLite test DB fixtures + marker-based skipping logic. |
+| scripts/tests/test_codebook_rust_compat.py | Verifies Python-produced codebook byte layout matches Rust offset formula (+ optional FAISS training test). |
+| scripts/tests/test_encode_idempotent.py | Ensures encoding is idempotent via `embedding IS NULL` gating. |
+| scripts/tests/test_embedding_norm.py | Validates embedding blob size/endianness and near-unit-norm invariant. |
+| scripts/tests/test_loop_skipped.py | Ensures LOOP-category rows are excluded from encoding. |
+| scripts/tests/test_ranking_sanity.py | Optional real-model “ranking sanity” test over a labeled fixture corpus. |
+| scripts/tests/__init__.py | Test package marker file. |
+| pyproject.toml | Declares Python deps + pytest configuration/markers. |
+| doc/plans/plan-2026-04-17-01.md | Plan/spec for the Plan 1 pipeline and its tests. |
+| doc/designs/embedding-human.md | Updates embedding design doc (including BEXT/PQ mirror narrative). |
+| doc/PICKER_SCHEMA.md | Documents `[128:256]` as `pq_code` in the packed schema. |
+| .gitignore | Ignores common Python build/test artifacts. |
+</details>
+
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3104265133 -->
+### Copilot on [`doc/plans/plan-2026-04-17-01.md:170`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265133) (2026-04-18 02:01 UTC)
+
+This plan doc says `test_ranking_sanity.py` "runs encode + train + query", but the current test implementation only encodes embeddings and does a brute-force L2 ranking in Python (no PQ training, no call into the CLI). Please adjust the description so it matches what the test actually does, or update the test to perform the described steps.
+
+<!-- gh-id: 3104265140 -->
+### Copilot on [`scripts/embed_train.py:152`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265140) (2026-04-18 02:01 UTC)
+
+`--db` is parsed as a `Path` but `~` is not expanded for user-provided values, so `--db ~/...` will fail the `exists()` check even when the file exists. Consider normalizing with `.expanduser()` (and optionally `.resolve()`) after parsing.
+
+
+<!-- gh-id: 3104265148 -->
+### Copilot on [`scripts/embed_encode.py:174`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104265148) (2026-04-18 02:01 UTC)
+
+`--db` is parsed as a `Path` but `~` is not expanded for user-provided values, so `--db ~/...` will fail the `exists()` check even when the file exists. Consider normalizing with `.expanduser()` (and optionally `.resolve()`) after parsing.
