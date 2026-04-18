@@ -112,7 +112,11 @@ def _current_version(conn: sqlite3.Connection) -> int:
         return 0
     buf = row[0]
     if not isinstance(buf, (bytes, bytearray)) or len(buf) != 8:
-        return 0
+        raise RuntimeError(
+            f"metadata.pq_codebook_version is malformed "
+            f"(expected 8-byte LE uint, got {type(buf).__name__} "
+            f"len={len(buf) if hasattr(buf, '__len__') else 'n/a'})"
+        )
     return int.from_bytes(buf, "little", signed=False)
 
 
