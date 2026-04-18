@@ -1,4 +1,4 @@
-# PR #0000 — port-review-workflow (template-rust workflow import)
+# PR #11 — port-review-workflow (template-rust workflow import)
 
 ## Local review (2026-04-17)
 
