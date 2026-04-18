@@ -1,3 +1,34 @@
+## Decision (2026-04-18)
+
+**Committed** to refactoring to `rust-fsm` in the following order:
+
+1. **Markers** — first. See `doc/plans/plan-2026-04-18-02.md` for the
+   shipping sprint plan. Smallest scope, clearest invariants (enumerated
+   below), highest bug-density (7 fix commits across SPRINT7/11/12 plus
+   `3fa73fc`, `6d23741`, `46168e6`).
+2. **Playback** — second. Collapses the dual reverse paths documented in
+   `debt-playback.md`. Sprint plan to follow once markers ships.
+3. **TUI** — third. Largest surface (6392 LOC in `src/ui/mod.rs`); relies
+   on the patterns and proptest harness established by markers.
+
+**Workflows** is *not* on this roadmap — evidence gathered during planning
+showed it to be a linear pipeline (load → run → diff → write), not a
+stateful machine. The drift risk reviewers flagged in PR #16
+(`packed_fields_differ` duplicated enum) is a DRY issue, addressed
+independently.
+
+Tooling commitment:
+- `rust-fsm` for the state machines.
+- `proptest-state-machine` for invariant verification, layered on top of
+  the already-present `proptest` dev-dep.
+- Per-FSM file layout: `gen.rs` (action generators), `prop.rs` (property
+  tests), `unit.rs` (migrated regressions), `test.rs` (harness entry).
+
+The "Port the existing prop tests from quickcheck to proptest" bullet
+below is obsolete — there are no `quickcheck` deps in the current tree.
+
+---
+
 # FSM / Testing Refactor
 
 * Refactor TUI and Markers code to use the rust-fsm library

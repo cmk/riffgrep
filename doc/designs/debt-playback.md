@@ -1,3 +1,23 @@
+## Status (2026-04-18)
+
+This document's "Unification Plan" is folded into the FSM refactor
+roadmap (see `debt-fsm.md`). Playback will be the **second** region
+ported to `rust-fsm`, after markers.
+
+Mapping:
+- The **"Unification Plan"** (below) becomes the transition table for the
+  playback FSM: `PlaybackState × SegmentDirection × {Loop, Seek, Restart}`.
+- The **"Testing"** checklist (items 1–7 below) becomes the must-pass
+  property set in `tests/engine/playback_fsm/prop.rs`.
+- The **"Risks"** section becomes the list of qualified-unreachable
+  states that the property suite verifies (e.g. "if `global_reversed`
+  is false and all segments have `reversed=false`, no reverse code path
+  executes").
+
+Sprint plan: not yet written. Will be authored after markers ships.
+
+---
+
 # TODO: Reverse Playback Unification
 
 ## Current State (as of 2026-03-26)
