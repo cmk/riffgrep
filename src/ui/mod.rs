@@ -261,6 +261,17 @@ pub struct App {
     pub session_bpm: Option<f32>,
     /// Optional path to the SQLite database (for loading embeddings in TUI).
     pub db_path: Option<PathBuf>,
+
+    // --- Similarity mode (`rfg --similar PATH`) ---
+    /// When true, `results` holds the top-N similarity neighbors of
+    /// `opts.similar` (pinned at index 0). Typing in the search bar
+    /// filters the neighbors locally instead of re-querying the DB,
+    /// so the ranking is preserved.
+    pub in_similarity_mode: bool,
+    /// Snapshot of the unfiltered similarity top-N. Used to restore
+    /// `results` when the search bar clears. `None` outside similarity
+    /// mode.
+    pub similarity_results: Option<Vec<TableRow>>,
 }
 
 impl App {
@@ -331,6 +342,106 @@ impl App {
             speed_bpm_fine: 0.1,
             session_bpm: None,
             db_path: None,
+            in_similarity_mode: false,
+            similarity_results: None,
+        }
+    }
+
+    /// Install a pre-computed similarity-ranked result list.
+    ///
+    /// Used by `run_tui` at startup when `--similar PATH` is set: the
+    /// engine runs `engine::api::similar` synchronously, we fetch the
+    /// matching `TableRow`s via `Database::load_table_rows_for_paths`,
+    /// and hand the whole thing to this method. Postconditions:
+    ///
+    /// - `self.results` is the input ordered as received (subject at
+    ///   index 0 per the similarity API's contract).
+    /// - Each row's `sim` field is populated from the paired
+    ///   `SimilarityResult.sim`.
+    /// - `self.selected = 0` so the subject is the initial focus.
+    /// - `self.in_similarity_mode = true` so the search-bar handler
+    ///   filters locally instead of respawning a DB search.
+    /// - `self.similarity_results` snapshots the unfiltered list so
+    ///   the search bar can restore it on clear.
+    /// - `self.sort_column = Some("sim")`, descending, so the column
+    ///   header reflects the active sort and `sort_by_selected_column`
+    ///   won't silently resort on first interaction.
+    ///
+    /// The caller is responsible for ensuring `rows.len()` matches the
+    /// number of `sim` scores passed; a length mismatch is a programming
+    /// error (not a user error) so we panic rather than silently drop.
+    pub fn load_similarity_results(
+        &mut self,
+        mut rows: Vec<TableRow>,
+        sims: Vec<f32>,
+    ) {
+        assert_eq!(
+            rows.len(),
+            sims.len(),
+            "load_similarity_results: rows.len()={} sims.len()={}",
+            rows.len(),
+            sims.len(),
+        );
+        for (row, sim) in rows.iter_mut().zip(sims.iter()) {
+            row.sim = Some(*sim);
+        }
+        self.similarity_results = Some(rows.clone());
+        self.results = rows;
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.total_matches = self.results.len();
+        self.in_similarity_mode = true;
+        self.sort_column = Some("sim".to_string());
+        self.sort_ascending = false;
+    }
+
+    /// Re-compute `results` by applying `self.query` as a local
+    /// substring filter against `self.similarity_results`.
+    ///
+    /// Called from `run_tui`'s search-debounce branch when
+    /// `in_similarity_mode` is true. Preserves the original similarity
+    /// rank order (doesn't re-sort by the filter term's relevance), so
+    /// the top-N stays in-place and only shrinks. Case-insensitive,
+    /// substring-matched against each row's path.
+    ///
+    /// An empty query restores the full unfiltered snapshot.
+    ///
+    /// No-op (and logs nothing) when `in_similarity_mode` is false or
+    /// `similarity_results` is absent — caller should have checked the
+    /// flag, but the guard keeps the method safe to call blindly.
+    pub fn filter_similarity_results(&mut self) {
+        let snapshot = match &self.similarity_results {
+            Some(s) => s,
+            None => return,
+        };
+        if !self.in_similarity_mode {
+            return;
+        }
+
+        let q = self.query.trim().to_lowercase();
+        let filtered: Vec<TableRow> = if q.is_empty() {
+            snapshot.clone()
+        } else {
+            snapshot
+                .iter()
+                .filter(|row| {
+                    row.meta
+                        .path
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains(&q)
+                })
+                .cloned()
+                .collect()
+        };
+
+        self.results = filtered;
+        self.total_matches = self.results.len();
+        if self.selected >= self.results.len() {
+            self.selected = self.results.len().saturating_sub(1);
+        }
+        if self.scroll_offset >= self.results.len() {
+            self.scroll_offset = 0;
         }
     }
 
@@ -2706,11 +2817,61 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
     };
     app.marks = Some(marks_store);
 
-    // Initial search: empty query returns all.
-    let initial_query = crate::engine::SearchQuery::default();
-    let mut current_search: Option<SearchHandleTable> =
-        Some(SearchHandleTable::spawn(initial_query, search_mode));
-    app.search_in_progress = true;
+    // Initial population.
+    //
+    // `--similar PATH` at a TTY routes through this TUI (see
+    // `main.rs::Dispatch::TuiSimilar`). Load the similarity top-N
+    // synchronously and pre-populate `app.results` so the user sees a
+    // ranked list immediately, without waiting on an initial empty
+    // search. If the query file isn't embedded or the DB is missing,
+    // fall back to the normal browse flow and surface a status message.
+    //
+    // Otherwise (no `--similar`), spawn the standard empty-query search.
+    let mut current_search: Option<SearchHandleTable> = None;
+    if let Some(query_path) = opts.similar.clone() {
+        let result = (|| -> anyhow::Result<()> {
+            let db_path = db_path_for_peaks
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("no database — run `rfg --index` first"))?;
+            let limit = opts.limit.unwrap_or(50);
+            let sim_results = crate::engine::api::similar(db_path, &query_path, limit)?;
+
+            // Pull TableRow for each result path, preserving input order.
+            let paths: Vec<&str> = sim_results
+                .iter()
+                .map(|r| r.path.to_str().unwrap_or(""))
+                .collect();
+            let db = crate::engine::sqlite::Database::open(db_path)?;
+            let rows = db.load_table_rows_for_paths(&paths)?;
+            if rows.len() != sim_results.len() {
+                // Some paths didn't resolve — trim sims to match.
+                anyhow::bail!(
+                    "similarity result count ({}) differs from loaded row count ({})",
+                    sim_results.len(),
+                    rows.len()
+                );
+            }
+            let sims: Vec<f32> = sim_results.iter().map(|r| r.sim).collect();
+            app.load_similarity_results(rows, sims);
+            app.search_in_progress = false;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            // Fall back to normal browse, report the error in the
+            // status bar so the user sees it and can recover (e.g. by
+            // indexing first, or running the query headless with
+            // `--no-tui` to get a clearer error message).
+            app.set_status(format!("similarity mode failed: {e}"));
+            let initial_query = crate::engine::SearchQuery::default();
+            current_search = Some(SearchHandleTable::spawn(initial_query, search_mode));
+            app.search_in_progress = true;
+        }
+    } else {
+        // Empty-query initial search (current behavior).
+        let initial_query = crate::engine::SearchQuery::default();
+        current_search = Some(SearchHandleTable::spawn(initial_query, search_mode));
+        app.search_in_progress = true;
+    }
 
     let mut event_reader = EventStream::new();
     let tick_rate = Duration::from_millis(50);
@@ -2787,29 +2948,43 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
         {
             search_debounce = None;
 
-            // Cancel existing search.
-            if let Some(handle) = current_search.take() {
-                handle.cancel();
+            // In similarity mode the search bar filters the cached
+            // top-N locally. We do NOT cancel anything and do NOT spawn
+            // a DB search — that would discard the similarity ranking
+            // we just loaded, defeating the whole mode. `run_tui`'s
+            // startup path leaves `current_search = None` in this mode,
+            // so the Park-forever branch of the results-select below
+            // never fires either.
+            if app.in_similarity_mode {
+                app.filter_similarity_results();
+                app.search_pending = false;
+                app.search_in_progress = false;
+            } else {
+                // Cancel existing search.
+                if let Some(handle) = current_search.take() {
+                    handle.cancel();
+                }
+                // Don't clear results yet — keep them visible until the
+                // first batch of new results arrives (prevents flickering).
+                app.search_pending = true;
+                app.search_in_progress = true;
+
+                // Build new search: parse @field=value filters from query.
+                let (freetext, column_filters) =
+                    crate::engine::parse_column_filters(&app.query);
+                let query = crate::engine::SearchQuery {
+                    freetext: if freetext.is_empty() {
+                        None
+                    } else {
+                        Some(freetext)
+                    },
+                    column_filters,
+                    ..Default::default()
+                };
+
+                let mode = resolve_search_mode(&opts)?;
+                current_search = Some(SearchHandleTable::spawn(query, mode));
             }
-            // Don't clear results yet — keep them visible until the
-            // first batch of new results arrives (prevents flickering).
-            app.search_pending = true;
-            app.search_in_progress = true;
-
-            // Build new search: parse @field=value filters from query.
-            let (freetext, column_filters) = crate::engine::parse_column_filters(&app.query);
-            let query = crate::engine::SearchQuery {
-                freetext: if freetext.is_empty() {
-                    None
-                } else {
-                    Some(freetext)
-                },
-                column_filters,
-                ..Default::default()
-            };
-
-            let mode = resolve_search_mode(&opts)?;
-            current_search = Some(SearchHandleTable::spawn(query, mode));
         }
 
         // Check if selection changed for preview debounce.
