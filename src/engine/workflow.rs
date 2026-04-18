@@ -37,6 +37,25 @@ fn sanitize_ascii_field(val: &str, max_bytes: usize) -> String {
         .collect()
 }
 
+/// Whether any packed-Description field differs between `before` and `after`.
+///
+/// Single source of truth for the packed-field list: both the activation
+/// guard in [`write_metadata_changes`] and the packed-write block call
+/// through this helper, so drift between "trigger activation" and "perform
+/// the write" is impossible. Adding a new packed field means editing one
+/// place — this function — and the write block that runs with it.
+fn packed_fields_differ(before: &UnifiedMetadata, after: &UnifiedMetadata) -> bool {
+    before.comment != after.comment
+        || before.rating != after.rating
+        || before.bpm != after.bpm
+        || before.subcategory != after.subcategory
+        || before.category != after.category
+        || before.genre_id != after.genre_id
+        || before.sound_id != after.sound_id
+        || before.usage_id != after.usage_id
+        || before.key != after.key
+}
+
 /// A loaded Lua script ready to execute against metadata.
 #[derive(Debug, Clone, Default)]
 pub struct WorkflowScript {
@@ -453,17 +472,8 @@ pub fn write_metadata_changes(
     let mut map = bext::scan_chunks(&mut reader)?;
     drop(reader);
 
-    // Packed Description field diffs. Kept in sync with the write block
-    // below — if more packed fields get wired up, add them here too.
-    let packed_diffs = before.comment != after.comment
-        || before.rating != after.rating
-        || before.bpm != after.bpm
-        || before.subcategory != after.subcategory
-        || before.category != after.category
-        || before.genre_id != after.genre_id
-        || before.sound_id != after.sound_id
-        || before.usage_id != after.usage_id
-        || before.key != after.key;
+    // Single-source-of-truth check; see `packed_fields_differ`.
+    let packed_diffs = packed_fields_differ(before, after);
 
     // On unpacked files with packed-field diffs, activate the schema first.
     // The ETL scripts in scripts/etl_soundminer*.lua depend on this —
@@ -1166,10 +1176,13 @@ mod tests {
         use proptest::prelude::*;
 
         proptest! {
-            /// Any u16 BPM round-trips through write_metadata_changes +
-            /// read_metadata_riff. Guards the BPM formatter: the packed field
-            /// is 4 ASCII chars and the reader rejects leading whitespace,
-            /// so the writer must left-align.
+            /// BPM values up to 9999 round-trip through write_metadata_changes
+            /// + read_metadata_riff. Guards the BPM formatter: the packed
+            /// field is 4 ASCII chars and the reader rejects leading
+            /// whitespace, so the writer must left-align. Values ≥ 10000
+            /// render as 5 characters and would be truncated to 4 by the
+            /// writer (e.g., 10000 → `"1000"` → 1000 on read) — that's a
+            /// known limit of the 4-byte field, not a round-trip domain.
             #[test]
             fn bpm_roundtrips_through_workflow_write(v in 0u16..10_000) {
                 let path = temp_unpacked_wav("bpm_rt");
