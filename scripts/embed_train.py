@@ -86,8 +86,17 @@ def _fetch_training_vectors(
 
     vecs = np.empty((n_sample, EMBED_DIM), dtype=np.float32)
     # id → output-row index, so we can fill `vecs` in any order SQLite
-    # returns the IN-list without re-sorting.
+    # returns the IN-list without re-sorting. `samples.id` is the
+    # SQLite INTEGER PRIMARY KEY (see sqlite.rs schema), so duplicates
+    # are impossible; the explicit length assertion catches schema
+    # drift (e.g. WITHOUT ROWID tables with a non-unique pseudo-id).
     pos_for_id = {rid: i for i, rid in enumerate(sampled_ids)}
+    if len(pos_for_id) != n_sample:
+        raise RuntimeError(
+            f"samples.id is not unique in the selected rows "
+            f"({len(pos_for_id)} distinct of {n_sample} sampled) — "
+            "check schema integrity"
+        )
     fetched = 0
     for start in range(0, n_sample, _FETCH_BATCH):
         batch_ids = sampled_ids[start : start + _FETCH_BATCH]
