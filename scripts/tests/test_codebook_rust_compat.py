@@ -98,6 +98,15 @@ def test_faiss_decode_matches_python_reshape() -> None:
     """T2 — cross-check that FAISS's own decoder agrees with the Python
     `_reference_decode` layout on a hand-crafted code.
 
+    Critical detail: we must serialize and decode from the *same* PQ
+    object. An earlier draft trained two independent FAISS PQs (one
+    for serialization via `embed_train.train()`, one for the decode
+    comparison) and compared their outputs — that test was passing by
+    accident of FAISS's internal k-means RNG, not because the layouts
+    actually matched. Training a fresh PQ twice with the same input
+    does not produce identical centroids, so two independently-trained
+    PQs can't be cross-checked meaningfully.
+
     Decoding the all-zero code `[0, 0, 0, ..., 0]` in FAISS should
     produce a 512-dim vector that is the concatenation of
     `centroids[m][0]` for m in 0..M. If Python's (M, K, DSUB) reshape
@@ -108,30 +117,35 @@ def test_faiss_decode_matches_python_reshape() -> None:
     byte length and would pass under a silent transposition.
     """
     faiss = pytest.importorskip("faiss")
-    from embed_train import train
 
     rng = np.random.default_rng(0)
     vectors = rng.standard_normal((4096, 512)).astype(np.float32)
 
-    # Train a pq directly (without going through `train()`'s byte
-    # serialization) so we can ask FAISS to decode in its native form.
+    # Single PQ for both serialization and decode — this is what makes
+    # the cross-check meaningful.
     pq = faiss.ProductQuantizer(PQ_DSUB * PQ_M, PQ_M, 8)
     pq.train(np.ascontiguousarray(vectors, dtype=np.float32))
 
-    # Serialize through our path and reconstruct via the reference decoder.
-    blob = train(vectors)
+    # Serialize through the same byte path `embed_train.train()` uses,
+    # but applied to *this* pq (not a freshly-trained one).
+    centroids_flat = faiss.vector_to_array(pq.centroids).astype(
+        "<f4", copy=False
+    )
+    blob = centroids_flat.tobytes()
+    assert len(blob) == CODEBOOK_BYTES
+
     cb = _reference_decode(blob)
 
-    # Ask FAISS to decode the all-zero PQ code.
     zero_code = np.zeros((1, PQ_M), dtype=np.uint8)
     faiss_decoded = pq.decode(zero_code).reshape(PQ_DSUB * PQ_M)
 
-    # Expected: concatenation of `centroids[m][0]` across m.
     python_decoded = np.concatenate([cb[m, 0] for m in range(PQ_M)])
 
-    # FAISS stores the same centroids we serialize, so these should
-    # agree exactly — not just "within tolerance". Any drift here
-    # indicates a (M, K, DSUB) / (K, M, DSUB) / other layout mismatch.
+    # Since serialization + decode both use the same PQ object, the
+    # centroids are byte-identical — these must match exactly, not
+    # within tolerance. Any drift here indicates a (M, K, DSUB) vs
+    # (K, M, DSUB) or inner-dim layout mismatch between the Python
+    # reshape and FAISS's native representation.
     np.testing.assert_array_equal(
         faiss_decoded,
         python_decoded,

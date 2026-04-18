@@ -56,6 +56,13 @@ package = false
 # which pulls llvmlite — llvmlite 0.47+ requires LLVM 20 and tries to
 # build from source when no x86_64 wheel is available. Capping numba
 # at <0.62 pulls llvmlite 0.44, which ships wheels for the same targets.
+#
+# WARNING: these caps are resolver-global. If a future dep declares
+# numba>=0.62 the resolver fails with a confusing conflict error —
+# not a missing wheel — and the fix is to remove/bump these pins,
+# not to fight the conflict. Revisit when laion-clap upstream moves
+# to a numba version that ships x86_64 wheels (or when we drop
+# x86_64 support entirely).
 override-dependencies = [
     "numba<0.62",
     "llvmlite<0.45",
