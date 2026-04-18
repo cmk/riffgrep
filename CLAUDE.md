@@ -150,13 +150,14 @@ the reviewer and leaves an audit trail linking each finding to its
 resolution. Re-running `/pull-reviews <N>` afterward mirrors the replies
 back into `review-NNNN.md`.
 
-**`review-NNNN.md` rides along with the PR that generated it.** Every
-`/pull-reviews` and `/reply-reviews` round that mutates the file must
-end in a commit on the PR branch (standalone `doc:` commit or folded
-into the round's fix commit). Don't leave it untracked between rounds
-— landing it after merge orphans the audit trail. Before final push,
-run `/pull-reviews <N>` one last time to capture any trailing comments
-and commit the result.
+**`review-NNNN.md` rides with the next fix commit that addresses the
+round's findings.** Don't land a standalone `doc:` commit to attach
+the audit trail — that forces a CI round-trip for no code change. If
+a round is entirely no-op (all push-back, no code changes), the file
+stays on disk uncommitted and a later round's fix picks up the pending
+replies via one `/pull-reviews` run at that time. Before final push,
+run `/pull-reviews <N>` one last time and fold any trailing comments
+into the last fix commit (or `--amend` if the last push was clean).
 
 The local review catches design issues and convention violations early.
 The GitHub review catches anything that slipped through and validates in
