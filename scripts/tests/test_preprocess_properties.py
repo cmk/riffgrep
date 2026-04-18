@@ -16,8 +16,7 @@ guarantees.
 from __future__ import annotations
 
 import numpy as np
-import pytest
-from hypothesis import assume, given, settings
+from hypothesis import assume, given
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 

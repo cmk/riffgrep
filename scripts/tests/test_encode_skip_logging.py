@@ -9,7 +9,6 @@ pattern is present when skips happen, and absent when they don't.
 from __future__ import annotations
 
 import sqlite3
-import sys
 from pathlib import Path
 from unittest import mock
 

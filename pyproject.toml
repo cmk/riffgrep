@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "Python helpers for riffgrep: CLAP embedding encoding and FAISS PQ codebook training."
 requires-python = ">=3.10,<3.14"
 
-# Core: the minimum needed to import any script in `scripts/` and run
-# the default test suite (which mocks CLAP + FAISS). Heavy inference
-# deps live in opt-in extras — see below.
+# Core: the minimum needed to *import* any script in `scripts/` — not
+# enough to run the test suite on its own. Running tests wants the
+# `dev` extra (pytest + hypothesis), and real CLAP inference wants
+# the `ml` umbrella below. Keeping core this thin means a plain
+# `uv sync` on a fresh clone doesn't touch the ML long tail.
 dependencies = [
     "numpy>=1.24",
 ]
