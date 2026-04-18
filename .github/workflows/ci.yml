@@ -52,7 +52,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
 
       - name: Install test dependencies
         # Only the lightweight deps needed for the default suite. CLAP-
@@ -60,7 +59,10 @@ jobs:
         # marker (see scripts/tests/conftest.py). Installing the full
         # pyproject dep set (laion-clap, faiss-cpu, librosa) would add
         # significant CI time and is not required to run the suite.
-        run: pip install pytest numpy soundfile
+        # soundfile is omitted: embed_preprocess imports it lazily inside
+        # preprocess(), and every test mocks preprocess — so CI never
+        # executes a path that touches it.
+        run: python -m pip install pytest numpy
 
       - name: Run tests
-        run: pytest scripts/tests/ -v
+        run: python -m pytest scripts/tests/ -v
