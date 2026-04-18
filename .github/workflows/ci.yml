@@ -62,7 +62,7 @@ jobs:
         # soundfile is omitted: embed_preprocess imports it lazily inside
         # preprocess(), and every test mocks preprocess — so CI never
         # executes a path that touches it.
-        run: python -m pip install pytest numpy
+        run: python -m pip install pytest numpy hypothesis
 
       - name: Run tests
         run: python -m pytest scripts/tests/ -v
