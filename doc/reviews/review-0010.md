@@ -413,3 +413,23 @@ Copilot reviewed 14 out of 16 changed files in this pull request and generated 4
 ### Copilot on [`scripts/tests/test_encode_idempotent.py:36`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104285977) (2026-04-18 02:13 UTC)
 
 `_run(db_path, n)` takes an `n` parameter that is never used, which makes the helper misleading and can hide future mistakes (e.g., thinking the helper limits the run). Remove the unused parameter (and adjust call sites) or use it to assert the expected number of rows were written.
+
+<!-- gh-id: 3104293574 -->
+#### ↳ cmk ([2026-04-18 02:16 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104293574))
+
+Fixed in b754dad — comment now matches the all-files loop. Iterating every stored file as a query is the intended, more-robust design (gives a per-query hit-rate rather than a single-file sample).
+
+<!-- gh-id: 3104293610 -->
+#### ↳ cmk ([2026-04-18 02:16 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104293610))
+
+Fixed in b754dad — early `pytest.skip` when `stored` is empty, before the ratio calc.
+
+<!-- gh-id: 3104293653 -->
+#### ↳ cmk ([2026-04-18 02:16 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104293653))
+
+Fixed in b754dad — `_current_version` now raises `RuntimeError` with a diagnostic on malformed rows. 0 is returned only when the key is absent.
+
+<!-- gh-id: 3104293698 -->
+#### ↳ cmk ([2026-04-18 02:16 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104293698))
+
+Fixed in b754dad — removed the unused `n` param and adjusted call sites.
