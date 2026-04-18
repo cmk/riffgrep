@@ -19,22 +19,7 @@ import json
 import subprocess
 import sys
 
-
-def gh_repo() -> str:
-    try:
-        return subprocess.check_output(
-            ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
-            text=True,
-            stderr=subprocess.PIPE,
-        ).strip()
-    except FileNotFoundError:
-        print("error: `gh` CLI not found; install GitHub CLI and ensure it is on PATH", file=sys.stderr)
-        raise SystemExit(1)
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").strip()
-        msg = f": {detail}" if detail else ""
-        print(f"error: failed to determine repository via `gh repo view`{msg}", file=sys.stderr)
-        raise SystemExit(1)
+from _gh import resolve_repo
 
 
 def main() -> int:
@@ -58,17 +43,26 @@ def main() -> int:
         print("error: empty body", file=sys.stderr)
         return 1
 
-    repo = args.repo or gh_repo()
+    repo = resolve_repo(args.pr, args.repo)
     path = f"repos/{repo}/pulls/{args.pr}/comments/{args.in_reply_to_id}/replies"
 
-    result = subprocess.run(
-        ["gh", "api", "--method", "POST", path, "-f", f"body={body}"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        sys.stderr.write(result.stderr)
-        return result.returncode
+    try:
+        result = subprocess.run(
+            ["gh", "api", "--method", "POST", path, "-f", f"body={body}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        print(
+            "error: `gh` CLI not found; install GitHub CLI and ensure it is on PATH",
+            file=sys.stderr,
+        )
+        return 1
+    except subprocess.CalledProcessError as exc:
+        if exc.stderr:
+            sys.stderr.write(exc.stderr)
+        return exc.returncode or 1
 
     data = json.loads(result.stdout)
     print(f"posted reply id={data['id']} url={data['html_url']}")
