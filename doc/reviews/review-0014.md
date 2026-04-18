@@ -148,3 +148,79 @@ Copilot reviewed 5 out of 7 changed files in this pull request and generated 7 c
 
 
 
+
+<!-- gh-id: 3104736131 -->
+#### ↳ cmk ([2026-04-18 06:41 UTC](https://github.com/cmk/riffgrep/pull/14#discussion_r3104736131))
+
+Fixed in 5a6a3ef — dispatch rustdoc now says rule 2 (--similar) beats rule 3 (filters) explicitly and flags the tension with the in-TUI search bar so readers know `rfg --similar PATH --vendor Mars` routes to TuiSimilar while the vendor part is inert inside the TUI.
+
+<!-- gh-id: 3104736164 -->
+#### ↳ cmk ([2026-04-18 06:41 UTC](https://github.com/cmk/riffgrep/pull/14#discussion_r3104736164))
+
+Fixed in 5a6a3ef — renamed the test to `similar_with_filter_at_tty_still_routes_to_similar_but_filter_is_ignored` and expanded the comment to make the "dispatch precedence only, not interactive application" gap explicit. Agrees with your (b) suggestion; (a) honor-via-prefill is listed as a potential follow-up.
+
+<!-- gh-id: 3104736211 -->
+#### ↳ cmk ([2026-04-18 06:41 UTC](https://github.com/cmk/riffgrep/pull/14#discussion_r3104736211))
+
+Fixed in 5a6a3ef — comment now describes the actual behavior (bail, status-bar error, fallback to browse mode) instead of the unreached trim path.
+
+<!-- gh-id: 3104736250 -->
+#### ↳ cmk ([2026-04-18 06:41 UTC](https://github.com/cmk/riffgrep/pull/14#discussion_r3104736250))
+
+Fixed in 5a6a3ef — narrowed the @-warning to `raw.starts_with('@')`. A legitimate substring like `at-replaced-with-@.wav` in the middle of a path no longer triggers the warning. Caught the common column-filter typo path without the false positives.
+
+<!-- gh-id: 3104736280 -->
+#### ↳ cmk ([2026-04-18 06:41 UTC](https://github.com/cmk/riffgrep/pull/14#discussion_r3104736280))
+
+Fixed in 5a6a3ef — chose option (a), `ensure!` on uniqueness. `load_table_rows_for_paths` now bails with `duplicate path {:?}` when input paths repeat. New test covers the error path. Expanding to a `path -> Vec<usize>` map is doable but the current call site (TUI similarity-mode startup) receives already-unique paths from `engine::api::similar` so (a) is strictly more informative for the known use case.
+
+<!-- gh-id: 3104736330 -->
+#### ↳ cmk ([2026-04-18 06:41 UTC](https://github.com/cmk/riffgrep/pull/14#discussion_r3104736330))
+
+Fixed in 5a6a3ef — "contraint" -> "constraint".
+
+<!-- gh-id: 3104736360 -->
+#### ↳ cmk ([2026-04-18 06:41 UTC](https://github.com/cmk/riffgrep/pull/14#discussion_r3104736360))
+
+Fixed in 5a6a3ef — "whereever" -> "wherever".
+
+<!-- gh-id: 4133873402 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 06:51 UTC](https://github.com/cmk/riffgrep/pull/14#pullrequestreview-4133873402))
+
+## Pull request overview
+
+Copilot reviewed 5 out of 7 changed files in this pull request and generated 2 comments.
+
+
+
+
+
+<!-- gh-id: 3104748301 -->
+### Copilot on [`src/ui/mod.rs:2858`](https://github.com/cmk/riffgrep/pull/14#discussion_r3104748301) (2026-04-18 06:51 UTC)
+
+`run_tui` uses `opts.limit` as the similarity top-N and then calls `Database::load_table_rows_for_paths`, which hard-caps batches at 500 paths. As a result, `rfg --similar PATH --limit > 500` will always fail similarity mode and fall back to browse with a status error, even though headless similarity can return larger result sets. Consider clamping the TUI similarity limit to the DB loader cap (with a clear user-facing message), or updating `load_table_rows_for_paths` to internally batch/chunk and preserve order for arbitrary lengths.
+```suggestion
+            const TUI_SIMILARITY_ROW_LOAD_LIMIT: usize = 500;
+
+            let db_path = db_path_for_peaks
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("no database — run `rfg --index` first"))?;
+            let requested_limit = opts.limit.unwrap_or(50);
+            let limit = requested_limit.min(TUI_SIMILARITY_ROW_LOAD_LIMIT);
+            if requested_limit > TUI_SIMILARITY_ROW_LOAD_LIMIT {
+                app.set_status(format!(
+                    "similarity limit {} exceeds TUI max {}; showing top {} results (use `--no-tui` for larger sets)",
+                    requested_limit,
+                    TUI_SIMILARITY_ROW_LOAD_LIMIT,
+                    limit
+                ));
+            }
+```
+
+<!-- gh-id: 3104748332 -->
+### Copilot on [`doc/designs/debt-fsm.md:30`](https://github.com/cmk/riffgrep/pull/14#discussion_r3104748332) (2026-04-18 06:51 UTC)
+
+nit: A few typos in this new doc reduce readability:
+- "State-Dependant" → "State-Dependent"
+- "orginal" → "original"
+- "trival" → "trivial"

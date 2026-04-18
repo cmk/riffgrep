@@ -2855,7 +2855,21 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
             let db_path = db_path_for_peaks
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("no database — run `rfg --index` first"))?;
-            let limit = opts.limit.unwrap_or(50);
+            // `load_table_rows_for_paths` hard-caps at 500 paths per
+            // batch. The TUI similarity-mode limit must stay under
+            // that cap so `--similar PATH --limit 1000` doesn't
+            // silently fall back to browse mode with a cryptic error.
+            // The headless path (`--no-tui --similar`) doesn't load
+            // TableRows, so it's free to return larger sets.
+            const TUI_SIMILARITY_LIMIT_MAX: usize = 500;
+            let requested = opts.limit.unwrap_or(50);
+            let limit = requested.min(TUI_SIMILARITY_LIMIT_MAX);
+            if requested > TUI_SIMILARITY_LIMIT_MAX {
+                app.set_status(format!(
+                    "similarity TUI capped at {TUI_SIMILARITY_LIMIT_MAX} results \
+                     (requested {requested}); use --no-tui for larger sets"
+                ));
+            }
             let sim_results = crate::engine::api::similar(db_path, &query_path, limit)?;
 
             // Pull TableRow for each result path, preserving input

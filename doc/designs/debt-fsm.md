@@ -19,10 +19,10 @@
 * Implement a large and varied collection of properties:
   - Unreachable States: certain 'impossible' states are never reached regardless of input
   - Qualified Unreachable States: as above but for a smaller subset of inputs (e.g. Bank A can never differ from Bank B if the initial state is 'synced' and the action stream doesn't include ctl-b / 'toggle bank sync')
-  - Invariant Verification: add qualified 'no-op sub-sequences' (e.g. [opt-h, opt-l], [ctl-left, ctl-right]) to a random action stream and confirm that the orginal stream and the altered stream have the same end state
+  - Invariant Verification: add qualified 'no-op sub-sequences' (e.g. [opt-h, opt-l], [ctl-left, ctl-right]) to a random action stream and confirm that the original stream and the altered stream have the same end state
   - Fixed Point States: certain states are impossible to leave for certain action streams (e.g. ctl-alt-d / ' toggle markers disabled')
   - Unit Test Generalization: Look at all of the marker unit tests to see where previous bugs have arisen, and try to generalize as many as possible to prop tests
-  - State-Dependant Invariants: identify FSM states where certain operational invariants apply, for example with Markers
+  - State-Dependent Invariants: identify FSM states where certain operational invariants apply, for example with Markers
       - in the initial state (e.g. a freshly selected sample), ctl-r/marker reset is a no-op
       - in all states ctl-r/marker reset is idempotent
       - in all states other than SOF-selected, opt-l is a right-inverse to opt-h (i.e. opt-h * opt-l = 1)
@@ -40,7 +40,7 @@
       - generator config (see above) 
       - shrink config (see above)
       - reporting verbosity
-  - Turn off failing properties if the bug isn't trival/obvious, we will fix these in a separate sprint
+  - Turn off failing properties if the bug isn't trivial/obvious, we will fix these in a separate sprint
 * Port the existing prop tests from quickcheck to proptest
 
 
