@@ -315,7 +315,7 @@ pub fn parse_bext_buffer(buf: &[u8; BEXT_STANDARD_SIZE]) -> BextFields {
 
     if is_packed {
         // Packed Description format per PICKER_SCHEMA.md.
-        let comment = decode_fixed_ascii(&buf[44..76]);
+        let comment = decode_fixed_ascii(&buf[44..44 + PACKED_COMMENT_LEN]);
         let description = comment.clone();
 
         // Extract MARKERSv2 from Description[12:44].
