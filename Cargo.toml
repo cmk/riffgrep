@@ -51,6 +51,10 @@ path = "tests/ui/main.rs"
 name = "workflow"
 path = "tests/engine/workflow.rs"
 
+[[test]]
+name = "marker_fsm"
+path = "tests/engine/marker_fsm/test.rs"
+
 [[bench]]
 name = "metadata_read"
 harness = false
