@@ -9,7 +9,11 @@
 //! See `doc/designs/debt-fsm.md` for the invariant roadmap and
 //! `doc/plans/plan-2026-04-18-02.md` for this sprint's scope.
 
-// Removed in Task 4 once `App` consumes these types at every call-site.
+// The non-`Bank` items (Selection, MarkerFsm, Input, Output,
+// MarkerFsmState, MarkerBankMachine) are exercised by the property
+// suite but not yet consumed from `App`. The module-level allow comes
+// off when App is carved out to dispatch through MarkerFsm. See
+// doc/designs/debt-fsm.md and plan-2026-04-18-02.md.
 #![allow(dead_code)]
 
 use std::path::PathBuf;
@@ -66,8 +70,8 @@ impl Selection {
 
 /// Which marker bank is the active edit target.
 ///
-/// Mirrors [`crate::ui::Bank`]. The two definitions unify in the
-/// App-integration pass (Task 4).
+/// Re-exported from `crate::ui::Bank`; this is the canonical
+/// definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Bank {
     /// Bank A (top half of the waveform).
