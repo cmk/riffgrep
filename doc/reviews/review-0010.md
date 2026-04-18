@@ -768,3 +768,13 @@ Copilot reviewed 14 out of 16 changed files in this pull request and generated 2
 
 When `--dry-run` is enabled, `encode_rows()` still returns a non-zero count (it increments `written` even though no UPDATEs run), and this CLI path prints `wrote {written} embeddings`. That’s misleading for dry runs and also conflicts with the `encode_rows()` docstring (“Returns count written”). Consider tracking separate `encoded` vs `written` counts (or returning 0 for dry-run) and adjusting the printed message based on `args.dry_run`.
 
+
+<!-- gh-id: 3104349981 -->
+#### ↳ cmk ([2026-04-18 02:52 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104349981))
+
+Fixed in 1432506 — UPDATE now includes `AND embedding IS NULL`, and the loop switched from `executemany` to per-row `execute` so `cur.rowcount` is checked and only actual writes count toward the returned total.
+
+<!-- gh-id: 3104350014 -->
+#### ↳ cmk ([2026-04-18 02:52 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104350014))
+
+Fixed in 1432506 — `written` only increments on committed UPDATEs (so it's 0 under `--dry-run` and under a lost race). `main()` now prints a dry-run-specific message instead of "wrote 0 embeddings".
