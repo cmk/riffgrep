@@ -49,3 +49,13 @@ markers = [
 
 [tool.uv]
 package = false
+
+# Dependency overrides to keep the `ml` / `encode` install wheel-only
+# on macOS x86_64 + Python 3.12. laion-clap transitively pulls numba,
+# which pulls llvmlite — llvmlite 0.47+ requires LLVM 20 and tries to
+# build from source when no x86_64 wheel is available. Capping numba
+# at <0.62 pulls llvmlite 0.44, which ships wheels for the same targets.
+override-dependencies = [
+    "numba<0.62",
+    "llvmlite<0.45",
+]
