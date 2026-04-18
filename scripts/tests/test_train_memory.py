@@ -22,8 +22,6 @@ import numpy as np
 
 import embed_train
 
-EMBED_BYTES = embed_train.EMBED_DIM * 4
-
 
 def _populate(conn: sqlite3.Connection, n_rows: int) -> None:
     """Insert `n_rows` rows with random 512-dim f32 embedding blobs."""

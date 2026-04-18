@@ -124,10 +124,14 @@ def encode_rows(
     is the only operational signal that a batch of files is unreadable
     or outside the preprocessing contract.
 
-    `rows` is consumed as a sequence — the tqdm progress bar reads its
-    length once. Callers should pass the list returned by
-    `_select_rows`; an iterator works too as long as it materializes in
-    a single pass.
+    `rows` is materialized into a list on entry (if it isn't one
+    already) so the tqdm progress bar can show a total. This is
+    intentional: at 1.2M scale the candidate list is `(int, str)`
+    tuples, not BLOBs — a few hundred MB peak, well within the memory
+    budget T1 is protecting. The memory concern the compartmentalized
+    resolver and `_fetch_training_vectors` rewrite address is the
+    *training-vector* blobs (~2.5 GB if materialized), not these
+    metadata tuples.
     """
     if not isinstance(rows, list):
         rows = list(rows)
