@@ -602,3 +602,18 @@ This review doc says `pytest-xdist` is missing from `pyproject.toml` (and lists 
 
 The "Must fix before push" list still includes items that appear to be resolved in the current PR (e.g., adding the `requires_clap_model` skip hook and adding `pytest-xdist`). Consider annotating each must-fix with its resolution (commit hash) or moving resolved items into a separate "Resolved" subsection so this doc reads consistently end-to-end.
 
+
+<!-- gh-id: 3104325224 -->
+#### ↳ cmk ([2026-04-18 02:32 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104325224))
+
+Fixed in 19878fc — stale `review-0008.md` reference updated to `review-0010.md` (renamed when PR #10 was opened).
+
+<!-- gh-id: 3104325270 -->
+#### ↳ cmk ([2026-04-18 02:32 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104325270))
+
+Fixed in 19878fc — added a "Resolution (pre-push)" block to the Local Review section linking each must-fix to its fix SHA. The original finding is preserved above; the resolution table below makes the status unambiguous.
+
+<!-- gh-id: 3104325307 -->
+#### ↳ cmk ([2026-04-18 02:32 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104325307))
+
+Fixed in 19878fc — same resolution table covers all three must-fix items (7f91e9a, 443a751, c48d488). Follow-ups 4-8 explicitly flagged as remaining open.
