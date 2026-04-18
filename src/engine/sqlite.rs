@@ -722,6 +722,65 @@ impl Database {
         Ok(results)
     }
 
+    /// Batch-load `TableRow` for the given paths, preserving input order.
+    ///
+    /// Used by the TUI's similarity-mode startup to populate the result
+    /// list from an ordered set of `SimilarityResult` paths. Returns
+    /// only those paths that exist in the `samples` table — a missing
+    /// path is silently skipped (rare, but possible if the DB was
+    /// partially cleaned between the similarity search and this call).
+    ///
+    /// SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` is 999; we cap at
+    /// 500 to leave comfortable headroom. Callers needing more should
+    /// batch. The TUI's similarity-mode limit is 50 by default, so this
+    /// cap is generous for the known call site.
+    pub fn load_table_rows_for_paths(
+        &self,
+        paths: &[&str],
+    ) -> anyhow::Result<Vec<super::TableRow>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        anyhow::ensure!(
+            paths.len() <= 500,
+            "load_table_rows_for_paths: {} paths exceeds the 500-path batch cap",
+            paths.len()
+        );
+
+        // Input-order preservation: build `path → index` so we can slot
+        // each returned row into the right position regardless of
+        // SQLite's return order for `WHERE path IN (...)`.
+        let mut pos_for_path: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::with_capacity(paths.len());
+        for (i, p) in paths.iter().enumerate() {
+            pos_for_path.insert(*p, i);
+        }
+
+        let placeholders = vec!["?"; paths.len()].join(",");
+        let sql = format!("SELECT * FROM samples WHERE path IN ({placeholders})");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = paths
+            .iter()
+            .map(|p| p as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        // Pre-fill with None so missing paths leave a gap we can detect
+        // and collapse. `Option<TableRow>` avoids a default that could
+        // silently render as an empty metadata row.
+        let mut slots: Vec<Option<super::TableRow>> = Vec::with_capacity(paths.len());
+        slots.resize_with(paths.len(), || None);
+
+        let rows = stmt.query_map(param_refs.as_slice(), row_to_table_row)?;
+        for row in rows {
+            let row = row?;
+            let path_str = row.meta.path.to_string_lossy().into_owned();
+            if let Some(pos) = pos_for_path.get(path_str.as_str()) {
+                slots[*pos] = Some(row);
+            }
+        }
+        Ok(slots.into_iter().flatten().collect())
+    }
+
     /// Store a blob in the metadata table (e.g., PQ codebook).
     #[allow(dead_code)]
     pub fn set_metadata(&self, key: &str, value: &[u8]) -> anyhow::Result<()> {
@@ -2803,5 +2862,80 @@ mod tests {
         db.set_metadata("key", &[4, 5, 6]).unwrap();
         let loaded = db.get_metadata("key").unwrap().unwrap();
         assert_eq!(loaded, vec![4, 5, 6]);
+    }
+
+    // --- load_table_rows_for_paths ---
+
+    fn seed_samples(db: &Database, paths: &[&str]) {
+        for (i, p) in paths.iter().enumerate() {
+            let meta = UnifiedMetadata {
+                path: PathBuf::from(p),
+                vendor: format!("vendor-{i}"),
+                ..Default::default()
+            };
+            db.insert_batch(&[(meta, 100, None)]).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_load_table_rows_for_paths_preserves_input_order() {
+        let db = Database::open_in_memory().unwrap();
+        seed_samples(
+            &db,
+            &[
+                "/test/a.wav",
+                "/test/b.wav",
+                "/test/c.wav",
+                "/test/d.wav",
+                "/test/e.wav",
+            ],
+        );
+
+        // Query in a deliberately shuffled order — SQLite's natural
+        // return order for `WHERE path IN (...)` is typically insertion
+        // order, which happens to equal input order here, so we need an
+        // explicit shuffle to prove the pos_for_path mapping works.
+        let query = vec!["/test/d.wav", "/test/a.wav", "/test/c.wav"];
+        let rows = db.load_table_rows_for_paths(&query).unwrap();
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].meta.path.to_str().unwrap(), "/test/d.wav");
+        assert_eq!(rows[1].meta.path.to_str().unwrap(), "/test/a.wav");
+        assert_eq!(rows[2].meta.path.to_str().unwrap(), "/test/c.wav");
+    }
+
+    #[test]
+    fn test_load_table_rows_for_paths_empty_input() {
+        let db = Database::open_in_memory().unwrap();
+        seed_samples(&db, &["/test/a.wav"]);
+        let rows = db.load_table_rows_for_paths(&[]).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_load_table_rows_for_paths_skips_missing() {
+        let db = Database::open_in_memory().unwrap();
+        seed_samples(&db, &["/test/a.wav", "/test/b.wav"]);
+
+        // Ask for three paths, only two exist.
+        let query = vec!["/test/a.wav", "/test/ghost.wav", "/test/b.wav"];
+        let rows = db.load_table_rows_for_paths(&query).unwrap();
+
+        // The missing path collapses silently; a and b stay in input order.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].meta.path.to_str().unwrap(), "/test/a.wav");
+        assert_eq!(rows[1].meta.path.to_str().unwrap(), "/test/b.wav");
+    }
+
+    #[test]
+    fn test_load_table_rows_for_paths_cap_enforced() {
+        let db = Database::open_in_memory().unwrap();
+        let too_many: Vec<String> = (0..501).map(|i| format!("/test/{i}.wav")).collect();
+        let refs: Vec<&str> = too_many.iter().map(|s| s.as_str()).collect();
+        let err = db.load_table_rows_for_paths(&refs).unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds the 500-path batch cap"),
+            "unexpected error: {err}"
+        );
     }
 }
