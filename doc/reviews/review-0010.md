@@ -617,3 +617,75 @@ Fixed in 19878fc — added a "Resolution (pre-push)" block to the Local Review s
 #### ↳ cmk ([2026-04-18 02:32 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104325307))
 
 Fixed in 19878fc — same resolution table covers all three must-fix items (7f91e9a, 443a751, c48d488). Follow-ups 4-8 explicitly flagged as remaining open.
+
+<!-- gh-id: 3104336181 -->
+### Copilot on [`scripts/embed_train.py:148`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104336181) (2026-04-18 02:41 UTC)
+
+`--n-train` is not validated. If it’s 0 or negative, `_fetch_training_vectors()` will return an empty or unexpectedly large sample (negative slicing on the permutation), and `faiss.ProductQuantizer.train()` will fail or do the wrong thing. Please enforce `n_train >= 1` (and ideally error out early with a clear message).
+
+
+<!-- gh-id: 4133323823 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 02:41 UTC](https://github.com/cmk/riffgrep/pull/10#pullrequestreview-4133323823))
+
+## Pull request overview
+
+Implements Plan 1 of the embedding roadmap by adding a Python pipeline to (a) preprocess audio, (b) encode/store LAION-CLAP embeddings into `samples.embedding`, and (c) train/serialize a Rust-compatible FAISS PQ codebook into SQLite `metadata`, plus a pytest suite and supporting docs/config so existing Rust similarity paths can operate once the DB is populated.
+
+**Changes:**
+- Add `scripts/embed_preprocess.py` + `scripts/embed_encode.py` to generate and store 512×f32 LE CLAP embeddings in SQLite (skipping LOOP rows).
+- Add `scripts/embed_train.py` to train a FAISS `ProductQuantizer` and atomically write the codebook + version to `metadata`.
+- Add `scripts/tests/` with fixtures and tests for codebook layout compatibility, encoding idempotence, LOOP skipping, embedding invariants, and a gated real-model ranking sanity check.
+
+### Reviewed changes
+
+Copilot reviewed 14 out of 16 changed files in this pull request and generated 4 comments.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| scripts/embed_encode.py | Batch encode + DB update path for CLAP embeddings. |
+| scripts/embed_preprocess.py | Shared audio preprocess (48kHz mono, trim, window, peak-normalize). |
+| scripts/embed_train.py | PQ training + Rust-compatible codebook serialization + metadata install/version bump. |
+| scripts/tests/conftest.py | Test DB fixtures + skip hook for CLAP-checkpoint-gated tests. |
+| scripts/tests/test_codebook_rust_compat.py | Validates codebook blob layout vs Rust offset expectations (+ optional FAISS training sanity). |
+| scripts/tests/test_encode_idempotent.py | Ensures second encode pass performs no additional writes. |
+| scripts/tests/test_embedding_norm.py | Embedding blob size/endianness and near-unit-norm invariant check. |
+| scripts/tests/test_loop_skipped.py | Ensures LOOP-category rows are excluded from embedding writes. |
+| scripts/tests/test_ranking_sanity.py | Optional real-model ranking sanity check using brute-force L2 over stored embeddings. |
+| scripts/tests/__init__.py | Marks `scripts/tests` as a package. |
+| pyproject.toml | Declares Python deps/dev-deps and pytest config/markers. |
+| doc/plans/plan-2026-04-17-01.md | Plan/spec for the Plan 1 pipeline and its invariants/tests. |
+| doc/designs/embedding-human.md | Embedding design doc updates (including PQ + BEXT mirroring contract). |
+| doc/PICKER_SCHEMA.md | Documents BEXT `[128:256]` as `pq_code` (Plan 2 target layout). |
+| doc/reviews/review-0010.md | Local review log + resolutions/follow-ups. |
+| .gitignore | Adds Python cache/venv/pytest ignores. |
+</details>
+
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3104336188 -->
+### Copilot on [`scripts/tests/test_codebook_rust_compat.py:24`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104336188) (2026-04-18 02:41 UTC)
+
+Docstring says faiss is installed as a “dev dep”, but `faiss-cpu` is currently listed in `pyproject.toml` under main `[project].dependencies`. Either adjust the wording (e.g., “optional dependency for this test”) or move `faiss-cpu` to an extra in a follow-up to keep docs and packaging aligned.
+
+
+<!-- gh-id: 3104336197 -->
+### Copilot on [`scripts/embed_encode.py:52`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104336197) (2026-04-18 02:41 UTC)
+
+`EMBED_BYTES` is defined but never used in this module. Consider removing it (or using it in a blob-length assertion) to avoid dead constants drifting from the actual serialized size.
+
+
+<!-- gh-id: 3104336203 -->
+### Copilot on [`scripts/embed_encode.py:75`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104336203) (2026-04-18 02:41 UTC)
+
+`_chunks()` assumes `n > 0`; with `--batch-size 0` (or a negative value) this will raise at runtime (`range()` step cannot be 0) or behave unexpectedly. Add validation (e.g., argparse `choices`/custom type, or an explicit check in `main()`/`encode_rows()`) to ensure `batch_size >= 1`.
+

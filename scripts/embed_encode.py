@@ -57,6 +57,13 @@ Row = tuple[int, str]
 Encoder = Callable[[np.ndarray], np.ndarray]
 
 
+def _positive_int(s: str) -> int:
+    v = int(s)
+    if v < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {v}")
+    return v
+
+
 def _select_rows(
     conn: sqlite3.Connection, limit: int | None
 ) -> list[Row]:
@@ -73,6 +80,8 @@ def _select_rows(
 
 
 def _chunks(seq: Sequence[Row], n: int) -> Iterator[list[Row]]:
+    if n < 1:
+        raise ValueError(f"_chunks: n must be >= 1, got {n}")
     for i in range(0, len(seq), n):
         yield list(seq[i : i + n])
 
@@ -139,12 +148,17 @@ def encode_rows(
             )
 
         if not dry_run:
+            updates = []
+            for i, (row, _) in enumerate(audios):
+                blob = embeddings[i].astype("<f4", copy=False).tobytes()
+                if len(blob) != EMBED_BYTES:
+                    raise RuntimeError(
+                        f"serialized embedding for row {row[0]} is "
+                        f"{len(blob)} bytes, expected {EMBED_BYTES}"
+                    )
+                updates.append((blob, row[0]))
             conn.executemany(
-                "UPDATE samples SET embedding = ? WHERE id = ?",
-                [
-                    (embeddings[i].astype("<f4", copy=False).tobytes(), row[0])
-                    for i, (row, _) in enumerate(audios)
-                ],
+                "UPDATE samples SET embedding = ? WHERE id = ?", updates
             )
             conn.commit()
         written += len(audios)
@@ -159,7 +173,7 @@ def encode_rows(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=_positive_int, default=32)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--model", type=Path, default=None)
     parser.add_argument(
