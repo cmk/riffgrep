@@ -76,7 +76,29 @@ sample:set_category(row.Category       or "")
 sample:set_subcategory(row.SubCategory or "")
 sample:set_sound_id(row.ShortID        or "")
 sample:set_key(row.Key                 or "")
-sample:set_comment(row.Description     or "")
+
+-- Comment: prefer the SM DB Description, but rescue any plain-text BEXT
+-- Description already on the file before auto-activation overwrites bytes
+-- [0:44]. On Samples-From-Mars-style libraries SM typically writes a short
+-- source tag (e.g. "Roland TR-606") to the file's BEXT Description while
+-- SM DB's Description column holds a different note (e.g. "Akai MPC-60").
+-- The field holds 32 ASCII bytes; the Rust setter truncates — no need to
+-- size-check in Lua.
+local db_desc   = row.Description     or ""
+local file_desc = sample:description() or ""
+local comment
+if file_desc == "" then
+    comment = db_desc
+elseif db_desc == "" then
+    comment = file_desc
+elseif string.find(db_desc, file_desc, 1, true) then
+    comment = db_desc       -- file text already subsumed by DB text
+elseif string.find(file_desc, db_desc, 1, true) then
+    comment = file_desc     -- DB text already subsumed by file text
+else
+    comment = file_desc .. ", " .. db_desc   -- distinct — combine, Rust truncates
+end
+sample:set_comment(comment)
 
 if sample:vendor()  == "" then sample:set_vendor(row.Artist  or "") end
 if sample:library() == "" then sample:set_library(row.Library or "") end
@@ -87,10 +109,11 @@ if row.BPM and tonumber(row.BPM) then
 end
 
 -- ── Stamp SM cross-reference ──────────────────────────────────────────────────
--- Write the SM _UMID into the 64-byte BEXT UMID field so the file can be
--- looked up in the SM database later.  Note: SM already writes this field
--- itself, so this is a no-op for files that SM has processed — it is kept here
--- for completeness and for files SM hasn't touched.
+-- Write the SM _UMID into the 64-byte BEXT UMID field. Empirically (see the
+-- _sm.wav fixtures in test_files/), SM does NOT write the BEXT UMID itself —
+-- every SM-roundtripped file observed had the field left all-zero. So this
+-- stamp is effectively the only way to cross-reference the file back to SM's
+-- justinmetadata row after the port.
 if row._UMID then
     sample:set_bext_umid(row._UMID)
 end

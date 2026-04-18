@@ -456,6 +456,10 @@ pub fn write_bext_field(
 /// Packed schema version minor for MARKERSv2.
 pub const PACKED_VERSION_MINOR_V2: u16 = 2;
 
+/// Byte width of the packed `comment` field at `Description[44:76]`.
+/// The sole authoritative source — Lua setters and the writer both use it.
+pub const PACKED_COMMENT_LEN: usize = 32;
+
 /// Write a `MarkerConfig` to packed Description`[12:44]` and bump version minor to 2.
 ///
 /// Requires an existing BEXT chunk with the packed schema detected. Reads the
