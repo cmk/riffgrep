@@ -1,4 +1,4 @@
-# PR #0000 — feat/plan02-followups (T1-T4 from plan-2026-04-18-01)
+# PR #13 — feat/plan02-followups (T1-T4 from plan-2026-04-18-01)
 
 ## Local review (2026-04-18)
 
