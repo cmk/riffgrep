@@ -394,11 +394,28 @@ pub fn format_meta_diff(diff: &MetaDiff) -> String {
 /// audio data is needed. Only writes fields that actually changed between
 /// `before` and `after`.
 ///
+/// # Activating the packed schema on unpacked files
+///
 /// If the file is unpacked (`before.file_id == 0`) and any packed-Description
 /// field differs, the packed schema is activated first via
 /// [`bext::init_packed_and_write_markers`] with default (empty) markers.
 /// Files without a BEXT chunk cause that activation to surface a
 /// `NoBextChunk` error rather than silently dropping the packed writes.
+///
+/// # Data-loss risk on activation
+///
+/// **Activation unconditionally overwrites `Description[0:44]` with the
+/// packed-schema header (UUID, version, empty marker block with `0xFF`
+/// sentinels).** Any plain-text Description content at bytes 0–43 is
+/// destroyed. Content at bytes 44–127 is overwritten only by explicit
+/// packed-field writes (comment/bpm/category/etc.) when their diff is set;
+/// content at 128–255 is untouched. This is intrinsic to the packed-schema
+/// design — the 44-byte header lives on top of what was formerly free-text
+/// description bytes. Callers porting from SoundMiner-tagged WAVs
+/// typically don't notice, because SM's plain-text Description is already
+/// ported into the new `comment` field by the ETL step before activation.
+/// Callers with hand-authored unpacked Description text should migrate it
+/// explicitly before invoking this writer on a packed-field diff.
 pub fn write_metadata_changes(
     path: &Path,
     before: &UnifiedMetadata,
@@ -1028,5 +1045,129 @@ mod tests {
         );
 
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Single-example guard that activating the packed schema via
+    /// write_metadata_changes does not clobber bytes outside
+    /// Description[0:44]. Originator/OriginatorReference/OriginationDate/UMID
+    /// regions must be untouched. Complements the bext-level
+    /// `test_init_packed_preserves_originator` at the workflow layer.
+    #[test]
+    fn write_preserves_non_packed_regions_during_activation() {
+        let path = temp_unpacked_wav("preserve");
+
+        // Seed known bytes into Originator (256..288), OriginatorReference
+        // (288..320), OriginationDate (320..330), and UMID (348..412).
+        let bext_offset = {
+            let mut r = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
+            bext::scan_chunks(&mut r).unwrap().bext_offset.unwrap() as usize
+        };
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[bext_offset + 256..bext_offset + 288]
+            .copy_from_slice(b"VENDOR_PAYLOAD_32_BYTES________x");
+        bytes[bext_offset + 288..bext_offset + 320]
+            .copy_from_slice(b"LIBRARY_PAYLOAD_32_BYTES_______x");
+        bytes[bext_offset + 320..bext_offset + 330].copy_from_slice(b"2026-04-18");
+        bytes[bext_offset + 348..bext_offset + 412]
+            .copy_from_slice(b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        std::fs::write(&path, &bytes).unwrap();
+        let snapshot = std::fs::read(&path).unwrap();
+
+        // Lua sets bpm — forcing activation + packed write without touching
+        // any field outside Description[0:128].
+        let before = UnifiedMetadata {
+            path: path.clone(),
+            vendor: "VENDOR_PAYLOAD_32_BYTES________x".to_string(),
+            library: "LIBRARY_PAYLOAD_32_BYTES_______x".to_string(),
+            umid: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            date: "2026-04-18".to_string(),
+            ..Default::default()
+        };
+        let mut after = before.clone();
+        after.bpm = Some(128);
+
+        write_metadata_changes(&path, &before, &after, false).unwrap();
+
+        let post = std::fs::read(&path).unwrap();
+        assert_eq!(
+            &post[bext_offset + 256..bext_offset + 288],
+            &snapshot[bext_offset + 256..bext_offset + 288],
+            "Originator must survive activation"
+        );
+        assert_eq!(
+            &post[bext_offset + 288..bext_offset + 320],
+            &snapshot[bext_offset + 288..bext_offset + 320],
+            "OriginatorReference must survive activation"
+        );
+        assert_eq!(
+            &post[bext_offset + 320..bext_offset + 330],
+            &snapshot[bext_offset + 320..bext_offset + 330],
+            "OriginationDate must survive activation"
+        );
+        assert_eq!(
+            &post[bext_offset + 348..bext_offset + 412],
+            &snapshot[bext_offset + 348..bext_offset + 412],
+            "UMID must survive activation"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    // --- Proptests ---
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Any u16 BPM round-trips through write_metadata_changes +
+            /// read_metadata_riff. Guards the BPM formatter: the packed field
+            /// is 4 ASCII chars and the reader rejects leading whitespace,
+            /// so the writer must left-align.
+            #[test]
+            fn bpm_roundtrips_through_workflow_write(v in 0u16..10_000) {
+                let path = temp_unpacked_wav("bpm_rt");
+                let before = UnifiedMetadata {
+                    path: path.clone(),
+                    ..Default::default()
+                };
+                let mut after = before.clone();
+                after.bpm = Some(v);
+
+                write_metadata_changes(&path, &before, &after, false).unwrap();
+                let post = crate::engine::read_metadata_riff(&path).unwrap();
+                let _ = std::fs::remove_file(&path);
+
+                prop_assert_eq!(post.bpm, Some(v));
+            }
+
+            /// Arbitrary printable-ASCII category strings truncate to the
+            /// 4-byte field width and round-trip. Guards the `write_ascii`
+            /// truncate + sanitize path: the reader trims trailing
+            /// whitespace/nulls, so the observable value is the first 4
+            /// bytes with trailing whitespace stripped.
+            #[test]
+            fn category_truncated_and_roundtrips(raw in "[ -~]{0,16}") {
+                let path = temp_unpacked_wav("cat_rt");
+                let before = UnifiedMetadata {
+                    path: path.clone(),
+                    ..Default::default()
+                };
+                let mut after = before.clone();
+                after.category = raw.clone();
+
+                let _ = write_metadata_changes(&path, &before, &after, false);
+                let post = crate::engine::read_metadata_riff(&path).unwrap();
+                let _ = std::fs::remove_file(&path);
+
+                let expected: String = raw
+                    .chars()
+                    .take(4)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string();
+                prop_assert_eq!(post.category, expected);
+            }
+        }
     }
 }
