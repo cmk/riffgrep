@@ -118,7 +118,11 @@ def encode_rows(
     an embedding between the SELECT and the UPDATE — the write guards on
     `embedding IS NULL` so it is idempotent under that race.
 
-    Rows that fail preprocessing are skipped silently.
+    Rows that fail preprocessing are counted in `skipped` (see below)
+    and surfaced on stderr at the end of the run. Over a 1.2M-file
+    sweep, silent per-row skips accumulate invisibly — the tail summary
+    is the only operational signal that a batch of files is unreadable
+    or outside the preprocessing contract.
 
     `rows` is consumed as a sequence — the tqdm progress bar reads its
     length once. Callers should pass the list returned by
@@ -138,11 +142,13 @@ def encode_rows(
         pbar = None
 
     written = 0
+    skipped = 0
     for batch in _chunks(rows, batch_size):
         audios: list[tuple[Row, np.ndarray]] = []
         for row in batch:
             audio = preprocess(row[1])
             if audio is None:
+                skipped += 1
                 continue
             audios.append((row, audio))
         if not audios:
@@ -179,6 +185,12 @@ def encode_rows(
 
     if pbar:
         pbar.close()
+    if skipped > 0:
+        print(
+            f"skipped {skipped} row{'s' if skipped != 1 else ''} "
+            f"(preprocess returned None — unreadable or all-silent)",
+            file=sys.stderr,
+        )
     return written
 
 
