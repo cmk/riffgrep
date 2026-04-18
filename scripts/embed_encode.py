@@ -119,8 +119,14 @@ def encode_rows(
     `embedding IS NULL` so it is idempotent under that race.
 
     Rows that fail preprocessing are skipped silently.
+
+    `rows` is consumed as a sequence — the tqdm progress bar reads its
+    length once. Callers should pass the list returned by
+    `_select_rows`; an iterator works too as long as it materializes in
+    a single pass.
     """
-    rows = list(rows)
+    if not isinstance(rows, list):
+        rows = list(rows)
     if progress:
         try:
             from tqdm import tqdm  # type: ignore[import-untyped]

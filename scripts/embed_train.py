@@ -46,33 +46,69 @@ CODEBOOK_BYTES = PQ_M * PQ_K * PQ_DSUB * 4  # 524288
 assert PQ_M * PQ_DSUB == EMBED_DIM
 
 
+# SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999. Stay well under
+# so each batch-fetch query has room for the IN placeholders.
+_FETCH_BATCH = 500
+
+
 def _fetch_training_vectors(
     conn: sqlite3.Connection, n_train: int, seed: int
 ) -> np.ndarray:
-    """Return an (N, 512) float32 matrix from non-LOOP embedded rows."""
-    # SQLite has no seeded ORDER BY; fetch id+embedding and sample in Python
-    # so the choice is reproducible and testable.
-    rows = conn.execute(
-        """
-        SELECT id, embedding FROM samples
-        WHERE embedding IS NOT NULL
-          AND (category IS NULL OR category NOT LIKE 'LOOP%')
-        """
-    ).fetchall()
-    if not rows:
+    """Return an (N, 512) float32 matrix from non-LOOP embedded rows.
+
+    Memory characteristics: O(n_eligible_ids) for the initial ID list
+    plus O(_FETCH_BATCH × EMBED_BYTES) for one batch of fetched BLOBs
+    at a time, plus O(n_train × EMBED_BYTES) for the final matrix.
+    The old full-table materialization was O(n_eligible × EMBED_BYTES)
+    — ~2.5 GB at 1.2M scale — and is what `test_train_memory.py` now
+    guards against.
+
+    SQLite has no seeded ORDER BY, so reproducibility comes from numpy's
+    `default_rng(seed).choice` over the eligible-id list.
+    """
+    eligible_ids = [
+        int(row[0])
+        for row in conn.execute(
+            """
+            SELECT id FROM samples
+            WHERE embedding IS NOT NULL
+              AND (category IS NULL OR category NOT LIKE 'LOOP%')
+            """
+        )
+    ]
+    if not eligible_ids:
         raise RuntimeError("no non-LOOP embedded rows available for training")
 
     rng = np.random.default_rng(seed)
-    picks = rng.permutation(len(rows))[: min(n_train, len(rows))]
-    vecs = np.empty((len(picks), EMBED_DIM), dtype=np.float32)
-    for i, j in enumerate(picks):
-        buf = rows[j][1]
-        if len(buf) != EMBED_DIM * 4:
-            raise RuntimeError(
-                f"row {rows[j][0]}: embedding is {len(buf)} bytes, "
-                f"expected {EMBED_DIM * 4}"
-            )
-        vecs[i] = np.frombuffer(buf, dtype="<f4")
+    n_sample = min(n_train, len(eligible_ids))
+    pick_indices = rng.choice(len(eligible_ids), size=n_sample, replace=False)
+    sampled_ids = [eligible_ids[int(i)] for i in pick_indices]
+
+    vecs = np.empty((n_sample, EMBED_DIM), dtype=np.float32)
+    # id → output-row index, so we can fill `vecs` in any order SQLite
+    # returns the IN-list without re-sorting.
+    pos_for_id = {rid: i for i, rid in enumerate(sampled_ids)}
+    fetched = 0
+    for start in range(0, n_sample, _FETCH_BATCH):
+        batch_ids = sampled_ids[start : start + _FETCH_BATCH]
+        placeholders = ",".join("?" * len(batch_ids))
+        for row_id, buf in conn.execute(
+            f"SELECT id, embedding FROM samples WHERE id IN ({placeholders})",
+            batch_ids,
+        ):
+            if len(buf) != EMBED_DIM * 4:
+                raise RuntimeError(
+                    f"row {row_id}: embedding is {len(buf)} bytes, "
+                    f"expected {EMBED_DIM * 4}"
+                )
+            vecs[pos_for_id[int(row_id)]] = np.frombuffer(buf, dtype="<f4")
+            fetched += 1
+
+    if fetched != n_sample:
+        raise RuntimeError(
+            f"fetched {fetched} embedding rows, expected {n_sample} "
+            f"(some sampled ids were missing from the samples table)"
+        )
     return vecs
 
 
