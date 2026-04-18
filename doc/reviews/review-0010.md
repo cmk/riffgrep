@@ -689,3 +689,23 @@ Docstring says faiss is installed as a “dev dep”, but `faiss-cpu` is current
 
 `_chunks()` assumes `n > 0`; with `--batch-size 0` (or a negative value) this will raise at runtime (`range()` step cannot be 0) or behave unexpectedly. Add validation (e.g., argparse `choices`/custom type, or an explicit check in `main()`/`encode_rows()`) to ensure `batch_size >= 1`.
 
+
+<!-- gh-id: 3104338640 -->
+#### ↳ cmk ([2026-04-18 02:43 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104338640))
+
+Fixed in fd376f0 — added a `_positive_int` argparse type; `--n-train 0` or negative now fails at parse time with a clear message.
+
+<!-- gh-id: 3104338661 -->
+#### ↳ cmk ([2026-04-18 02:43 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104338661))
+
+Fixed in fd376f0 — docstring now correctly describes `faiss-cpu` as a runtime dependency under `[project].dependencies` and notes that `importorskip` handles environments where the native wheel is unavailable.
+
+<!-- gh-id: 3104338682 -->
+#### ↳ cmk ([2026-04-18 02:43 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104338682))
+
+Fixed in fd376f0 — `EMBED_BYTES` is now used in a serialization invariant check inside `encode_rows` (raises if an encoder's output ever serializes to the wrong length).
+
+<!-- gh-id: 3104338710 -->
+#### ↳ cmk ([2026-04-18 02:43 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104338710))
+
+Fixed in fd376f0 — `--batch-size` uses the same `_positive_int` type, and `_chunks` guards `n >= 1` for library callers.
