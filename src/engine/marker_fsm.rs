@@ -497,6 +497,14 @@ impl MarkerFsm {
         }
     }
 
+    /// Create a machine pre-seeded with the given state. Useful for
+    /// tests that need to start from a non-default configuration.
+    pub fn from_state(state: MarkerFsmState) -> Self {
+        Self {
+            machine: StateMachine::from_state(state),
+        }
+    }
+
     /// Apply an input. Returns the output, if any.
     pub fn consume(&mut self, input: Input) -> Option<Output> {
         self.machine.consume(&input).ok().flatten()
