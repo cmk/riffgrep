@@ -26,7 +26,7 @@ def _make_encoder(dim: int = 512) -> Any:
     return encoder
 
 
-def _run(db_path: Path, n: int) -> int:
+def _run(db_path: Path) -> int:
     conn = sqlite3.connect(db_path)
     try:
         rows = embed_encode._select_rows(conn, limit=None)
@@ -51,10 +51,10 @@ def test_second_run_is_noop(empty_db: Path, insert_row) -> None:
         finally:
             conn.close()
 
-        first = _run(empty_db, 10)
+        first = _run(empty_db)
         assert first == 10
 
-        second = _run(empty_db, 10)
+        second = _run(empty_db)
         assert second == 0
 
     conn = sqlite3.connect(empty_db)

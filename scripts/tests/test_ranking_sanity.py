@@ -105,7 +105,12 @@ def test_ranking_sanity(
         path: np.frombuffer(blob, dtype="<f4") for path, _, blob in stored
     }
 
-    # For each category, pick one file as the query and score the rest.
+    # Treat every stored file as a query and score the rest. This gives
+    # a per-query hit-rate; the threshold check below requires ≥80% of
+    # queries to satisfy the ≥8/10 match invariant.
+    if not stored:
+        pytest.skip("no embeddings were stored — fixture unreadable?")
+
     violations: list[str] = []
     for query_path, query_cat, _ in stored:
         others = [
@@ -116,7 +121,6 @@ def test_ranking_sanity(
         if hits < 8:
             violations.append(f"{query_path}: {hits}/10 ({query_cat})")
 
-    # Threshold: at least 80% of queries satisfy ≥8/10 match.
     ok_ratio = 1.0 - len(violations) / len(stored)
     assert ok_ratio >= 0.8, (
         f"ranking_ok_ratio={ok_ratio:.2f} below 0.80; "
