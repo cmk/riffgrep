@@ -6,6 +6,7 @@ pub mod cli;
 pub mod config;
 pub mod filesystem;
 pub mod id3;
+pub mod marker_fsm;
 pub mod marks;
 pub mod playback;
 pub mod pq;
