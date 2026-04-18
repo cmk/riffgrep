@@ -778,3 +778,56 @@ Fixed in 1432506 — UPDATE now includes `AND embedding IS NULL`, and the loop s
 #### ↳ cmk ([2026-04-18 02:52 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104350014))
 
 Fixed in 1432506 — `written` only increments on committed UPDATEs (so it's 0 under `--dry-run` and under a lost race). `main()` now prints a dry-run-specific message instead of "wrote 0 embeddings".
+
+<!-- gh-id: 3104352711 -->
+### Copilot on [`scripts/embed_encode.py:214`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104352711) (2026-04-18 02:55 UTC)
+
+`--limit` is parsed as a plain `int`, so `--limit 0` (or a negative value) produces an empty selection and triggers the "nothing to do — all non-LOOP rows already embedded" message even when there is work remaining. Consider validating `--limit` as a positive integer (e.g., reuse `_positive_int`) or handling `0` explicitly with a clearer no-op message/error.
+
+<!-- gh-id: 4133340630 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 02:55 UTC](https://github.com/cmk/riffgrep/pull/10#pullrequestreview-4133340630))
+
+## Pull request overview
+
+Implements Plan 1 of the embedding roadmap by adding Python scripts to (a) preprocess audio, (b) encode/store LAION-CLAP embeddings into `samples.embedding`, and (c) train/store a Rust-compatible FAISS PQ codebook into SQLite `metadata`, with a pytest suite and supporting docs/config so existing Rust similarity search can operate once the DB is populated.
+
+**Changes:**
+- Add Python embedding pipeline scripts: `embed_preprocess.py`, `embed_encode.py`, `embed_train.py`.
+- Add pytest suite under `scripts/tests/` covering idempotence, LOOP skipping, embedding blob invariants, PQ codebook byte-layout compatibility, and a gated real-model ranking sanity check.
+- Add Python project config (`pyproject.toml`), plus plan/design/schema documentation and Python-related `.gitignore` updates.
+
+### Reviewed changes
+
+Copilot reviewed 14 out of 16 changed files in this pull request and generated 1 comment.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| scripts/embed_preprocess.py | Shared audio loading + resample/trim/window/normalize preprocessing for CLAP inference. |
+| scripts/embed_encode.py | Batch CLAP inference, LE-f32 embedding serialization, and idempotent DB writes (skipping LOOP). |
+| scripts/embed_train.py | Sample embeddings, train FAISS PQ, serialize Rust-compatible centroid blob, write codebook + version to metadata. |
+| scripts/tests/conftest.py | Minimal SQLite schema fixtures + marker-based skip hook for CLAP-checkpoint-gated tests. |
+| scripts/tests/test_codebook_rust_compat.py | Verifies Python codebook blob layout matches Rust indexing expectations; optional FAISS training sanity. |
+| scripts/tests/test_encode_idempotent.py | Ensures second encode run is a no-op via `embedding IS NULL` gating. |
+| scripts/tests/test_embedding_norm.py | Verifies embedding blob size/endianness and near-unit-norm invariant. |
+| scripts/tests/test_loop_skipped.py | Ensures LOOP-category rows never receive embeddings in this plan. |
+| scripts/tests/test_ranking_sanity.py | Gated real-model ranking sanity check using brute-force L2 over stored embeddings. |
+| scripts/tests/__init__.py | Marks `scripts/tests` as a package. |
+| pyproject.toml | Declares Python deps/dev-deps and pytest configuration/marker registration. |
+| doc/plans/plan-2026-04-17-01.md | Plan/spec for Plan 1 pipeline and its invariants/tests. |
+| doc/designs/embedding-human.md | Embedding design update including PQ + BEXT mirroring contract for Plan 2. |
+| doc/PICKER_SCHEMA.md | Documents BEXT `[128:256]` as `pq_code` layout for future implementation. |
+| doc/reviews/review-0010.md | Local review log with resolutions/follow-ups. |
+| .gitignore | Adds ignores for common Python cache/venv/pytest artifacts. |
+</details>
+
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.

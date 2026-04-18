@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--batch-size", type=_positive_int, default=32)
-    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--limit", type=_positive_int, default=None)
     parser.add_argument("--model", type=Path, default=None)
     parser.add_argument(
         "--dry-run",
