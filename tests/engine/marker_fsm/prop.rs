@@ -20,9 +20,7 @@ use proptest_state_machine::{ReferenceStateMachine, StateMachineTest};
 use rust_fsm::StateMachineImpl;
 
 use riffgrep::engine::bext::MARKER_EMPTY;
-use riffgrep::engine::marker_fsm::{
-    Bank, Input, MarkerBankMachine, MarkerFsm, MarkerFsmState,
-};
+use riffgrep::engine::marker_fsm::{Bank, Input, MarkerBankMachine, MarkerFsm, MarkerFsmState};
 
 use crate::generators;
 
@@ -128,7 +126,9 @@ fn fsm_with_prefix(prefix: &[Input]) -> MarkerFsm {
     fsm
 }
 
-fn input_seq_strategy(len: impl Into<proptest::collection::SizeRange>) -> BoxedStrategy<Vec<Input>> {
+fn input_seq_strategy(
+    len: impl Into<proptest::collection::SizeRange>,
+) -> BoxedStrategy<Vec<Input>> {
     // `any_input` is state-independent in practice, so we pass a dummy
     // state. If generators grow state-dependence we'd need to inline.
     let dummy = MarkerFsmState::default();
