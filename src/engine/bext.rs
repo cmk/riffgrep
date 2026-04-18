@@ -518,8 +518,12 @@ pub fn write_markers(path: &std::path::Path, markers: &MarkerConfig) -> Result<(
 /// 3. Sets bext_version to 2 at offset 346 (signals EBU Tech 3285 compliance)
 /// 4. Generates a UUID v7 and writes the high 8 bytes (BE) at Description`[0:8]` — last
 ///
-/// Preserves all other BEXT fields (Originator, OriginatorReference, Date, UMID, etc.)
-/// since those live at fixed offsets outside `[0:44]`.
+/// **Destroys any content previously at `Description[0:44]`.** On an unpacked
+/// file these 44 bytes may hold the first characters of a plain-text
+/// Description string; they are replaced by the packed-schema header (UUID,
+/// version, marker block). Bytes `[44:256]` are untouched. All other BEXT
+/// fields (Originator, OriginatorReference, Date, UMID, etc.) live at fixed
+/// offsets outside `[0:44]` and are preserved.
 ///
 /// The UUID v7 high 64 bits encode: 48-bit ms timestamp | 0x7 version nibble | 12-bit random.
 /// A non-zero file_id combined with version_major=1 and bext_version=2 is definitively
