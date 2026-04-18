@@ -142,3 +142,103 @@ Copilot reviewed 11 out of 12 changed files in this pull request and generated 9
 ### Copilot on [`scripts/embed_encode.py:130`](https://github.com/cmk/riffgrep/pull/13#discussion_r3104526810) (2026-04-18 04:47 UTC)
 
 The docstring suggests callers can pass an iterator and that it will be consumed “as a sequence,” but the implementation immediately materializes any non-list with `list(rows)`, which can be large (e.g., 1.2M candidates). Consider clarifying in the docstring that `encode_rows` will fully materialize the iterable (or refactor progress reporting to avoid requiring `len(rows)` and support true streaming).
+
+<!-- gh-id: 3104578170 -->
+#### ↳ cmk ([2026-04-18 05:18 UTC](https://github.com/cmk/riffgrep/pull/13#discussion_r3104578170))
+
+Fixed in 980a5c1 — unused `import sys` removed.
+
+<!-- gh-id: 3104578220 -->
+#### ↳ cmk ([2026-04-18 05:18 UTC](https://github.com/cmk/riffgrep/pull/13#discussion_r3104578220))
+
+Fixed in 980a5c1 — `pytest` and `settings` were declared but never called; dropped from the import line.
+
+<!-- gh-id: 3104578270 -->
+#### ↳ cmk ([2026-04-18 05:18 UTC](https://github.com/cmk/riffgrep/pull/13#discussion_r3104578270))
+
+Fixed in 980a5c1 — core-deps comment now distinguishes "import scripts" (numpy suffices) from "run the test suite" (wants `--extra dev` for pytest + hypothesis).
+
+<!-- gh-id: 3104578323 -->
+#### ↳ cmk ([2026-04-18 05:18 UTC](https://github.com/cmk/riffgrep/pull/13#discussion_r3104578323))
+
+Fixed in 980a5c1 — Part A step 1 now spells out the three-tier install story: plain `uv sync` → numpy only; `--extra dev` → tests; `--extra ml --extra dev` → real inference.
+
+<!-- gh-id: 3104578389 -->
+#### ↳ cmk ([2026-04-18 05:18 UTC](https://github.com/cmk/riffgrep/pull/13#discussion_r3104578389))
+
+Fixed in 980a5c1 — the stale "`encode_rows` takes an iterator" claim removed from the plan. encode_rows' metadata tuples (~200MB at 1.2M) were never the memory concern; the training-vector BLOBs (~2.5GB if materialized) were. encode_rows' docstring now spells that out explicitly.
+
+<!-- gh-id: 3104578435 -->
+#### ↳ cmk ([2026-04-18 05:18 UTC](https://github.com/cmk/riffgrep/pull/13#discussion_r3104578435))
+
+Fixed in 980a5c1 — dead `EMBED_BYTES` constant removed.
+
+<!-- gh-id: 3104578482 -->
+#### ↳ cmk ([2026-04-18 05:18 UTC](https://github.com/cmk/riffgrep/pull/13#discussion_r3104578482))
+
+Fixed in 980a5c1 — the `~/.claude/plans/...` reference is gone; the plan now notes that the master plan lives outside the repo and directs readers to `doc/reviews/review-0010.md` for the repo-local record of what was deferred.
+
+<!-- gh-id: 3104578536 -->
+#### ↳ cmk ([2026-04-18 05:18 UTC](https://github.com/cmk/riffgrep/pull/13#discussion_r3104578536))
+
+Fixed in 980a5c1 — P2.2 row now correctly says 10K-row fixture with n_train=100 and names the test by path, including the 5MB / 21MB envelope numbers.
+
+<!-- gh-id: 3104578623 -->
+#### ↳ cmk ([2026-04-18 05:18 UTC](https://github.com/cmk/riffgrep/pull/13#discussion_r3104578623))
+
+Fixed in 980a5c1 — docstring now says `rows` is materialized on entry and why that's fine (metadata tuples, not BLOBs — memory concern is in `_fetch_training_vectors`, which T1 already addresses).
+
+<!-- gh-id: 3104583283 -->
+### Copilot on [`pyproject.toml:33`](https://github.com/cmk/riffgrep/pull/13#discussion_r3104583283) (2026-04-18 05:21 UTC)
+
+The comment about the torch upper bound says “2.3–2.6 ships” macOS x86_64 wheels, but the actual constraint is `torch>=2.0,<2.3` (which excludes 2.3+ entirely). Please reconcile the comment with the version range (either widen the bound if intended, or update the comment to match the actual pin rationale).
+
+<!-- gh-id: 4133651787 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 05:21 UTC](https://github.com/cmk/riffgrep/pull/13#pullrequestreview-4133651787))
+
+## Pull request overview
+
+Implements the deferred “Plan 2” follow-ups for the Python embedding pipeline: making PQ training-vector sampling memory-bounded, adding a stricter FAISS↔Python layout cross-check, surfacing preprocess-skip counts during encoding, and adding Hypothesis property tests for the audio preprocess helpers. It also compartmentalizes Python dependencies into extras and updates CI to run the expanded Python test suite.
+
+**Changes:**
+- Refactor `embed_train._fetch_training_vectors` to sample eligible IDs first and batch-fetch only the selected embedding BLOBs; add a tracemalloc regression test.
+- Add tests for FAISS decode/layout agreement, preprocess properties (Hypothesis), and encode skip-count stderr logging.
+- Split Python deps into lightweight core + `dev` / `encode` / `train` / `ml` extras; update CI Python job to install Hypothesis.
+
+### Reviewed changes
+
+Copilot reviewed 11 out of 12 changed files in this pull request and generated 3 comments.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| `scripts/embed_train.py` | Memory-bounds training vector fetch via ID sampling + batched embedding fetch. |
+| `scripts/embed_encode.py` | Counts preprocess skips and prints a tail stderr summary; clarifies rows materialization behavior. |
+| `scripts/tests/test_train_memory.py` | Adds tracemalloc regression coverage for `_fetch_training_vectors`. |
+| `scripts/tests/test_preprocess_properties.py` | Adds Hypothesis property tests for preprocess helper invariants and composition. |
+| `scripts/tests/test_encode_skip_logging.py` | Adds tests ensuring skip-count logging appears only when needed and pluralizes correctly. |
+| `scripts/tests/test_codebook_rust_compat.py` | Adds FAISS-native decode vs Python reshape/layout exact cross-check. |
+| `pyproject.toml` | Moves heavy ML deps into extras; adds Hypothesis to `dev`; adds uv override pins. |
+| `doc/plans/plan-2026-04-18-01.md` | Documents Plan 2 tasks + verification criteria and user-run validation steps. |
+| `doc/reviews/review-0013.md` | Adds a local review record for PR #13. |
+| `.github/workflows/ci.yml` | Installs Hypothesis in the Python CI job to run the new property tests. |
+| `.python-version` | Pins local Python version to 3.12. |
+| `.gitignore` | Adds `uv.lock` to ignored files. |
+</details>
+
+
+
+
+
+
+<!-- gh-id: 3104583292 -->
+### Copilot on [`doc/plans/plan-2026-04-18-01.md:45`](https://github.com/cmk/riffgrep/pull/13#discussion_r3104583292) (2026-04-18 05:21 UTC)
+
+The install instructions here suggest llvmlite may build from source and recommend pre-installing `cmake` + `llvm`, but this PR also adds `[tool.uv].override-dependencies` pins intended to keep the `ml`/`encode` install wheel-only on macOS x86_64 + Python 3.12. Please update this paragraph to match the actual expected behavior under the pinned/overridden dependency set (and clarify when a source build is still possible).
+
+<!-- gh-id: 3104583296 -->
+### Copilot on [`doc/plans/plan-2026-04-18-01.md:149`](https://github.com/cmk/riffgrep/pull/13#discussion_r3104583296) (2026-04-18 05:21 UTC)
+
+This section says to “Extend the tqdm bar's unit or postfix to show the running skipped count”, but the implemented change only prints a single stderr summary at the end of `encode_rows` (no tqdm postfix/unit update). Please align the plan text with the current implementation (or implement the tqdm update if that’s still a requirement).
