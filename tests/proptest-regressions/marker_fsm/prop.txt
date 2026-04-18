@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d748b0194ed7312009c068929d71c0fa08781623c47220e0093a9dc8a4da115d # shrinks to prefix = [SelectNextMarker, MarkerReset { sof: 0, eof: 840972 }, SelectNextMarker, ClearNearestMarker(0)]
+cc 2265d811193014714944f48c5800db54a6ecef2b6b6d75cbe1108ddb90824f3c # shrinks to prefix = [ToggleMarkerDisplay, ToggleMarkerDisplay, MarkerReset { sof: 0, eof: 0 }, SelectPrevMarker, ClearBankMarkers]
+cc 04792ccff28c269f025d662ca501135c0307e9ef9c35899c75f2e2cb635a9ebf # shrinks to seq = [SetMarker1(0), SelectPrevMarker, ClearNearestMarker(0)], insert_at = 3
+cc 5f528ae6bd2aba567b7f5549c3d9bd0710af4ea5c8df03ffbdc40b467f00f96e # shrinks to prefix = [ToggleBankSync, MarkerReset { sof: 0, eof: 19596 }, ToggleBank, ToggleBank, SelectPrevMarker, ToggleBankSync], delta = 1

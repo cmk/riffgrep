@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a3297b4f32de29a12c7387a0e105435efadcadf00dc9fe0a3543518564bea835 # shrinks to (initial_state, transitions, seen_counter) = (MarkerFsmState { selection: None, active_bank: A, bank_sync: true, visible: true, config: MarkerConfig { bank_a: MarkerBank { m1: 4294967295, m2: 4294967295, m3: 4294967295, reps: [0, 0, 0, 0] }, bank_b: MarkerBank { m1: 4294967295, m2: 4294967295, m3: 4294967295, reps: [0, 0, 0, 0] } } }, [ToggleBankSync, SetMarker1(0), ToggleBankSync], None)
