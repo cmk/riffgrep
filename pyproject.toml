@@ -22,7 +22,7 @@ dev = [
 testpaths = ["scripts/tests"]
 pythonpath = ["scripts"]
 markers = [
-    "requires_clap_model: test needs a real LAION-CLAP checkpoint; skipped unless LAION_CLAP_CHECKPOINT is set and the fixture corpus exists.",
+    "requires_clap_model: test needs a real LAION-CLAP checkpoint; skipped via the conftest hook unless LAION_CLAP_CHECKPOINT is set. Individual tests may gate on additional env vars (e.g., RIFFGREP_RANKING_FIXTURE_DIR) at runtime.",
 ]
 
 [tool.uv]
