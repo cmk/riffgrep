@@ -35,10 +35,18 @@ def _db_to_amp(db: float) -> float:
 
 
 def _trim_silence(audio: np.ndarray, threshold: float) -> np.ndarray:
-    """Strip leading/trailing samples with absolute amplitude below threshold."""
+    """Strip leading/trailing samples below `threshold`.
+
+    Returns an empty array when no sample exceeds the threshold — i.e.,
+    the file is entirely below -60 dBFS. The caller's `len(data) == 0`
+    guard then converts this into a `None` return from `preprocess`,
+    matching the "entirely silence → None" contract. Returning the
+    original array here would let `_peak_normalize` amplify sub-threshold
+    noise up to -1 dBFS.
+    """
     mask = np.abs(audio) > threshold
     if not mask.any():
-        return audio  # all silence — let caller decide
+        return audio[:0]
     first = int(np.argmax(mask))
     last = len(mask) - int(np.argmax(mask[::-1]))
     return audio[first:last]

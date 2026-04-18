@@ -77,8 +77,20 @@ def test_ranking_sanity(
 ) -> None:
     ckpt_path, fix_dir = ranking_env
     rows = _collect_fixtures(fix_dir)
-    if len(rows) < 50:
-        pytest.skip(f"fixture dir has {len(rows)} files, need at least 50")
+
+    # Enforce the docstring's fixture contract: ≥5 categories, each with
+    # ≥10 WAVs. A corpus of 50 files concentrated in one category would
+    # trivially pass the hit-rate threshold without exercising
+    # cross-category discrimination.
+    per_category: dict[str, int] = {}
+    for _, cat in rows:
+        per_category[cat] = per_category.get(cat, 0) + 1
+    small = {c: n for c, n in per_category.items() if n < 10}
+    if len(per_category) < 5 or small:
+        pytest.skip(
+            f"fixture needs ≥5 categories with ≥10 WAVs each; got "
+            f"{len(per_category)} categories, under-populated: {small}"
+        )
 
     category_of: dict[str, str] = {path: cat for path, cat in rows}
 

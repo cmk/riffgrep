@@ -433,3 +433,74 @@ Fixed in b754dad — `_current_version` now raises `RuntimeError` with a diagnos
 #### ↳ cmk ([2026-04-18 02:16 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104293698))
 
 Fixed in b754dad — removed the unused `n` param and adjusted call sites.
+
+<!-- gh-id: 3104299451 -->
+### Copilot on [`scripts/embed_encode.py:114`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104299451) (2026-04-18 02:19 UTC)
+
+`encode_rows()` materializes the entire `rows` iterable (`rows = list(rows)`) and `_select_rows()` already does a `.fetchall()` into a Python list. On a large DB this can be a significant, unnecessary memory spike and delays starting work. Prefer streaming: iterate directly over a cursor (or `fetchmany`) and chunk batches without converting the full selection to a list, so memory stays O(batch_size).
+
+<!-- gh-id: 3104299456 -->
+### Copilot on [`scripts/embed_preprocess.py:41`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104299456) (2026-04-18 02:19 UTC)
+
+`_trim_silence()` returns the original audio when *all* samples are below the silence threshold (`if not mask.any(): return audio`). That means an “all-silent (below -60 dBFS)” file won’t be treated as silence: it will later be peak-normalized, potentially amplifying low-level noise, which contradicts the module docstring’s “trim silence (-60 dBFS)” and `preprocess()`’s “entirely silence → None” contract. Consider returning an empty array (or having `preprocess()` treat `not mask.any()` as silence) so these files are skipped consistently.
+
+
+<!-- gh-id: 3104299458 -->
+### Copilot on [`scripts/tests/test_ranking_sanity.py:82`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104299458) (2026-04-18 02:19 UTC)
+
+The test docstring specifies fixture structure constraints (≥5 category subdirs, each with ≥10 WAVs), but the test only checks `len(rows) >= 50`. With fewer categories (or a highly imbalanced corpus), the assertion can become trivial and less meaningful. Consider enforcing these per-category minimums (or `skip` with a clear message) so the test actually validates cross-category ranking behavior as described.
+
+
+<!-- gh-id: 4133281315 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 02:19 UTC](https://github.com/cmk/riffgrep/pull/10#pullrequestreview-4133281315))
+
+## Pull request overview
+
+Implements Plan 1 of the embedding roadmap by adding a Python pipeline to (1) preprocess audio, (2) encode LAION-CLAP embeddings into `samples.embedding`, and (3) train/serialize a FAISS PQ codebook into SQLite `metadata`, plus a pytest suite and supporting docs/config so existing Rust similarity paths can operate on populated DBs.
+
+**Changes:**
+- Add `embed_preprocess.py`, `embed_encode.py`, and `embed_train.py` to generate/store CLAP embeddings and a Rust-compatible PQ codebook in SQLite.
+- Add `scripts/tests/` fixtures + tests covering idempotence, LOOP skipping, embedding blob invariants, PQ layout compatibility, and an optional real-model ranking sanity check.
+- Add Python project configuration (`pyproject.toml`), update embedding/schema documentation, and extend `.gitignore` for Python artifacts.
+
+### Reviewed changes
+
+Copilot reviewed 14 out of 16 changed files in this pull request and generated 4 comments.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| scripts/embed_preprocess.py | Audio load/resample/trim/window/normalize preprocessing for CLAP inference. |
+| scripts/embed_encode.py | Batch CLAP inference, embedding serialization (LE f32), and DB updates for eligible rows. |
+| scripts/embed_train.py | Sample embeddings, train FAISS PQ, serialize codebook blob, and write codebook + version to `metadata`. |
+| scripts/tests/conftest.py | Minimal SQLite schema + fixtures and skip hook for CLAP-gated tests. |
+| scripts/tests/test_codebook_rust_compat.py | Validates codebook byte layout vs Rust indexing expectations; optional FAISS training check. |
+| scripts/tests/test_encode_idempotent.py | Ensures a second encode run performs no additional writes. |
+| scripts/tests/test_embedding_norm.py | Verifies embedding blob size/endianness and near-unit-norm invariant. |
+| scripts/tests/test_loop_skipped.py | Ensures LOOP-category rows are excluded from embedding writes. |
+| scripts/tests/test_ranking_sanity.py | Optional real-model ranking sanity check using brute-force L2 over stored embeddings. |
+| scripts/tests/__init__.py | Marks the tests directory as a package. |
+| pyproject.toml | Declares Python deps/dev-deps and pytest configuration/marker registration. |
+| doc/reviews/review-0010.md | Local review notes, follow-ups, and resolved comment threads for this plan. |
+| doc/plans/plan-2026-04-17-01.md | Plan/spec describing algorithms and test invariants for Plan 1. |
+| doc/designs/embedding-human.md | Embedding design documentation including PQ+BEXT mirroring contract for Plan 2. |
+| doc/PICKER_SCHEMA.md | Documents BEXT `[128:256]` as `pq_code` layout for future implementation. |
+| .gitignore | Adds Python cache/venv/pytest ignores. |
+</details>
+
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3104299460 -->
+### Copilot on [`pyproject.toml:25`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104299460) (2026-04-18 02:19 UTC)
+
+The `requires_clap_model` marker description says tests are “skipped unless LAION_CLAP_CHECKPOINT is set and the fixture corpus exists”, but the skip hook in `scripts/tests/conftest.py` only checks `LAION_CLAP_CHECKPOINT`, and not all marked tests necessarily require a fixture corpus. Updating this marker text to match the actual skip semantics (checkpoint only; individual tests may gate on additional env vars) will prevent confusion.
+
