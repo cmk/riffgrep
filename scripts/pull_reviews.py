@@ -31,15 +31,18 @@ import sys
 from _gh import resolve_repo
 
 
-def gh_api(path: str) -> list | dict:
+def gh_api(path: str) -> list:
     """Fetch a list endpoint, iterating pages explicitly.
 
     We don't use `gh api --paginate --slurp` because `--slurp` needs gh
     >= 2.47. Explicit `?page=N&per_page=100` iteration works on every
     version and is trivially inspectable.
 
-    If the endpoint returns a dict (non-list), we return it as-is from
-    page 1 without continuing to page.
+    This function is only for list endpoints. If GitHub returns a
+    non-list body for a supposedly-list endpoint (e.g., a wrapped
+    rate-limit error on a 200 response), we abort with a diagnostic
+    rather than pass it upstream — callers iterate assuming list
+    shape.
     """
     all_items: list = []
     page = 1
@@ -66,7 +69,13 @@ def gh_api(path: str) -> list | dict:
             )
             raise SystemExit(1)
         if not isinstance(raw, list):
-            return raw
+            snippet = json.dumps(raw)[:200]
+            print(
+                f"error: `gh api {paged}` returned non-list JSON "
+                f"(expected a list endpoint): {snippet}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         if not raw:
             break
         all_items.extend(raw)
