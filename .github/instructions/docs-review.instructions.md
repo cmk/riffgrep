@@ -6,9 +6,8 @@ applyTo: "doc/**/*.md"
 
 These instructions apply to any markdown file under `doc/` — design
 sketches, plans, review records, session notes, reference material.
-They narrow Copilot's review voice for prose content. Source code
-under `crates/` is reviewed under the default (strict) voice; nothing
-here relaxes that.
+They narrow Copilot's review voice for prose content. Source code is
+reviewed under the default (strict) voice; nothing here relaxes that.
 
 ## What to flag
 
@@ -40,10 +39,10 @@ here relaxes that.
   `// my_crate::module`; prefer whichever is already used consistently
   in the file.
 - **Pre-existing patterns on unchanged lines.** If the PR touches file
-  X and a pattern the reviewer would otherwise flag (missing `crates/`
-  path prefix, hyphenated crate name, inconsistent formatting, etc.)
-  also appears on lines the PR did *not* modify in file X, do not flag
-  it. Those are concerns for a separate cleanup PR.
+  X and a pattern the reviewer would otherwise flag (broken cross-link,
+  stale terminology, inconsistent formatting, etc.) also appears on
+  lines the PR did *not* modify in file X, do not flag it. Those are
+  concerns for a separate cleanup PR.
 - **Symmetry / punctuation preferences** (e.g., `±5 s` vs `0 to -5 s`)
   unless the notation actually misrepresents the underlying quantity.
 
