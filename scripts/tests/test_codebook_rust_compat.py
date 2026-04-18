@@ -74,11 +74,11 @@ def test_rust_offset_formula_matches_flat_buffer() -> None:
         np.testing.assert_array_equal(rust_slice, cb[m, k])
 
 
-@pytest.mark.requires_clap_model
 def test_faiss_codebook_matches_layout() -> None:
     """If faiss is installed, train a tiny codebook and assert the byte
-    length and decode-ability. Gated on the same marker as the ranking
-    sanity test so CI without heavy deps skips cleanly."""
+    length and decode-ability. Skipped cleanly via `importorskip` when
+    faiss is absent; does not require the CLAP checkpoint so it doesn't
+    use the `requires_clap_model` marker."""
     faiss = pytest.importorskip("faiss")  # noqa: F841
     from embed_train import train
 
