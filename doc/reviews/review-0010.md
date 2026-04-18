@@ -504,3 +504,23 @@ Copilot reviewed 14 out of 16 changed files in this pull request and generated 4
 
 The `requires_clap_model` marker description says tests are “skipped unless LAION_CLAP_CHECKPOINT is set and the fixture corpus exists”, but the skip hook in `scripts/tests/conftest.py` only checks `LAION_CLAP_CHECKPOINT`, and not all marked tests necessarily require a fixture corpus. Updating this marker text to match the actual skip semantics (checkpoint only; individual tests may gate on additional env vars) will prevent confusion.
 
+
+<!-- gh-id: 3104313217 -->
+#### ↳ cmk ([2026-04-18 02:25 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104313217))
+
+Declined for this sprint — same scale-hardening bucket as `_fetch_training_vectors` (tracked as follow-up in `review-0010.md`). `(id, path)` tuples are \~200MB at 1.2M scale vs multi-GB for BLOBs, so it's the second priority after the train-side rewrite.
+
+<!-- gh-id: 3104313270 -->
+#### ↳ cmk ([2026-04-18 02:25 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104313270))
+
+Fixed in c0e0a46 — `_trim_silence` now returns an empty array when no sample exceeds the threshold, so the caller's `len(data) == 0` guard converts to `None`. Previous behavior would peak-normalize sub-threshold noise up to -1 dBFS.
+
+<!-- gh-id: 3104313329 -->
+#### ↳ cmk ([2026-04-18 02:25 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104313329))
+
+Fixed in c0e0a46 — added per-category enforcement (≥5 categories, ≥10 WAVs each) before the test runs.
+
+<!-- gh-id: 3104313391 -->
+#### ↳ cmk ([2026-04-18 02:25 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104313391))
+
+Fixed in c0e0a46 — marker description now matches the conftest hook's actual semantics (checkpoint only; individual tests may add env-var gates at runtime).
