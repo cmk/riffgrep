@@ -260,7 +260,7 @@ Copilot reviewed 4 out of 4 changed files in this pull request and generated 2 c
 <!-- gh-id: 3105047445 -->
 ### Copilot on [`doc/reviews/review-0016.md:225`](https://github.com/cmk/riffgrep/pull/16#discussion_r3105047445) (2026-04-18 11:09 UTC)
 
-nit: This embedded reply text includes an absolute local path fragment (`/Users/cmk/...`). Even as an example, it leaks a local username; consider redacting to `/Users/<user>/...` (or keeping only repo-relative paths) to keep the review artifact portable and non-identifying.
+nit: This embedded reply text includes an absolute local path fragment (`/Users/<user>/...`). Even as an example, it leaks a local username; consider redacting to `/Users/<user>/...` (or keeping only repo-relative paths) to keep the review artifact portable and non-identifying.
 
 
 <!-- gh-id: 3105063956 -->
@@ -272,3 +272,61 @@ Fixed in-flight — the packed-comment parser at src/engine/bext.rs:318 now read
 #### ↳ cmk ([2026-04-18 11:24 UTC](https://github.com/cmk/riffgrep/pull/16#discussion_r3105064094))
 
 Redacted — edited the original reply via `gh api PATCH` to drop the user-identifying absolute-path prefix (now reads 'absolute filesystem paths'), and the local mirror in review-0016.md is updated to match. No code change, just the comment text.
+
+<!-- gh-id: 3105076950 -->
+### Copilot on [`src/engine/workflow.rs:962`](https://github.com/cmk/riffgrep/pull/16#discussion_r3105076950) (2026-04-18 11:33 UTC)
+
+The temp-file name relies on `SystemTime::now().as_nanos()` for uniqueness. On some platforms the clock resolution is coarse enough that multiple calls can produce the same value (and proptests create many files), causing path collisions and flaky tests under parallel `cargo test`. Use a collision-proof approach (e.g., a UUID/random suffix, an atomic counter, or the `tempfile` crate) and consider ensuring cleanup runs even when assertions fail.
+
+<!-- gh-id: 3105076963 -->
+### Copilot on [`src/engine/workflow.rs:979`](https://github.com/cmk/riffgrep/pull/16#discussion_r3105076963) (2026-04-18 11:33 UTC)
+
+Same temp-file naming concern here: `SystemTime::now().as_nanos()` isn’t guaranteed to advance between rapid calls on all OSes, so filenames can collide and make tests flaky when run in parallel or in proptest loops. Prefer UUID/counter/tempfile-based unique paths.
+
+<!-- gh-id: 4134265778 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 11:33 UTC](https://github.com/cmk/riffgrep/pull/16#pullrequestreview-4134265778))
+
+## Pull request overview
+
+This PR fixes a silent drop of packed-BEXT Description writes in the Lua workflow writer by auto-activating the packed schema on previously-unpacked WAVs when packed-field diffs are present, while also improving packed init failure semantics and aligning string sanitization/truncation behavior across Lua setters and the Rust writer.
+
+**Changes:**
+- Auto-activate packed schema in `write_metadata_changes` when `before.file_id == 0` and any packed field differs; unify packed-field diff detection via `packed_fields_differ`.
+- Centralize ASCII sanitization + fixed-width truncation via `sanitize_ascii_field`, enforce packed comment width via `bext::PACKED_COMMENT_LEN`, and fix BPM formatting to avoid leading-space parse failures.
+- Update SoundMiner ETL to rescue existing plain-text BEXT Description into packed `comment`, and add tests/proptests for activation + round-trips; add a review artifact doc.
+
+### Reviewed changes
+
+Copilot reviewed 4 out of 4 changed files in this pull request and generated 3 comments.
+
+| File | Description |
+| ---- | ----------- |
+| src/engine/workflow.rs | Adds packed-schema auto-activation, shared sanitize/truncate helper, BPM formatting fix, and workflow-layer tests/proptests. |
+| src/engine/bext.rs | Adds `PACKED_COMMENT_LEN`, uses it in parsing, and reorders init writes so `file_id` is written last; adds idempotence test. |
+| scripts/etl_soundminer.lua | Rescues pre-activation Description into packed comment and clarifies SM UMID stamping behavior. |
+| doc/reviews/review-0016.md | Adds/updates a local review transcript artifact for this PR. |
+
+
+
+
+
+<!-- gh-id: 3105076980 -->
+### Copilot on [`doc/reviews/review-0016.md:263`](https://github.com/cmk/riffgrep/pull/16#discussion_r3105076980) (2026-04-18 11:33 UTC)
+
+This embedded comment still contains a username-specific absolute path fragment (`/Users/<user>/...`). Even though it’s quoted review history, it’s still published in-repo; please redact the username (e.g., `/Users/<user>/...`) or remove the path fragment entirely to avoid leaking local environment details.
+
+
+<!-- gh-id: 3105081551 -->
+#### ↳ cmk ([2026-04-18 11:35 UTC](https://github.com/cmk/riffgrep/pull/16#discussion_r3105081551))
+
+Fixed in-flight — replaced the `SystemTime::now().as_nanos()` suffix with a static `AtomicU64` counter shared across the two temp-file helpers (and the inline one in `write_invalid_riff_errors...`). That gives strict monotonic uniqueness within a process regardless of clock resolution; `std::process::id()` still provides cross-process separation. Didn't add `tempfile` as a dep just for this. Cleanup-on-assert-failure is unchanged — stray files in $TMPDIR aren't harmful and get swept by the OS.
+
+<!-- gh-id: 3105081765 -->
+#### ↳ cmk ([2026-04-18 11:36 UTC](https://github.com/cmk/riffgrep/pull/16#discussion_r3105081765))
+
+Same fix as the adjacent thread — `temp_wav_no_bext` now routes through the shared `temp_wav_path` helper backed by an `AtomicU64` counter, so nanos-based collisions are off the table.
+
+<!-- gh-id: 3105082113 -->
+#### ↳ cmk ([2026-04-18 11:36 UTC](https://github.com/cmk/riffgrep/pull/16#discussion_r3105082113))
+
+The quoted text lives in your own earlier comment (3105047445), which the GH API doesn't let me edit from here. Scrubbed the local mirror so the in-repo artifact reads `/Users/<user>/...` — the published GitHub thread still shows the literal, but the repo-persisted version is clean.
