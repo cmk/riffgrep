@@ -370,11 +370,7 @@ impl App {
     /// The caller is responsible for ensuring `rows.len()` matches the
     /// number of `sim` scores passed; a length mismatch is a programming
     /// error (not a user error) so we panic rather than silently drop.
-    pub fn load_similarity_results(
-        &mut self,
-        mut rows: Vec<TableRow>,
-        sims: Vec<f32>,
-    ) {
+    pub fn load_similarity_results(&mut self, mut rows: Vec<TableRow>, sims: Vec<f32>) {
         assert_eq!(
             rows.len(),
             sims.len(),
@@ -424,13 +420,7 @@ impl App {
         } else {
             snapshot
                 .iter()
-                .filter(|row| {
-                    row.meta
-                        .path
-                        .to_string_lossy()
-                        .to_lowercase()
-                        .contains(&q)
-                })
+                .filter(|row| row.meta.path.to_string_lossy().to_lowercase().contains(&q))
                 .cloned()
                 .collect()
         };
@@ -2970,8 +2960,7 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
                 app.search_in_progress = true;
 
                 // Build new search: parse @field=value filters from query.
-                let (freetext, column_filters) =
-                    crate::engine::parse_column_filters(&app.query);
+                let (freetext, column_filters) = crate::engine::parse_column_filters(&app.query);
                 let query = crate::engine::SearchQuery {
                     freetext: if freetext.is_empty() {
                         None
@@ -6168,5 +6157,173 @@ mod tests {
             app.status_message.as_deref(),
             Some("No audio data for zoom")
         );
+    }
+
+    // --- Similarity mode (`rfg --similar PATH`) ---
+
+    fn make_sim_row(path: &str) -> TableRow {
+        TableRow {
+            meta: UnifiedMetadata {
+                path: std::path::PathBuf::from(path),
+                ..Default::default()
+            },
+            audio_info: None,
+            marked: false,
+            markers: None,
+            sim: None,
+        }
+    }
+
+    #[test]
+    fn test_load_similarity_results_populates_and_pins_subject() {
+        let mut app = App::new(Theme::default());
+        let rows = vec![
+            make_sim_row("/subject.wav"),
+            make_sim_row("/neighbor1.wav"),
+            make_sim_row("/neighbor2.wav"),
+        ];
+        let sims = vec![1.0, 0.8, 0.5];
+        app.load_similarity_results(rows, sims);
+
+        assert!(app.in_similarity_mode);
+        assert!(app.similarity_results.is_some());
+        assert_eq!(app.results.len(), 3);
+        assert_eq!(app.selected, 0, "subject must be pinned at index 0");
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.total_matches, 3);
+        assert_eq!(app.sort_column.as_deref(), Some("sim"));
+        assert!(
+            !app.sort_ascending,
+            "sim sort must be descending (high-first)"
+        );
+        assert_eq!(app.results[0].sim, Some(1.0));
+        assert_eq!(app.results[1].sim, Some(0.8));
+        assert_eq!(app.results[2].sim, Some(0.5));
+    }
+
+    #[test]
+    #[should_panic(expected = "load_similarity_results: rows.len()=2 sims.len()=3")]
+    fn test_load_similarity_results_length_mismatch_panics() {
+        let mut app = App::new(Theme::default());
+        let rows = vec![make_sim_row("/a.wav"), make_sim_row("/b.wav")];
+        let sims = vec![1.0, 0.8, 0.5];
+        app.load_similarity_results(rows, sims);
+    }
+
+    #[test]
+    fn test_filter_similarity_results_preserves_rank_order() {
+        let mut app = App::new(Theme::default());
+        app.load_similarity_results(
+            vec![
+                make_sim_row("/kicks/kick_a.wav"),
+                make_sim_row("/snares/snare_a.wav"),
+                make_sim_row("/kicks/kick_b.wav"),
+                make_sim_row("/hats/hat_a.wav"),
+                make_sim_row("/kicks/kick_c.wav"),
+            ],
+            vec![1.0, 0.9, 0.8, 0.7, 0.6],
+        );
+
+        // Filter to "kick" — should keep positions 0, 2, 4 in that
+        // order (rank preserved, not re-sorted by relevance to "kick").
+        app.query = "kick".to_string();
+        app.filter_similarity_results();
+
+        assert_eq!(app.results.len(), 3);
+        assert_eq!(
+            app.results[0].meta.path.to_str().unwrap(),
+            "/kicks/kick_a.wav"
+        );
+        assert_eq!(
+            app.results[1].meta.path.to_str().unwrap(),
+            "/kicks/kick_b.wav"
+        );
+        assert_eq!(
+            app.results[2].meta.path.to_str().unwrap(),
+            "/kicks/kick_c.wav"
+        );
+        // Original snapshot still intact.
+        assert_eq!(app.similarity_results.as_ref().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn test_filter_similarity_results_empty_query_restores_snapshot() {
+        let mut app = App::new(Theme::default());
+        // Deliberately use stems that don't share any letters with
+        // the `.wav` extension — otherwise "a" would match all three
+        // via the 'a' in ".wav".
+        app.load_similarity_results(
+            vec![
+                make_sim_row("/kick.wav"),
+                make_sim_row("/snare.wav"),
+                make_sim_row("/hihat.wav"),
+            ],
+            vec![1.0, 0.8, 0.6],
+        );
+        app.query = "snare".to_string();
+        app.filter_similarity_results();
+        assert_eq!(app.results.len(), 1);
+
+        app.query.clear();
+        app.filter_similarity_results();
+        assert_eq!(
+            app.results.len(),
+            3,
+            "clearing query must restore full top-N"
+        );
+    }
+
+    #[test]
+    fn test_filter_similarity_results_case_insensitive() {
+        let mut app = App::new(Theme::default());
+        app.load_similarity_results(
+            vec![
+                make_sim_row("/Kicks/BD_909.wav"),
+                make_sim_row("/other.wav"),
+            ],
+            vec![1.0, 0.5],
+        );
+        app.query = "KICK".to_string();
+        app.filter_similarity_results();
+        assert_eq!(app.results.len(), 1);
+        assert_eq!(
+            app.results[0].meta.path.to_str().unwrap(),
+            "/Kicks/BD_909.wav"
+        );
+    }
+
+    #[test]
+    fn test_filter_similarity_results_noop_outside_similarity_mode() {
+        // If the caller skips the mode check, the method itself is
+        // still safe — `in_similarity_mode = false` leaves `results`
+        // untouched even if `similarity_results` happens to be set.
+        let mut app = App::new(Theme::default());
+        app.results = vec![make_sim_row("/original.wav")];
+        app.similarity_results = Some(vec![make_sim_row("/snapshot.wav")]);
+        app.in_similarity_mode = false;
+        app.query = "anything".to_string();
+        app.filter_similarity_results();
+        assert_eq!(app.results.len(), 1);
+        assert_eq!(app.results[0].meta.path.to_str().unwrap(), "/original.wav");
+    }
+
+    #[test]
+    fn test_filter_similarity_results_clamps_selection_on_shrink() {
+        let mut app = App::new(Theme::default());
+        app.load_similarity_results(
+            vec![
+                make_sim_row("/kick.wav"),
+                make_sim_row("/snare.wav"),
+                make_sim_row("/hihat.wav"),
+            ],
+            vec![1.0, 0.8, 0.6],
+        );
+        // User navigated to the last row, then typed a query that
+        // shrinks the result list. Selection must clamp, not dangle.
+        app.selected = 2;
+        app.query = "kick".to_string();
+        app.filter_similarity_results();
+        assert_eq!(app.results.len(), 1);
+        assert_eq!(app.selected, 0);
     }
 }
