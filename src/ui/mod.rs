@@ -406,15 +406,40 @@ impl App {
     /// `similarity_results` is absent — caller should have checked the
     /// flag, but the guard keeps the method safe to call blindly.
     pub fn filter_similarity_results(&mut self) {
-        let snapshot = match &self.similarity_results {
-            Some(s) => s,
-            None => return,
-        };
-        if !self.in_similarity_mode {
+        if !self.in_similarity_mode || self.similarity_results.is_none() {
             return;
         }
 
-        let q = self.query.trim().to_lowercase();
+        // The normal-mode search bar parses `@field=value` column
+        // filters (see `parse_column_filters`). Similarity mode only
+        // supports substring match on path, so warn the first time
+        // the user types `@` — otherwise `@vendor=Mars` silently
+        // returns zero results and leaves them confused. Checking for
+        // an existing "@field" status message prevents re-setting on
+        // every subsequent keystroke.
+        //
+        // Own the trimmed query string — `self.query.trim()` returns
+        // a borrow that would conflict with the `&mut self` that
+        // `set_status` needs below. Same reason the snapshot borrow
+        // is taken *after* the status update.
+        let raw: String = self.query.trim().to_string();
+        if raw.contains('@')
+            && self
+                .status_message
+                .as_deref()
+                .map(|m| !m.contains("@field"))
+                .unwrap_or(true)
+        {
+            self.set_status(
+                "similarity mode: @field=value filters not supported; \
+                 matching path substring only"
+                    .to_string(),
+            );
+        }
+
+        // Safe unwrap — checked above.
+        let snapshot = self.similarity_results.as_ref().unwrap();
+        let q = raw.to_lowercase();
         let filtered: Vec<TableRow> = if q.is_empty() {
             snapshot.clone()
         } else {
@@ -430,9 +455,10 @@ impl App {
         if self.selected >= self.results.len() {
             self.selected = self.results.len().saturating_sub(1);
         }
-        if self.scroll_offset >= self.results.len() {
-            self.scroll_offset = 0;
-        }
+        // Reset unconditionally on filter change — mirrors the
+        // normal-mode search behavior. Preserving offset across a
+        // shrink leaves the user staring at an empty tail.
+        self.scroll_offset = 0;
     }
 
     /// Execute an action, updating state accordingly.
@@ -2826,11 +2852,23 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
             let limit = opts.limit.unwrap_or(50);
             let sim_results = crate::engine::api::similar(db_path, &query_path, limit)?;
 
-            // Pull TableRow for each result path, preserving input order.
+            // Pull TableRow for each result path, preserving input
+            // order. Non-UTF-8 paths are an immediate error rather
+            // than a silent `""` coercion — multiple non-UTF-8 paths
+            // would otherwise collide on the same empty key inside
+            // `load_table_rows_for_paths`'s pos-map, breaking the
+            // order invariant without any visible signal.
             let paths: Vec<&str> = sim_results
                 .iter()
-                .map(|r| r.path.to_str().unwrap_or(""))
-                .collect();
+                .map(|r| {
+                    r.path.to_str().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "similarity result contains non-UTF-8 path: {}",
+                            r.path.display()
+                        )
+                    })
+                })
+                .collect::<anyhow::Result<_>>()?;
             let db = crate::engine::sqlite::Database::open(db_path)?;
             let rows = db.load_table_rows_for_paths(&paths)?;
             if rows.len() != sim_results.len() {

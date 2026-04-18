@@ -1,7 +1,5 @@
 //! riffgrep — high-performance WAV sample library metadata search.
 
-use std::path::PathBuf;
-
 use mimalloc::MiMalloc;
 
 #[global_allocator]
@@ -19,7 +17,7 @@ fn main() {
 
     let result = match dispatch(&opts, is_tty) {
         Dispatch::Headless => engine::run(opts),
-        Dispatch::TuiBrowse | Dispatch::TuiSimilar(_) => {
+        Dispatch::TuiBrowse | Dispatch::TuiSimilar => {
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             rt.block_on(ui::run_tui(opts))
         }
@@ -42,11 +40,11 @@ enum Dispatch {
     /// `ui::run_tui` — interactive browse TUI, no initial query.
     TuiBrowse,
     /// `ui::run_tui` — interactive TUI pre-loaded with similarity
-    /// results for the given query path. The inner `PathBuf` is
-    /// redundant with `opts.similar` but included in the variant so
-    /// the dispatch decision is self-describing without reaching back
-    /// into opts.
-    TuiSimilar(PathBuf),
+    /// results. The query path lives on `opts.similar`; keeping this
+    /// variant unit-shaped avoids the duplicate-source-of-truth
+    /// footgun where an eventual `dispatch` caller could pass a path
+    /// that doesn't match `opts.similar` and confuse `run_tui`.
+    TuiSimilar,
 }
 
 /// Classify a CLI invocation into one of the three dispatch paths.
@@ -75,8 +73,8 @@ fn dispatch(opts: &engine::cli::Opts, is_tty: bool) -> Dispatch {
         return Dispatch::Headless;
     }
 
-    if let Some(path) = &opts.similar {
-        return Dispatch::TuiSimilar(path.clone());
+    if opts.similar.is_some() {
+        return Dispatch::TuiSimilar;
     }
 
     if opts.has_search_filters() {
@@ -97,10 +95,7 @@ mod tests {
     #[test]
     fn similar_at_tty_routes_to_tui_similar() {
         let opts = parse(&["--similar", "/path/foo.wav"]);
-        assert_eq!(
-            dispatch(&opts, true),
-            Dispatch::TuiSimilar(PathBuf::from("/path/foo.wav"))
-        );
+        assert_eq!(dispatch(&opts, true), Dispatch::TuiSimilar);
     }
 
     #[test]
@@ -189,9 +184,16 @@ mod tests {
         // user intent — the filter can be applied interactively via
         // the search bar after the similarity list is loaded.
         let opts = parse(&["--similar", "/path/foo.wav", "--vendor", "Mars"]);
-        assert_eq!(
-            dispatch(&opts, true),
-            Dispatch::TuiSimilar(PathBuf::from("/path/foo.wav"))
-        );
+        assert_eq!(dispatch(&opts, true), Dispatch::TuiSimilar);
+    }
+
+    #[test]
+    fn similar_with_count_routes_to_headless() {
+        // Symmetry with --json, --verbose — any output-forcing flag
+        // overrides --similar. `--count` is the last member of rule 1
+        // we hadn't explicitly paired with --similar; closing the
+        // matrix so a future regression would surface here.
+        let opts = parse(&["--similar", "/path/foo.wav", "--count"]);
+        assert_eq!(dispatch(&opts, true), Dispatch::Headless);
     }
 }
