@@ -343,3 +343,73 @@ Fixed in fcf96c1 — `args.db = args.db.expanduser()` immediately after argparse
 #### ↳ cmk ([2026-04-18 02:10 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104278957))
 
 Fixed in fcf96c1 — `args.db = args.db.expanduser()` immediately after argparse.
+
+<!-- gh-id: 3104285928 -->
+### Copilot on [`scripts/tests/test_ranking_sanity.py:108`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104285928) (2026-04-18 02:13 UTC)
+
+The comment says "For each category, pick one file as the query" but the loop actually treats every stored file as a query. Update the comment to match the behavior (or change the loop if the intent was one query per category).
+
+
+<!-- gh-id: 3104285947 -->
+### Copilot on [`scripts/tests/test_ranking_sanity.py:122`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104285947) (2026-04-18 02:13 UTC)
+
+`ok_ratio = 1.0 - len(violations) / len(stored)` will raise `ZeroDivisionError` if no embeddings were stored (e.g., if all fixture audio fails preprocessing / is unreadable). Add a guard to `skip` (or fail with a clearer message) when `stored` is empty (and possibly when it's below a minimum size after encoding).
+
+<!-- gh-id: 4133261906 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-18 02:13 UTC](https://github.com/cmk/riffgrep/pull/10#pullrequestreview-4133261906))
+
+## Pull request overview
+
+Adds the “Plan 1” Python embedding pipeline to populate `samples.embedding` with LAION-CLAP vectors and train/store a FAISS PQ codebook in SQLite `metadata`, plus a pytest suite and supporting docs/config so Rust similarity search can use the populated DB automatically.
+
+**Changes:**
+- Add Python scripts for audio preprocessing, CLAP embedding encoding into SQLite, and FAISS PQ codebook training/serialization.
+- Add pytest fixtures and tests covering encoding idempotence, LOOP skipping, embedding blob invariants, ranking sanity (gated), and PQ codebook byte-layout compatibility.
+- Add Python project config (`pyproject.toml`), Python `.gitignore` entries, and documentation updates for the embedding/PQ roadmap and schema.
+
+### Reviewed changes
+
+Copilot reviewed 14 out of 16 changed files in this pull request and generated 4 comments.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| scripts/embed_preprocess.py | Implements shared audio load/resample/trim/window/normalize preprocessing for CLAP inference. |
+| scripts/embed_encode.py | Encodes eligible rows with CLAP, serializes 512×f32 LE blobs, and writes to `samples.embedding`. |
+| scripts/embed_train.py | Samples embeddings, trains FAISS PQ, serializes codebook blob, and writes it + version to `metadata`. |
+| scripts/tests/conftest.py | Adds minimal SQLite schema fixtures and skip hook for CLAP-gated tests. |
+| scripts/tests/test_codebook_rust_compat.py | Validates Python-produced codebook blob layout matches Rust indexing expectations; optional FAISS training check. |
+| scripts/tests/test_encode_idempotent.py | Tests that a second encode run produces zero additional updates. |
+| scripts/tests/test_embedding_norm.py | Tests embedding blob length/endianness and near-unit-norm invariant. |
+| scripts/tests/test_loop_skipped.py | Tests LOOP-category rows are excluded from embedding writes. |
+| scripts/tests/test_ranking_sanity.py | Gated real-model ranking sanity test over labeled fixture corpus using brute-force L2 in Python. |
+| scripts/tests/__init__.py | Marks the tests directory as a package. |
+| pyproject.toml | Declares Python dependencies, dev deps, and pytest config/markers for scripts/tests. |
+| doc/plans/plan-2026-04-17-01.md | Documents Plan 1 goals, algorithms, and test invariants for embedding + PQ training. |
+| doc/designs/embedding-human.md | Updates embedding design, including PQ/BEXT mirroring design rationale and schema. |
+| doc/PICKER_SCHEMA.md | Documents BEXT `[128:256]` as `pq_code` (Plan 2 target layout). |
+| doc/reviews/review-0010.md | Captures local review notes and follow-ups for this Plan 1 work. |
+| .gitignore | Adds Python cache/venv/pytest ignore patterns. |
+</details>
+
+
+
+
+
+
+---
+
+💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3104285959 -->
+### Copilot on [`scripts/embed_train.py:115`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104285959) (2026-04-18 02:13 UTC)
+
+`_current_version()` silently returns 0 when `pq_codebook_version` exists but is malformed (wrong type/length). That can cause the version counter to reset and break the “monotonic version” contract without any signal. Prefer treating malformed values as an error (raise with details) and only default to 0 when the key is missing.
+
+
+<!-- gh-id: 3104285977 -->
+### Copilot on [`scripts/tests/test_encode_idempotent.py:36`](https://github.com/cmk/riffgrep/pull/10#discussion_r3104285977) (2026-04-18 02:13 UTC)
+
+`_run(db_path, n)` takes an `n` parameter that is never used, which makes the helper misleading and can hide future mistakes (e.g., thinking the helper limits the run). Remove the unused parameter (and adjust call sites) or use it to assert the expected number of rows were written.
