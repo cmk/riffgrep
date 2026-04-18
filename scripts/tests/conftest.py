@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -12,6 +13,25 @@ import pytest
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip `requires_clap_model` tests when LAION_CLAP_CHECKPOINT is unset.
+
+    The marker is registered in pyproject.toml; this hook enforces its
+    semantics so a fresh checkout runs the suite cleanly without needing
+    FAISS or the ~600MB CLAP checkpoint. Tests that need both the model
+    and a fixture corpus still gate additionally on env vars at runtime
+    (see test_ranking_sanity.py).
+    """
+    if os.environ.get("LAION_CLAP_CHECKPOINT"):
+        return
+    skip = pytest.mark.skip(reason="LAION_CLAP_CHECKPOINT not set")
+    for item in items:
+        if item.get_closest_marker("requires_clap_model") is not None:
+            item.add_marker(skip)
 
 
 # Minimal subset of the riffgrep `samples` schema. Tests only reference
