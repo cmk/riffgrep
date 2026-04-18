@@ -31,12 +31,13 @@ If no PR is found, ask the user for the number.
 scripts/pull_reviews.py <N>
 ```
 
-The script handles everything: fetches reviews and inline comments via
-`gh api --paginate` (so PRs with >30 items aren't truncated), merges
-them chronologically, de-dupes via set membership on `<!-- gh-id: -->`
-markers, hyperlinks headers to GitHub permalinks, absolute-ifies
-relative links in bodies, and creates `review-NNNN.md` with a
-`# PR #N — <title>` header if it doesn't exist.
+The script handles everything: fetches reviews and inline comments by
+iterating `?per_page=100&page=N` explicitly against the GitHub API
+(chosen over `gh api --paginate --slurp` because `--slurp` requires
+gh >= 2.47), merges them chronologically, de-dupes via set membership
+on `<!-- gh-id: -->` markers, hyperlinks headers to GitHub permalinks,
+absolute-ifies relative links in bodies, and creates `review-NNNN.md`
+with a `# PR #N — <title>` header if it doesn't exist.
 
 The script is idempotent: any item whose `gh-id` is already present in
 the file is skipped. Note: it is **not** safe to assume a single
@@ -44,22 +45,37 @@ the file is skipped. Note: it is **not** safe to assume a single
 different sequences, so max-id across both would silently drop later
 items from the lower-numbered sequence. Set membership avoids this.
 
-## Step 3: Commit the updated file
+## Step 3: Let the file ride with the next fix commit
 
-If new items were appended, **commit `review-NNNN.md` to the PR branch**
-— either as a standalone `doc: update review-NNNN.md` commit or folded
-into the current round's fix commit. The review file must ride along
-with the PR that generated it; landing it post-merge orphans the audit
-trail.
+The review file is not committed on its own. It rides with the **next
+review round's fix commit** — the commit that addresses the comments
+you just pulled. Using `R` for review rounds (distinct from `N`, which
+is the PR number throughout the docs), the rhythm is:
 
-If there were no new items (script reported `no new items`), skip this
-step.
+- Round R: reviewer leaves comments → `scripts/pull_reviews.py`
+  appends them to `review-NNNN.md`.
+- Round R+1: you fix what warrants a fix → the fix commit stages the
+  updated `review-NNNN.md` alongside the code changes.
+- If round R+1 is itself no-op (all push-back, no fix), there is no
+  fix commit and nothing to push. The GitHub thread is the canonical
+  record until a later round forces a commit anyway.
+
+So after running this skill: keep `review-NNNN.md` modified but
+uncommitted until the fix commit is ready, then stage it alongside the
+code changes for that commit. Do **not** open a standalone
+`doc: update review-NNNN.md` commit just to land it — that forces a CI
+round-trip for no code change. The fix commit that addresses this
+round's findings is the vehicle.
+
+If there were no new items (script reported `no new items`), there is
+nothing to stage.
 
 ## Step 4: Report
 
-Print a one-paragraph summary: how many new comments appended, from
-which reviewers, and the path to the review file. Pipe through the
-script's stdout if that's easier.
+Print a one-paragraph summary: how many new items were appended and
+the path to the review file. The script's own stdout line —
+`PR #N: appended K items -> <path>` — already gives you both, so you
+can pipe it through verbatim if that's easier.
 
 ---
 
@@ -77,10 +93,13 @@ Top-level review body:
 {body}
 ```
 
-Inline comment (new thread):
+Inline comment (new thread). The `:line` suffix is omitted when the
+GitHub API returns `line: null` (outdated diff comments or file-level
+comments), so both `{path}` and `{path}:{line}` variants are valid:
 
 ```markdown
 <!-- gh-id: {id} -->
+### {user} on [`{path}`]({html_url}) ({YYYY-MM-DD HH:MM UTC})
 ### {user} on [`{path}:{line}`]({html_url}) ({YYYY-MM-DD HH:MM UTC})
 
 {body}
@@ -97,10 +116,9 @@ Reply (has `in_reply_to_id`):
 
 ## Notes
 
-- **The script does not auto-commit.** The agent must stage and commit
-  `review-NNNN.md` on the PR branch when new items were appended (see
-  Step 3). The file must ride along with the PR — don't leave it
-  untracked.
+- **The script does not auto-commit.** The file rides with the next
+  round's fix commit (see Step 3); don't land a standalone `doc:`
+  commit just to attach the audit trail.
 - **Idempotent** via set membership on `<!-- gh-id: -->` markers (not
   max-id, which would be unsound across review/comment sequences).
   Safe to re-run.

@@ -71,7 +71,7 @@ Read these files and include them in the reviewer prompt:
 
 - `CLAUDE.md` — repo conventions, workspace layout, TDD workflow, commit
   style, feature-gate conventions
-- `doc/refs/review-calibration.md` — if it exists, include as few-shot
+- `doc/reviews/review-calibration.md` — if it exists, include as few-shot
   examples. If absent, skip (the reviewer prompt has built-in guidance).
 
 ## Step 4: Launch the reviewer
@@ -85,7 +85,7 @@ The prompt must be self-contained. Include:
 2. The commit log
 3. The repo conventions from CLAUDE.md
 4. The plan text (if found), clearly labeled as optional context
-5. Calibration examples from `doc/refs/review-calibration.md` (if found)
+5. Calibration examples from `doc/reviews/review-calibration.md` (if found)
 6. The review instructions (below)
 
 ### Reviewer voice and calibration
@@ -146,7 +146,7 @@ tested, and follows conventions. If the plan specifies verification criteria
 {IF calibration examples exist:}
 ## Examples of high-quality review comments
 
-{doc/refs/review-calibration.md contents}
+{doc/reviews/review-calibration.md contents}
 
 Match this style: cite the contract (doc, plan, or naming), show how the
 code violates it, and name the consequence. When something is fine, one

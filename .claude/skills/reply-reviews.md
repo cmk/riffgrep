@@ -15,8 +15,11 @@ addressed locally but not yet answered on GitHub. This closes the loop
 for the reviewer and leaves a paper trail linking each finding to the
 commit that addressed it.
 
-Intended to run **after** a fix commit that addresses the feedback has
-been pushed — the replies cite the fix commit's SHA.
+Intended to run **after** a fix commit that addresses the feedback
+exists locally — the replies cite the fix commit's SHA. Running before
+the branch is pushed lets the mirrored replies ride with the fix
+commit (via `--amend` if needed); running after the push is fine too,
+but the mirror then waits for the next round's fix commit to carry it.
 
 ---
 
@@ -34,15 +37,16 @@ Abort if no PR is found.
 ## Step 2: Identify unreplied threads
 
 Read `doc/reviews/review-NNNN.md`. A thread is a top-level inline
-comment (a `### {user} on [\`{path}:{line}\`](...)` header) plus any
-`#### ↳ {user}` replies beneath it, terminating at the next `### ` or
-end of file.
+comment header — either `### {user} on [\`{path}\`](...)` (outdated
+or file-level comments where the GitHub API omits `line`) or
+`### {user} on [\`{path}:{line}\`](...)` — plus any `#### ↳ {user}`
+replies beneath it, terminating at the next `### ` or end of file.
 
 A thread is **unreplied** if no `↳` reply in it is authored by a
 non-bot account (i.e., not `Copilot`, not `copilot-pull-request-reviewer[bot]`,
 not `claude[bot]`). Top-level review-body sections (`### {user} — {state}`,
-no `on [\`path:line\`]`) can usually be skipped — they don't take
-threaded replies via the review-comment API.
+no `on [\`path\`]` / `on [\`path:line\`]`) can usually be skipped —
+they don't take threaded replies via the review-comment API.
 
 If the file is stale (you know there's been GH activity since the last
 `/pull-reviews`), run `scripts/pull_reviews.py <N>` first so you're
@@ -93,17 +97,21 @@ Fixed in 3bea723 — ...
 EOF
 ```
 
-## Step 5: Mirror locally and commit
+## Step 5: Mirror replies — only if there's a fix commit
 
-After posting, run `scripts/pull_reviews.py <N>` to append your replies
-to the local review file. Set-membership de-dup ensures only the new
-replies get added.
+If this round produced a fix commit (one or more threads got real
+changes), run `scripts/pull_reviews.py <N>` after posting to append
+your replies to `review-NNNN.md`, then **stage the updated file as part
+of the same fix commit** (or amend it in before pushing). The review
+file always rides with the fix commit that addresses the round it
+covers — never as a standalone `doc:` commit.
 
-Then **commit the updated review file to the PR branch** — either as a
-standalone `doc: update review-NNNN.md` commit or folded into the fix
-commit that addressed the round's findings. The review file must ride
-along with the PR that generated it; landing it post-merge orphans the
-audit trail.
+**If this round is entirely no-op** — every thread got push-back, no
+code changed — there is no fix commit to ride on, so there is nothing
+to push. Skip the mirror step. The GitHub thread is the canonical
+record; a later round's fix commit can pick up all pending replies via
+one `scripts/pull_reviews.py` run at that time. Don't force-push solely to
+attach an audit trail.
 
 ## Step 6: Report
 
@@ -117,6 +125,8 @@ review file. One paragraph max.
   reply closes the thread.
 - **One reply per thread, not per comment.** If a thread already has
   your reply buried three deep, don't post another.
-- **The review file belongs on the PR branch.** Every `/pull-reviews`
-  and `/reply-reviews` run that mutates `review-NNNN.md` should end in
-  a commit on the same branch as the PR. Don't leave it untracked.
+- **The review file rides with fix commits, not standalone.** A mutated
+  `review-NNNN.md` lands as part of the next round's fix commit. If a
+  round produces no fix, the file stays on disk uncommitted; a later
+  round's fix picks up all pending replies via one
+  `scripts/pull_reviews.py` run at commit time.
