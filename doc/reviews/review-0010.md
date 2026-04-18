@@ -831,3 +831,8 @@ Copilot reviewed 14 out of 16 changed files in this pull request and generated 1
 ---
 
 💡 <a href="https://github.com/cmk/riffgrep/new/main?filename=.github/instructions/*.instructions.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href="https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn how to get started</a>.
+
+<!-- gh-id: 3104355253 -->
+#### ↳ cmk ([2026-04-18 02:57 UTC](https://github.com/cmk/riffgrep/pull/10#discussion_r3104355253))
+
+Fixed in f14b4e4 — `--limit` uses the same `_positive_int` argparse type; 0 or negative now fails at parse time.
