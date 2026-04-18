@@ -513,10 +513,10 @@ pub fn write_markers(path: &std::path::Path, markers: &MarkerConfig) -> Result<(
 /// Initialize packed schema on an existing unpacked BEXT chunk and write markers.
 ///
 /// For files with BEXT that are NOT yet packed:
-/// 1. Generates a UUID v7 and writes the high 8 bytes (BE) at Description`[0:8]`
-/// 2. Writes version_major=1, version_minor=2 at Description`[8:12]`
-/// 3. Writes marker data at Description`[12:44]`
-/// 4. Sets bext_version to 2 at offset 346 (signals EBU Tech 3285 compliance)
+/// 1. Writes version_major=1, version_minor=2 at Description`[8:12]`
+/// 2. Writes marker data at Description`[12:44]`
+/// 3. Sets bext_version to 2 at offset 346 (signals EBU Tech 3285 compliance)
+/// 4. Generates a UUID v7 and writes the high 8 bytes (BE) at Description`[0:8]` — last
 ///
 /// Preserves all other BEXT fields (Originator, OriginatorReference, Date, UMID, etc.)
 /// since those live at fixed offsets outside `[0:44]`.
@@ -524,6 +524,13 @@ pub fn write_markers(path: &std::path::Path, markers: &MarkerConfig) -> Result<(
 /// The UUID v7 high 64 bits encode: 48-bit ms timestamp | 0x7 version nibble | 12-bit random.
 /// A non-zero file_id combined with version_major=1 and bext_version=2 is definitively
 /// riffgrep-packed — collision probability ~1/370K for a 10M file collection.
+///
+/// **Failure semantics**: the UUID/file_id write is the commit step and runs last.
+/// If any earlier write fails, `file_id` stays zero; both the parser and Lua's
+/// `is_packed()` will agree the file is unpacked, so a subsequent call redoes
+/// the full sequence idempotently. This prevents files from getting stuck in a
+/// half-packed limbo (file_id set, bext_version still 0) if a write is
+/// interrupted mid-sequence.
 pub fn init_packed_and_write_markers(
     path: &std::path::Path,
     markers: &MarkerConfig,
@@ -544,22 +551,25 @@ pub fn init_packed_and_write_markers(
 
     drop(reader);
 
-    // 1. Generate UUID v7 and write the high 8 bytes (big-endian) at Description[0:8].
+    // 1. Write version_major=1, version_minor=2 at Description[8:12].
+    write_bext_field(path, &map, 8, &1u16.to_le_bytes())?;
+    write_bext_field(path, &map, 10, &PACKED_VERSION_MINOR_V2.to_le_bytes())?;
+
+    // 2. Write marker data at Description[12:44].
+    write_bext_field(path, &map, 12, &markers.to_bytes())?;
+
+    // 3. Set bext_version=2 at offset 346 (signals EBU Tech 3285 compliance and
+    //    honest acknowledgment of non-standard use of loudness fields for u8 peaks).
+    write_bext_field(path, &map, 346, &2u16.to_le_bytes())?;
+
+    // 4. Commit: generate UUID v7 and write the high 8 bytes (big-endian) at
+    //    Description[0:8]. This is the step that flips `is_packed()` to true
+    //    — deferring it to last makes the preceding writes safely redoable
+    //    if any one of them fails.
     //    High 64 bits = 48-bit ms timestamp | 4-bit version nibble (0x7) | 12-bit random.
     let uuid = uuid::Uuid::now_v7();
     let uuid_bytes = uuid.as_bytes();
     write_bext_field(path, &map, 0, &uuid_bytes[..8])?;
-
-    // 2. Write version_major=1, version_minor=2 at Description[8:12].
-    write_bext_field(path, &map, 8, &1u16.to_le_bytes())?;
-    write_bext_field(path, &map, 10, &PACKED_VERSION_MINOR_V2.to_le_bytes())?;
-
-    // 3. Write marker data at Description[12:44].
-    write_bext_field(path, &map, 12, &markers.to_bytes())?;
-
-    // 4. Set bext_version=2 at offset 346 (signals EBU Tech 3285 compliance and
-    //    honest acknowledgment of non-standard use of loudness fields for u8 peaks).
-    write_bext_field(path, &map, 346, &2u16.to_le_bytes())?;
 
     Ok(())
 }
@@ -2240,6 +2250,58 @@ mod tests {
                 original_size,
                 "file size should not change"
             );
+
+            std::fs::remove_file(&path).unwrap();
+        }
+
+        /// Simulates a prior run that wrote version/markers/bext_version but
+        /// failed before the commit step (file_id stays zero). A subsequent
+        /// call to init_packed must recover and leave the file fully packed.
+        ///
+        /// This is the property that justifies the write reorder: `file_id`
+        /// is written last, so partial failures never produce a file that
+        /// looks packed to Lua's `is_packed()` but unpacked to the parser.
+        #[test]
+        fn test_init_packed_idempotent_after_partial_prior_state() {
+            let mut bext_data = [0u8; BEXT_STANDARD_SIZE];
+            // Pretend steps 1-3 of a prior init succeeded (version + markers +
+            // bext_version written) but step 4 (file_id) never ran.
+            bext_data[0..8].copy_from_slice(&[0u8; 8]); // file_id = 0
+            bext_data[8..10].copy_from_slice(&1u16.to_le_bytes()); // version_major
+            bext_data[10..12].copy_from_slice(&PACKED_VERSION_MINOR_V2.to_le_bytes());
+            bext_data[12..44].copy_from_slice(&MarkerConfig::preset_shot().to_bytes());
+            bext_data[346..348].copy_from_slice(&2u16.to_le_bytes()); // bext_version
+
+            let riff = make_riff(&[
+                (b"fmt ", &[0u8; 16]),
+                (b"bext", &bext_data),
+                (b"data", &[0u8; 100]),
+            ]);
+            let path = std::env::temp_dir().join(format!(
+                "riffgrep_test_init_partial_{}.wav",
+                std::process::id()
+            ));
+            std::fs::write(&path, &riff).unwrap();
+
+            // Parser must see the file as unpacked (file_id = 0).
+            let mut file = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
+            let map = scan_chunks(&mut file).unwrap();
+            let fields = parse_bext_data(&mut file, &map).unwrap();
+            assert_eq!(fields.file_id, 0, "fixture pre-condition: file_id is zero");
+            assert!(
+                !fields.packed,
+                "fixture pre-condition: parser sees unpacked"
+            );
+            drop(file);
+
+            // Re-run activation. Must succeed idempotently.
+            init_packed_and_write_markers(&path, &MarkerConfig::preset_loop(48000)).unwrap();
+
+            let mut file2 = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
+            let map2 = scan_chunks(&mut file2).unwrap();
+            let fields2 = parse_bext_data(&mut file2, &map2).unwrap();
+            assert_ne!(fields2.file_id, 0, "file_id must be set after re-run");
+            assert!(fields2.packed, "file must read as packed after re-run");
 
             std::fs::remove_file(&path).unwrap();
         }
