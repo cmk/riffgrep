@@ -337,7 +337,11 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
                 super::Bank::A => " [A]",
                 super::Bank::B => " [B]",
             };
-            let bank = if app.bank_sync() { " [A+B]" } else { bank_label };
+            let bank = if app.bank_sync() {
+                " [A+B]"
+            } else {
+                bank_label
+            };
             format!(" {icon} {name} {time}{auto}{looping}{bank}")
         }
         PlaybackState::Stopped => {
@@ -352,7 +356,11 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
                 super::Bank::A => " [A]",
                 super::Bank::B => " [B]",
             };
-            let bank = if app.bank_sync() { " [A+B]" } else { bank_label };
+            let bank = if app.bank_sync() {
+                " [A+B]"
+            } else {
+                bank_label
+            };
             s.push_str(bank);
             s
         }

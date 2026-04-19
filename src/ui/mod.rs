@@ -6174,7 +6174,8 @@ mod tests {
         app.set_selected_marker(Some(2));
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert_eq!(
-            app.selected_marker(), None,
+            app.selected_marker(),
+            None,
             "selected_marker must be cleared when markers hidden"
         );
     }
