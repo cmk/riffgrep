@@ -1446,13 +1446,18 @@ impl App {
         self.ensure_markers();
 
         if self.bank_sync() {
-            if let Some(ref mut preview) = self.preview
+            let updated = if let Some(ref mut preview) = self.preview
                 && let Some(ref mut markers) = preview.markers
             {
                 let cur = markers.bank_a.reps[seg];
                 let new_val = (cur as i16 + delta as i16).clamp(0, 15) as u8;
                 markers.bank_a.reps[seg] = new_val;
                 markers.bank_b.reps[seg] = new_val;
+                Some(new_val)
+            } else {
+                None
+            };
+            if let Some(new_val) = updated {
                 let label = if new_val == 15 {
                     "inf".to_string()
                 } else {
@@ -1460,6 +1465,8 @@ impl App {
                 };
                 self.sync_fsm_from_preview();
                 self.set_status(format!("Segment {} rep: {label}", seg + 1));
+            } else {
+                self.set_status("No markers".to_string());
             }
         } else if let Some(bank) = self.active_bank_mut() {
             let current = bank.reps[seg];
@@ -2030,16 +2037,23 @@ impl App {
         self.ensure_markers();
 
         if self.bank_sync() {
-            if let Some(ref mut preview) = self.preview
+            let updated = if let Some(ref mut preview) = self.preview
                 && let Some(ref mut markers) = preview.markers
             {
                 let cur = markers.bank_a.reps[seg];
                 let new_val = if cur == 15 { 1 } else { 15 };
                 markers.bank_a.reps[seg] = new_val;
                 markers.bank_b.reps[seg] = new_val;
+                Some(new_val)
+            } else {
+                None
+            };
+            if let Some(new_val) = updated {
                 let label = if new_val == 15 { "inf" } else { "1" };
                 self.sync_fsm_from_preview();
                 self.set_status(format!("Segment {} rep: {label}", seg + 1));
+            } else {
+                self.set_status("No markers".to_string());
             }
         } else if let Some(bank) = self.active_bank_mut() {
             let cur = bank.reps[seg];
@@ -2048,6 +2062,8 @@ impl App {
             let label = if new_val == 15 { "inf" } else { "1" };
             self.sync_fsm_from_preview();
             self.set_status(format!("Segment {} rep: {label}", seg + 1));
+        } else {
+            self.set_status("No markers".to_string());
         }
     }
 
