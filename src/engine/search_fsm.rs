@@ -127,6 +127,13 @@ pub enum Input {
     /// Runner signal: search was cancelled (either by a new query
     /// arriving or by an external cancel). Any → Settled.
     SearchCancelled,
+    /// Runner signal: the search task errored before emitting any
+    /// results (e.g. query parse failed, DB unavailable). Any →
+    /// Settled with `total_matches = 0`. Separate from
+    /// `SearchCancelled` so the runner can show a different status
+    /// message (error vs. "cancelled"), and so stdio can distinguish
+    /// a clean cancel from a failure in form-patch telemetry.
+    SearchFailed,
     /// User pressed Enter on a result row. Emits `Output::FireSelection`
     /// (a placeholder; runner synthesizes `TypedAction::LoadSample`
     /// from its own selected-row state).
@@ -238,6 +245,14 @@ impl StateMachineImpl for SearchMachine {
                 // Any transport collapses to Settled on cancel. The
                 // runner has already aborted the task; this just
                 // marks the FSM as not waiting on anything.
+                next.transport = Transport::Settled;
+            }
+            Input::SearchFailed => {
+                // Same transport transition as SearchCancelled — the
+                // task is no longer running. Kept as a separate
+                // variant so logs / UI status distinguish "failed" from
+                // "cancelled"; the runner that fires this also sets
+                // total_matches = 0 on its own state.
                 next.transport = Transport::Settled;
             }
             Input::FireSelection => {
@@ -488,6 +503,17 @@ mod tests {
     }
 
     #[test]
+    fn search_failed_lands_settled_like_cancel() {
+        let state = SearchFsmState {
+            transport: Transport::Pending,
+            ..SearchFsmState::default()
+        };
+        let mut fsm = SearchFsm::from_state(state);
+        let _ = fsm.consume(Input::SearchFailed);
+        assert_eq!(fsm.state().transport, Transport::Settled);
+    }
+
+    #[test]
     fn search_cancelled_always_lands_settled() {
         for initial in [
             Transport::Idle,
@@ -619,6 +645,7 @@ mod tests {
             Input::SearchStarted,
             Input::SearchSettled { total: 100 },
             Input::SearchCancelled,
+            Input::SearchFailed,
             Input::FireSelection,
             Input::EnterSimilarityMode,
             Input::ExitSimilarityMode,

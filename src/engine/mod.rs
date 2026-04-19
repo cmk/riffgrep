@@ -13,6 +13,7 @@ pub mod playback_fsm;
 pub mod pq;
 pub mod riff_info;
 pub mod search_fsm;
+pub mod search_runner;
 pub mod similarity;
 pub mod source;
 pub mod sqlite;
