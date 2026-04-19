@@ -1,9 +1,8 @@
-# PR #0000 (pre-PR) — Playback FSM (Plan 06)
+# PR #20 — Playback FSM (Plan 06)
 
 ## Local review (2026-04-19)
 
 **Branch:** sprint/playback-fsm
-**Commits:** 3 (origin/main..HEAD) + 1 review-round fix
 **Reviewer:** code-reviewer agent (pre-push local review)
 
 ## Summary
@@ -13,8 +12,10 @@ The FSM module (`src/engine/playback_fsm.rs`) is well-structured. All
 plan spec and `PlaybackEngine::restart_program`'s early-return
 convention, output generation is correct for the four transport-mutation
 inputs, and `PlaybackFsm::consume` silently discards the `Err` arm from
-the infallible `StateMachineImpl` correctly. 21 inline unit tests cover
-every branch explicitly. The `prop_state_machine!` harness for Q2 and
+the infallible `StateMachineImpl` correctly. 24 inline unit tests cover
+every branch explicitly (baseline transitions, Stop-clears-pending,
+Q7 no-op-from-Stopped, program-end + loop interactions, and the
+round-2 ConsumeRestart-guard regressions). The `prop_state_machine!` harness for Q2 and
 the baseline `SyncedSutTest` are wired correctly — `SharedInvariants::assert_all`
 catches any SUT/reference drift from the first step, giving full
 coverage of all 14 inputs across arbitrary sequences. Build, clippy,
@@ -23,11 +24,12 @@ fmt, and all 9 integration tests pass.
 One must-fix from the agent review was a trivially weak Q5 (no prefix,
 dead generators) — fixed in-sprint before push: Q5 now runs a prefix
 drawn from `transitions_no_stop_or_program_end` before the
-Seek+ConsumeSeek injection, and the stale `#[allow(dead_code)]`
-annotations are gone. One follow-up (F2: `ProgramEnded` from `Paused`
-without loop) also addressed in-sprint via a unit test. F1 (ConsumeRestart
-precondition doc) deferred to Plan 07 where engine wiring will make
-the invariant testable.
+Seek+ConsumeSeek injection, and the stale broad `#[allow(dead_code)]`
+annotations were narrowed to targeted allowances on `Input`,
+`MixerCommand`, and `PlaybackFsm` (tracked to Plan 07 engine wiring).
+F2 (`ProgramEnded` from `Paused` without loop) also addressed in-sprint
+via a unit test. F1 (ConsumeRestart precondition) was initially deferred
+but the round-2 review round resolved it in-tree — see below.
 
 ## Must-fix
 
@@ -35,26 +37,21 @@ None (M1 resolved in-sprint).
 
 ## Follow-ups
 
-**F1 — `ConsumeRestart` from `Paused` snaps transport to `Playing`
-without a precondition guard**
-
-`Input::ConsumeRestart` unconditionally sets `transport =
-Transport::Playing`. A `Restart` dispatched while `Paused` queues
-`pending_restart = true` without changing transport. If the mixer
-dispatched `ConsumeRestart` before the sink resumes — which the current
-operational contract forbids but the FSM does not enforce — the FSM
-state would snap to `Playing` while audio stays silent. No test covers
-`[Play, Pause, Restart, ConsumeRestart]`; Plan 07's engine wiring should
-either add a transport guard or document at the `ConsumeRestart` arm
-that it is a mixer-internal signal requiring an active sink.
+None open. (F1 above was resolved in the round-2 GitHub review: the
+`ConsumeRestart` arm now guards on `pending_restart && transport !=
+Stopped` and silently no-ops otherwise, with two new unit tests
+covering the spurious-dispatch cases. F2 shipped inline in the FSM
+tests.)
 
 ## Commit hygiene
 
-Four commits on the branch: FSM scaffold, property suite, status-doc
-update, and this review-round fix for M1+F2. All carry conventional
-commit prefixes (`feat:`, `test:`, `doc:`, `fix:`). Commit messages are
-informative and each passes `cargo test` per the pre-commit hook. No
-merge commits, linear history, no issues.
+Commits on the branch (Tier 1 + three GitHub review rounds): FSM
+scaffold, property suite, status-doc update, the review-round fix for
+M1+F2, a round-2 fix for ProgramEnded clearing / ConsumeRestart guard /
+TestConfig::max_steps replacement / CI fmt repair, and a round-3
+doc-sync pass. All carry conventional commit prefixes (`feat:`,
+`test:`, `doc:`, `fix:`). Each passes `cargo test` per the pre-commit
+hook. No merge commits, linear history, no issues.
 
 ## Build gates
 
@@ -156,3 +153,105 @@ Fixed in 5553c9d — ConsumeRestart now guards on both `pending_restart == true`
 #### ↳ cmk ([2026-04-19 07:22 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106435821))
 
 Fixed in 5553c9d — dropped the unused `TestConfig::max_steps` field and introduced a `pub const MAX_STEPS: usize = 32` referenced by both the `prop_state_machine!` sequential ranges and the doc, so raising it now actually widens every harness's transitions-per-case in lockstep.
+
+<!-- gh-id: 3106440607 -->
+### Copilot on [`src/engine/playback_fsm.rs:11`](https://github.com/cmk/riffgrep/pull/20#discussion_r3106440607) (2026-04-19 07:27 UTC)
+
+Module-level docs say the FSM is already the single source of truth and that `PlaybackEngine`/TUI dispatch through it, but this PR explicitly defers engine wiring (and the file itself uses `#[allow(dead_code)]`). Please reword this to reflect the current reality (e.g., “will become the source of truth once Plan 07 wires it into PlaybackEngine”), so readers aren’t misled about what codepaths are actually active today.
+```suggestion
+//! This FSM is intended to become the single source of truth for
+//! UI-observable transitions once Plan 07 wires it into
+//! [`PlaybackEngine`](crate::engine::playback::PlaybackEngine) and the TUI
+//! action handlers. In the current PR, it models those transitions while
+//! the existing atomics remain the active mixer-thread interface.
+```
+
+<!-- gh-id: 3106440611 -->
+### Copilot on [`src/engine/playback_fsm.rs:73`](https://github.com/cmk/riffgrep/pull/20#discussion_r3106440611) (2026-04-19 07:27 UTC)
+
+`Input::Play` is documented as “resuming from pause uses `Input::Resume`”, but the actual transition/output logic treats `Play` from `Paused` as a resume (and there’s an inline unit test asserting that behavior). Please update the doc comment to match the implemented semantics (or, if the intent is to forbid `Play` from `Paused`, adjust the transition/output + tests accordingly).
+```suggestion
+    /// program) is `Stop` followed by `Play`; when already `Paused`,
+    /// `Play` also resumes playback. [`Input::Resume`] is the explicit
+    /// paused-to-playing input.
+```
+
+<!-- gh-id: 3106440614 -->
+### Copilot on [`doc/reviews/review-0020.md:30`](https://github.com/cmk/riffgrep/pull/20#discussion_r3106440614) (2026-04-19 07:27 UTC)
+
+This summary says “the stale `#[allow(dead_code)]` annotations are gone”, but the shipped `src/engine/playback_fsm.rs` still contains narrow `#[allow(dead_code)]` on `Input`/`MixerCommand`/`PlaybackFsm` (as also noted in the plan). Please update this sentence so the review record matches what actually landed.
+```suggestion
+Seek+ConsumeSeek injection, and the stale broad `#[allow(dead_code)]`
+annotations were narrowed to targeted allowances on `Input`,
+`MixerCommand`, and `PlaybackFsm`. One follow-up (F2:
+`ProgramEnded` from `Paused` without loop) also addressed in-sprint
+via a unit test. F1 (ConsumeRestart precondition doc) deferred to
+Plan 07 where engine wiring will make the invariant testable.
+```
+
+<!-- gh-id: 4135617719 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-19 07:27 UTC](https://github.com/cmk/riffgrep/pull/20#pullrequestreview-4135617719))
+
+## Pull request overview
+
+Copilot reviewed 10 out of 10 changed files in this pull request and generated 6 comments.
+
+
+
+
+
+<!-- gh-id: 3106440619 -->
+### Copilot on [`doc/plans/plan-2026-04-18-04.md:154`](https://github.com/cmk/riffgrep/pull/20#discussion_r3106440619) (2026-04-19 07:27 UTC)
+
+The plan’s test-suite layout bullet says `test.rs` includes `TestConfig (cases, max_steps, env-var override)`, but the shipped `tests/engine/playback_fsm/test.rs` removes `max_steps` in favor of a `MAX_STEPS` constant used by the `prop_state_machine!` ranges. Please update this bullet to match the implementation.
+```suggestion
+- `test.rs` — entrypoint + `TestConfig` (cases, env-var override)
+  and a `MAX_STEPS` constant used by the `prop_state_machine!`
+  ranges. Default cases=64.
+```
+
+<!-- gh-id: 3106440624 -->
+### Copilot on [`doc/plans/plan-2026-04-18-04.md:183`](https://github.com/cmk/riffgrep/pull/20#discussion_r3106440624) (2026-04-19 07:27 UTC)
+
+This section still describes `TestConfig` as `struct TestConfig { cases, max_steps, verbose }` with `max_steps=32`, but the current code instead defines `pub const MAX_STEPS: usize = 32` and no `max_steps` field. Please update the plan text to document `MAX_STEPS` (and/or reintroduce `max_steps` if that configurability is desired).
+```suggestion
+`struct TestConfig { cases: u32, verbose: bool }`
+in `tests/engine/playback_fsm/test.rs`, with
+`pub const MAX_STEPS: usize = 32` defining the fixed step bound.
+Default `cases=64`. Read env `RIFFGREP_PROPTEST_CASES` if set.
+```
+
+<!-- gh-id: 3106440626 -->
+### Copilot on [`doc/reviews/review-0020.md:45`](https://github.com/cmk/riffgrep/pull/20#discussion_r3106440626) (2026-04-19 07:27 UTC)
+
+The F1 follow-up states `Input::ConsumeRestart` “unconditionally sets transport=Playing” and that “the FSM does not enforce” a precondition, but the current `src/engine/playback_fsm.rs` adds a guard (`pending_restart && transport != Stopped`) and unit tests for spurious ConsumeRestart. Please update/remove this follow-up so the review record matches the final code in this PR.
+
+<!-- gh-id: 3106447184 -->
+#### ↳ cmk ([2026-04-19 07:34 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106447184))
+
+Fixed in 9e17ed2 — module doc reworded to "intended to become the single source of truth once Plan 07 wires it into PlaybackEngine", with a note on the narrow allow(dead_code) attributes still in place until that wiring lands.
+
+<!-- gh-id: 3106447219 -->
+#### ↳ cmk ([2026-04-19 07:34 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106447219))
+
+Fixed in 9e17ed2 — `Input::Play` doc now matches the transition + output arms: Play from Paused resumes playback and emits `MixerCommand::Resume`, and `Input::Resume` is the explicit Paused→Playing alias.
+
+<!-- gh-id: 3106447260 -->
+#### ↳ cmk ([2026-04-19 07:34 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106447260))
+
+Fixed in 9e17ed2 — summary corrected to "narrowed to targeted allowances on Input, MixerCommand, PlaybackFsm" (those narrow attrs ride until Plan 07 consumes the types). Also dropped the now-stale F1 follow-up from the same file since the round-2 review resolved it in-tree.
+
+<!-- gh-id: 3106447310 -->
+#### ↳ cmk ([2026-04-19 07:34 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106447310))
+
+Fixed in 9e17ed2 alongside the Task 6 section update.
+
+<!-- gh-id: 3106447344 -->
+#### ↳ cmk ([2026-04-19 07:34 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106447344))
+
+Fixed in 9e17ed2 — Task 6 section now describes `struct TestConfig { cases, verbose }` plus `pub const MAX_STEPS: usize = 32` and notes the rationale (prop_state_machine! requires a literal/const range, so the step bound can't be a runtime struct field).
+
+<!-- gh-id: 3106447390 -->
+#### ↳ cmk ([2026-04-19 07:34 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106447390))
+
+Fixed in 9e17ed2 — removed the stale F1 follow-up (and updated the summary that referenced it). Follow-ups section now reads "None open" since the round-2 fix shipped the guard + tests.
