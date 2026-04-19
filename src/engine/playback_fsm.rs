@@ -109,11 +109,14 @@ pub enum Input {
     ProgramEnded,
     /// Mixer signal: consumed the pending seek. Clears `pending_seek`.
     ConsumeSeek,
-    /// Mixer signal: consumed the pending restart. Clears the flag and
-    /// snaps transport to `Playing` when the precondition holds
-    /// (`pending_restart == true` and transport is not `Stopped`);
-    /// silently no-ops otherwise so property tests can dispatch
-    /// freely. Not for user dispatch — the mixer is the only caller.
+    /// Mixer signal: consumed the pending restart. Clears the flag
+    /// when the precondition holds (`pending_restart == true` AND
+    /// transport is `Playing` — the mixer is actively producing
+    /// frames). Silently no-ops otherwise so property tests can
+    /// dispatch freely. Transport is not changed; a real mixer-side
+    /// restart happens inside the mixer thread, which only runs when
+    /// transport is already `Playing`. Not for user dispatch — the
+    /// mixer is the only caller.
     ConsumeRestart,
 }
 
@@ -222,17 +225,17 @@ impl StateMachineImpl for PlaybackMachine {
             }
             Input::ConsumeRestart => {
                 // Mixer-internal signal: only fires when the mixer has
-                // actually started replaying from segment 0. That means
-                // `pending_restart` must be set and the sink must not
-                // be stopped (mixer wouldn't be producing frames). A
-                // spurious dispatch is a no-op rather than a panic so
-                // property tests can exercise it freely; the guard
-                // protects against the bug-class where ConsumeRestart
-                // accidentally snaps transport to Playing while the
-                // audio path is silent.
-                if state.pending_restart && !matches!(state.transport, Transport::Stopped) {
+                // actually started replaying from segment 0. That
+                // means `pending_restart` must be set AND transport
+                // must already be `Playing` (the mixer is producing
+                // frames). `Paused` uses `sink.pause()` so the audio
+                // path is silent — if ConsumeRestart fired there,
+                // snapping transport to `Playing` would desync the UI
+                // from the silent audio. A spurious dispatch is a
+                // no-op rather than a panic so property tests can
+                // exercise it freely.
+                if state.pending_restart && matches!(state.transport, Transport::Playing) {
                     next.pending_restart = false;
-                    next.transport = Transport::Playing;
                 }
             }
         }
@@ -591,6 +594,27 @@ mod tests {
             *fsm.state(),
             before,
             "ConsumeRestart with no pending_restart is a no-op"
+        );
+    }
+
+    #[test]
+    fn consume_restart_is_noop_when_paused() {
+        // Tightened guard (round-3 feedback on PR #20): Paused + sink
+        // paused means the audio path is silent. A spurious
+        // ConsumeRestart while Paused must not snap UI to Playing.
+        let mut fsm = PlaybackFsm::new();
+        let _ = fsm.consume(Input::Play);
+        let _ = fsm.consume(Input::Pause);
+        let _ = fsm.consume(Input::Restart); // queues pending_restart, stays Paused
+        assert_eq!(fsm.transport(), Transport::Paused);
+        assert!(fsm.pending_restart());
+        let before = *fsm.state();
+        let _ = fsm.consume(Input::ConsumeRestart);
+        assert_eq!(
+            *fsm.state(),
+            before,
+            "ConsumeRestart while Paused is a no-op — pending_restart stays queued \
+             for the eventual Resume",
         );
     }
 

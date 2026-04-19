@@ -216,7 +216,7 @@ proptest! {
 }
 
 // =============================================================================
-// Q2: Resume ∘ Pause ≡ id when transport = Playing
+// Q2: Pause ∘ Resume ≡ id when transport = Playing
 // =============================================================================
 // Expressed as a full state-machine test: every transition in the stream
 // ends on an invariant check that Pause-then-Resume from a Playing state
