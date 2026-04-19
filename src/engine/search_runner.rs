@@ -118,8 +118,13 @@ impl SearchRunner {
 
     /// Replace the result set wholesale. Called by the App when a
     /// search's first batch arrives (after firing
-    /// [`Input::SearchStarted`]) or when similarity filtering rebuilds
-    /// the list. Resets `selected` and `scroll_offset` to 0.
+    /// [`Input::SearchStarted`]). Does **not** update
+    /// `total_matches` — the settled total arrives via
+    /// [`Input::SearchSettled`] and is applied by
+    /// [`set_total_matches`](Self::set_total_matches). Similarity
+    /// rebuilds go through [`apply_similarity_filter`](Self::apply_similarity_filter)
+    /// instead, which also updates `total_matches`.
+    /// Resets `selected` and `scroll_offset` to 0.
     pub fn set_results(&mut self, rows: Vec<TableRow>) {
         self.results = rows;
         self.selected = 0;
@@ -176,11 +181,27 @@ impl SearchRunner {
     /// snapshot. No-op when the snapshot is absent. Case-insensitive
     /// substring match on each row's path. Called by the App in
     /// response to [`Output::FilterSimilarity`].
-    pub fn apply_similarity_filter(&mut self, query: &str) {
-        let Some(ref snapshot) = self.similarity_snapshot else {
-            return;
+    ///
+    /// Returns an [`Option<&'static str>`] warning when the query
+    /// starts with `@` — similarity mode doesn't support
+    /// `@field=value` column filters (unlike remote mode's
+    /// `parse_column_filters`), and without the warning a typo like
+    /// `@vendor=Mars` would silently return zero results. The caller
+    /// (today `App::set_status`, tomorrow stdio's form-status
+    /// channel) decides whether to surface it — the runner stays
+    /// I/O-free. Returns `None` for any other query including empty.
+    pub fn apply_similarity_filter(&mut self, query: &str) -> Option<&'static str> {
+        let snapshot = self.similarity_snapshot.as_ref()?;
+        let trimmed = query.trim();
+        let warning = if trimmed.starts_with('@') {
+            Some(
+                "similarity mode: @field=value filters not supported; \
+                 matching path substring only",
+            )
+        } else {
+            None
         };
-        let q = query.trim().to_lowercase();
+        let q = trimmed.to_lowercase();
         self.results = if q.is_empty() {
             snapshot.clone()
         } else {
@@ -201,6 +222,7 @@ impl SearchRunner {
         };
         self.scroll_offset = 0;
         self.total_matches = self.results.len();
+        warning
     }
 
     // ---------- selection + navigation ----------
@@ -383,13 +405,35 @@ mod tests {
         assert!(!r.sort_ascending());
 
         // Simulate the FSM emitting FilterSimilarity on tick.
-        r.apply_similarity_filter("kick");
+        let warn = r.apply_similarity_filter("kick");
+        assert_eq!(warn, None, "plain substring query: no warning");
         assert_eq!(r.results().len(), 2);
         assert_eq!(r.total_matches(), 2);
 
         // Clearing the query restores the full snapshot.
-        r.apply_similarity_filter("");
+        let warn = r.apply_similarity_filter("");
+        assert_eq!(warn, None);
         assert_eq!(r.results().len(), 3);
+    }
+
+    #[test]
+    fn apply_similarity_filter_warns_on_at_prefix() {
+        // Preserves the App::filter_similarity_results UX: when the
+        // user types a leading @ in similarity mode (mistakenly
+        // reaching for normal-mode @field=value filters), the runner
+        // surfaces a warning for the UI layer to display. Runner
+        // itself doesn't touch the status bar — it returns the
+        // warning, caller decides.
+        let mut r = default_runner();
+        r.load_similarity_snapshot(vec![row("/kick.wav"), row("/snare.wav")], vec![1.0, 0.5]);
+        let warn = r.apply_similarity_filter("@vendor=Mars");
+        assert_eq!(
+            warn,
+            Some(
+                "similarity mode: @field=value filters not supported; \
+                 matching path substring only"
+            ),
+        );
     }
 
     #[test]
@@ -397,7 +441,8 @@ mod tests {
         let mut r = default_runner();
         r.set_results(vec![row("/a.wav"), row("/b.wav")]);
         let before_paths: Vec<PathBuf> = r.results().iter().map(|r| r.meta.path.clone()).collect();
-        r.apply_similarity_filter("anything");
+        let warn = r.apply_similarity_filter("anything");
+        assert_eq!(warn, None, "no snapshot → no filter work, no warning");
         let after_paths: Vec<PathBuf> = r.results().iter().map(|r| r.meta.path.clone()).collect();
         assert_eq!(after_paths, before_paths);
     }
