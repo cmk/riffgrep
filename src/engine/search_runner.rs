@@ -184,7 +184,15 @@ impl SearchRunner {
                 .cloned()
                 .collect()
         };
-        self.selected = 0;
+        // Preserve selection when still in range; clamp when the
+        // filter shrank past it. Matches App::filter_similarity_results
+        // — resetting to 0 would be a user-observable regression
+        // (filter changes feel like "you lost my place").
+        self.selected = if self.results.is_empty() {
+            0
+        } else {
+            self.selected.min(self.results.len() - 1)
+        };
         self.scroll_offset = 0;
         self.total_matches = self.results.len();
     }

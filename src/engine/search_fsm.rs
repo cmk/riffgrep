@@ -15,10 +15,14 @@
 //! - The FSM receives already-translated events — keybindings live
 //!   above (#4).
 //! - [`Output::FireSelection`] is a placeholder; the runner reads
-//!   wrapper state and synthesizes a typed `Action::LoadSample(path)`
+//!   wrapper state and synthesizes a typed
+//!   [`TypedAction::LoadSample(PathBuf)`](crate::engine::search_runner::TypedAction)
 //!   (#5).
-//! - Cleanup (#6) is the runner's job: `Input::SearchCancelled` →
-//!   `Output::CancelSearch` → runner aborts the `JoinHandle`.
+//! - Cleanup (#6) is split across the runner/FSM boundary: the
+//!   App-side integration receives [`Output::CancelSearch`] and
+//!   performs the abort; [`Input::SearchCancelled`] is the reverse
+//!   signal from the runner back to the FSM after cancellation has
+//!   occurred (collapses transport to `Settled`; no output).
 //!
 //! See `doc/plans/plan-2026-04-19-01.md` for the full sprint scope.
 
@@ -99,9 +103,12 @@ impl Default for SearchFsmState {
 #[allow(dead_code)] // Wiring to the runner lands in Task 2-4.
 pub enum Input {
     /// User typed into the query bar — updates `query` and sets
-    /// `debounce_dirty`. In `Mode::Similarity`, also triggers an
-    /// immediate `Output::FilterSimilarity` (local filter is synchronous;
-    /// no debounce needed).
+    /// `debounce_dirty`. The follow-up action is debounced in both
+    /// modes: a subsequent `DebounceTick` emits either
+    /// `Output::SpawnSearch` (Remote) or `Output::FilterSimilarity`
+    /// (Similarity). Keeping Similarity on the same debounce path
+    /// matches today's TUI behavior and avoids re-filtering on every
+    /// keystroke.
     QueryChanged(String),
     /// User cleared the query (Ctrl-U or equivalent). Equivalent to
     /// `QueryChanged(String::new())` in effect; kept as a separate
