@@ -333,7 +333,7 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
 
             let auto = if app.auto_advance { " [AUTO]" } else { "" };
             let looping = if app.global_loop { " [LOOP]" } else { "" };
-            let bank_label = match app.active_bank {
+            let bank_label = match app.active_bank() {
                 super::Bank::A => " [A]",
                 super::Bank::B => " [B]",
             };
@@ -348,7 +348,7 @@ pub fn render_status_bar(app: &App, area: Rect, buf: &mut Buffer) {
             if app.global_loop {
                 s.push_str(" [LOOP]");
             }
-            let bank_label = match app.active_bank {
+            let bank_label = match app.active_bank() {
                 super::Bank::A => " [A]",
                 super::Bank::B => " [B]",
             };
@@ -737,7 +737,7 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
             );
 
             // Segment labels for the active bank.
-            let (bank, color) = match app.active_bank {
+            let (bank, color) = match app.active_bank() {
                 super::Bank::A => (&markers.bank_a, theme.marker_a),
                 super::Bank::B => (&markers.bank_b, theme.marker_b),
             };
