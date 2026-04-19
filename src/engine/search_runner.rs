@@ -140,7 +140,13 @@ impl SearchRunner {
     /// follow with `dispatch(Input::EnterSimilarityMode)` so the FSM
     /// mode flips.
     pub fn load_similarity_snapshot(&mut self, mut rows: Vec<TableRow>, sims: Vec<f32>) {
-        assert_eq!(
+        // debug_assert (not assert) so a bad upstream payload doesn't
+        // crash the TUI or stdio embedding in release builds. The
+        // contract is still that the caller passes matching lengths
+        // — mismatched input is a programmer bug, not a user error.
+        // In release, the zip below silently truncates to the shorter
+        // of the two.
+        debug_assert_eq!(
             rows.len(),
             sims.len(),
             "load_similarity_snapshot: rows.len()={} sims.len()={}",
@@ -209,7 +215,9 @@ impl SearchRunner {
         let new_sel = if delta >= 0 {
             self.selected.saturating_add(delta as usize).min(max)
         } else {
-            self.selected.saturating_sub((-delta) as usize)
+            // delta.unsigned_abs() avoids the overflow on isize::MIN
+            // that `(-delta) as usize` would hit.
+            self.selected.saturating_sub(delta.unsigned_abs())
         };
         self.selected = new_sel;
     }

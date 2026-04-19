@@ -277,3 +277,89 @@ Fixed in df2bd29 — `Input::QueryChanged` doc no longer claims an immediate `Fi
 #### ↳ cmk ([2026-04-19 08:52 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106537835))
 
 Fixed in df2bd29 — `Action::LoadSample` → `TypedAction::LoadSample(PathBuf)` with a link to the runner module. Aligned with the actual type shipped in `search_runner.rs`.
+
+<!-- gh-id: 3106542640 -->
+### Copilot on [`src/engine/search_runner.rs:149`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106542640) (2026-04-19 08:56 UTC)
+
+`load_similarity_snapshot` uses `assert_eq!(rows.len(), sims.len(), ...)`, which will panic in production builds if the caller passes mismatched vectors. Since this is a public runner API, consider returning a `Result` (or at least using `debug_assert_eq!`) so a bad upstream payload can be surfaced without crashing the TUI/stdio embedding.
+
+<!-- gh-id: 3106542644 -->
+### Copilot on [`src/engine/search_runner.rs:212`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106542644) (2026-04-19 08:56 UTC)
+
+`move_selection` computes `(-delta) as usize` for negative deltas. This will overflow/panic in debug builds when `delta == isize::MIN` (and can produce a huge usize in release). Prefer using `delta.unsigned_abs()` (or another non-overflowing conversion) before calling `saturating_sub`.
+```suggestion
+            self.selected.saturating_sub(delta.unsigned_abs())
+```
+
+<!-- gh-id: 4135718844 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-19 08:56 UTC](https://github.com/cmk/riffgrep/pull/21#pullrequestreview-4135718844))
+
+## Pull request overview
+
+Copilot reviewed 10 out of 10 changed files in this pull request and generated 5 comments.
+
+
+
+
+
+<!-- gh-id: 3106542649 -->
+### Copilot on [`doc/plans/plan-2026-04-19-01.md:63`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106542649) (2026-04-19 08:56 UTC)
+
+The plan’s “six design considerations” bullet list is inconsistent with the code shipped in this PR: it still says the runner synthesizes `Action::LoadSample(path)` and that `SearchRunner` owns a tokio `JoinHandle` / `Input::Cancel` flow, but the implementation uses `TypedAction::LoadSample(PathBuf)`, the runner does not own task handles, and there is no `Input::Cancel` variant. Please update these bullets to match the current contract so follow-up integration work doesn’t wire against stale responsibilities.
+```suggestion
+5. **Typed actions at the output edge** — selection leaves the search
+   stack as `TypedAction::LoadSample(PathBuf)`, so follow-up App
+   integration can forward a concrete typed action instead of
+   reconstructing `Action::LoadSample(path)` from wrapper state.
+6. **Explicit cancel/cleanup** — transport lifecycle stays explicit,
+   but `SearchRunner` does not own tokio task handles and there is no
+   `Input::Cancel` variant; outer integration owns abort/drain, while
+   the FSM is driven back by typed completion inputs
+   (`SearchCancelled`, `SearchFailed`, `SearchSettled`).
+```
+
+<!-- gh-id: 3106542653 -->
+### Copilot on [`doc/plans/plan-2026-04-19-01.md:124`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106542653) (2026-04-19 08:56 UTC)
+
+In the Plan’s proposed `Input` enum list, `SelectNext`/`SelectPrev` and `SearchSettled { total_matches: usize }` are described, but the implemented `Input` in `src/engine/search_fsm.rs` has no select-next/prev variants and uses `SearchSettled { total: usize }`. Please update this section to match the shipped `Input` surface so Task 4 integrators don’t look for variants/field names that don’t exist.
+```suggestion
+    `FireSelection`.
+  - Timing: `DebounceTick`.
+  - External (from runner/mixer equivalent):
+    `SearchStarted`, `SearchSettled { total: usize }`,
+```
+
+<!-- gh-id: 3106542657 -->
+### Copilot on [`doc/plans/plan-2026-04-19-01.md:133`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106542657) (2026-04-19 08:56 UTC)
+
+This section still says `FireSelection` is a placeholder that synthesizes `Action::LoadSample(path)`, but the implementation uses `TypedAction::LoadSample(PathBuf)` (and the FSM `Output::FireSelection` is translated by `SearchRunner::dispatch`). Updating the type name here will help keep the plan aligned with the shipped API.
+```suggestion
+  - `FireSelection` — placeholder; `SearchRunner::dispatch` reads
+    wrapper state and translates it into
+    `TypedAction::LoadSample(PathBuf)`.
+```
+
+<!-- gh-id: 3106556134 -->
+#### ↳ cmk ([2026-04-19 09:09 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106556134))
+
+Fixed in fdfc65d — switched to `debug_assert_eq!`. A mismatched-lengths caller is a programmer bug; panicking the TUI / stdio embedding for a recoverable upstream mistake isn't worth it. The zip below silently truncates to the shorter length in release; debug still catches the bug at dev time. Mirrors the App::load_similarity_results pattern but without the prod-panic downside.
+
+<!-- gh-id: 3106556182 -->
+#### ↳ cmk ([2026-04-19 09:09 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106556182))
+
+Fixed in fdfc65d — switched to `delta.unsigned_abs()` which never overflows. Wasn't reachable from any keymap today but nothing prevents it, and this is a pure robustness fix.
+
+<!-- gh-id: 3106556226 -->
+#### ↳ cmk ([2026-04-19 09:09 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106556226))
+
+Fixed in fdfc65d — bullet 5 now says `TypedAction::LoadSample(PathBuf)`; bullet 6 rewritten: runner is effects-as-data, doesn't own JoinHandle, App integration honors `Output::CancelSearch` by aborting its own handle, runner signals back via `SearchCancelled` / `SearchFailed` / `SearchSettled`.
+
+<!-- gh-id: 3106556255 -->
+#### ↳ cmk ([2026-04-19 09:09 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106556255))
+
+Fixed in fdfc65d — Input list aligned: dropped `SelectNext` / `SelectPrev` (selection nav is `SearchRunner::move_selection`, a wrapper data mutation), corrected `SearchSettled { total: usize }`, added `SearchFailed` which landed mid-sprint.
+
+<!-- gh-id: 3106556290 -->
+#### ↳ cmk ([2026-04-19 09:09 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106556290))
+
+Fixed in fdfc65d — `FireSelection` description now says `SearchRunner::dispatch` reads wrapper state and translates it into `TypedAction::LoadSample(PathBuf)`, matching the shipped API.
