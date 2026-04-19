@@ -9,6 +9,7 @@ use std::collections::HashSet;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::engine::marker_fsm::MarkerFsm;
 use crate::engine::marks::MarkStore;
 use crate::engine::playback::{PlaybackEngine, PlaybackState};
 use crate::engine::{TableRow, UnifiedMetadata};
@@ -269,6 +270,14 @@ pub struct App {
     /// `results` when the search bar clears. `None` outside similarity
     /// mode.
     pub similarity_results: Option<Vec<TableRow>>,
+
+    /// Marker finite-state machine. Owns selection/bank/sync/visibility
+    /// in its own right; data ownership (MarkerConfig) remains in
+    /// `preview.markers` until Task 5 of Plan 04 lands. During the
+    /// carve-out migration the scalars are double-written so cargo test
+    /// stays green between incremental commits.
+    #[allow(dead_code)]
+    pub marker_fsm: MarkerFsm,
 }
 
 impl App {
@@ -341,6 +350,7 @@ impl App {
             db_path: None,
             in_similarity_mode: false,
             similarity_results: None,
+            marker_fsm: MarkerFsm::new(),
         }
     }
 
