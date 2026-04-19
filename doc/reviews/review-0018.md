@@ -260,3 +260,73 @@ Fixed in 18ed029 — status line says "Task 5c" now, matching the task-status ta
 #### ↳ cmk ([2026-04-19 06:09 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106368773))
 
 Fixed in 18ed029 — header updated to "PR #18".
+
+<!-- gh-id: 3106372963 -->
+### Copilot on [`src/ui/mod.rs:554`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106372963) (2026-04-19 06:13 UTC)
+
+When markers are hidden, `SelectNextMarker`/`SelectPrevMarker` can still set a non-SOF selection, and this branch will then call `nudge_marker()` even though hidden markers are supposed to make marker edits no-ops. Consider requiring `self.markers_visible()` here (or otherwise ensuring selection cannot become non-SOF while hidden) so large seek can’t mutate markers while hidden.
+
+<!-- gh-id: 3106372980 -->
+### Copilot on [`src/ui/mod.rs:1961`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106372980) (2026-04-19 06:13 UTC)
+
+`defined_marker_indices()` always starts with `vec![0]` (SOF), so `defined_marker_indices().is_empty()` can never be true. This guard is unreachable and can be removed (or `defined_marker_indices` should return empty when there’s no preview/markers, if that’s the intended meaning).
+
+<!-- gh-id: 4135558455 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-19 06:13 UTC](https://github.com/cmk/riffgrep/pull/18#pullrequestreview-4135558455))
+
+## Pull request overview
+
+Copilot reviewed 5 out of 5 changed files in this pull request and generated 4 comments.
+
+
+<details>
+<summary>Comments suppressed due to low confidence (1)</summary>
+
+**src/ui/mod.rs:562**
+* Same issue as the forward branch: while markers are hidden, a non-SOF selection can still exist, and then this path will call `nudge_marker()` despite the hidden-markers no-op rule. Gate the nudge redirect on `markers_visible()` (or otherwise prevent non-SOF selection while hidden).
+```
+            Action::SeekBackwardLarge => {
+                if self.selected_marker().filter(|&m| m >= 1).is_some() {
+                    self.nudge_marker(false, self.marker_nudge_large);
+                } else {
+                    self.seek_relative(-self.scrub_large);
+                }
+            }
+```
+</details>
+
+
+
+<!-- gh-id: 3106372983 -->
+### Copilot on [`src/ui/mod.rs:1976`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106372983) (2026-04-19 06:13 UTC)
+
+`defined_marker_indices()` always includes SOF (0), so this `is_empty()` guard is unreachable. Removing it would simplify the control flow (or adjust `defined_marker_indices` to be empty when no markers are available if that’s the intended semantics).
+
+<!-- gh-id: 3106372987 -->
+### Copilot on [`doc/plans/plan-2026-04-18-03.md:6`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106372987) (2026-04-19 06:13 UTC)
+
+The status summary says “Task 4 (preview.markers → FSM config migration) shipped…”, but the table directly below defines Task 4 as “Migrate active_bank” and uses Task 5a/5b for the preview→FSM config work. Please fix the Task number/name here so the status paragraph and task table agree.
+```suggestion
+Tasks 1-3, 5-6, and Task 7 shipped on `sprint/markers-app-carve`. Tasks
+5a-5b (preview.markers → FSM config migration) shipped in reduced form:
+```
+
+<!-- gh-id: 3106379297 -->
+#### ↳ cmk ([2026-04-19 06:20 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106379297))
+
+Fixed in eb70094 — large-seek now requires `markers_visible()` in both `SeekForwardLarge` and `SeekBackwardLarge` branches. The FSM's `ToggleMarkerDisplay` transition clears selection on hide, but `SelectNext/Prev` aren't in `Action::is_marker_edit()` so the user can re-establish a non-SOF selection via Tab while hidden — this gate prevents `nudge_marker` from firing in that window.
+
+<!-- gh-id: 3106379339 -->
+#### ↳ cmk ([2026-04-19 06:20 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106379339))
+
+Fixed in eb70094 — removed the unreachable guard. While I was in there, `defined_marker_indices` itself had become dead (the guard was its only caller); dropped that helper too. FSM's `defined_selections` is the sole source of truth for cycle logic now.
+
+<!-- gh-id: 3106379395 -->
+#### ↳ cmk ([2026-04-19 06:20 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106379395))
+
+Fixed in eb70094 alongside the mirror guard in `select_next_marker`.
+
+<!-- gh-id: 3106379429 -->
+#### ↳ cmk ([2026-04-19 06:20 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106379429))
+
+Fixed in eb70094 — status paragraph now reads "Tasks 5a-5b" to match the task table.
