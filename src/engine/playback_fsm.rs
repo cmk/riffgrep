@@ -105,7 +105,10 @@ pub enum Input {
     /// Mixer signal: consumed the pending seek. Clears `pending_seek`.
     ConsumeSeek,
     /// Mixer signal: consumed the pending restart. Clears the flag and
-    /// snaps transport to `Playing`.
+    /// snaps transport to `Playing` when the precondition holds
+    /// (`pending_restart == true` and transport is not `Stopped`);
+    /// silently no-ops otherwise so property tests can dispatch
+    /// freely. Not for user dispatch — the mixer is the only caller.
     ConsumeRestart,
 }
 
@@ -197,6 +200,13 @@ impl StateMachineImpl for PlaybackMachine {
                     // the next frame boundary.
                 } else {
                     next.transport = Transport::Stopped;
+                    // Clear any pending restart — a queued restart that
+                    // never fired (e.g. user hit Ctrl-O just before the
+                    // final segment ended) must not carry into the
+                    // Stopped state and then spuriously fire on the next
+                    // Play. Matches the spirit of Q7 (no restart
+                    // queued against an idle sink).
+                    next.pending_restart = false;
                     // Don't clear pending_seek here: a user-issued seek
                     // could legitimately survive a natural end. Stop
                     // clears it; ProgramEnded does not.
@@ -206,10 +216,19 @@ impl StateMachineImpl for PlaybackMachine {
                 next.pending_seek = None;
             }
             Input::ConsumeRestart => {
-                next.pending_restart = false;
-                // Mixer has started replaying from segment 0 — ensure
-                // transport reflects that.
-                next.transport = Transport::Playing;
+                // Mixer-internal signal: only fires when the mixer has
+                // actually started replaying from segment 0. That means
+                // `pending_restart` must be set and the sink must not
+                // be stopped (mixer wouldn't be producing frames). A
+                // spurious dispatch is a no-op rather than a panic so
+                // property tests can exercise it freely; the guard
+                // protects against the bug-class where ConsumeRestart
+                // accidentally snaps transport to Playing while the
+                // audio path is silent.
+                if state.pending_restart && !matches!(state.transport, Transport::Stopped) {
+                    next.pending_restart = false;
+                    next.transport = Transport::Playing;
+                }
             }
         }
         Some(next)
@@ -532,6 +551,63 @@ mod tests {
         let _ = fsm.consume(Input::ProgramEnded);
         assert_eq!(fsm.transport(), Transport::Stopped);
         assert!(!fsm.pending_restart());
+    }
+
+    #[test]
+    fn program_ended_without_loop_clears_pending_restart() {
+        // Regression for Copilot round-2 finding: if a Restart landed
+        // just before the final segment naturally ended, the old code
+        // left pending_restart=true while snapping transport=Stopped.
+        // The next Play would then silently fire the stale restart.
+        let state = PlaybackFsmState {
+            transport: Transport::Playing,
+            pending_restart: true,
+            ..PlaybackFsmState::default()
+        };
+        let mut fsm = PlaybackFsm::from_state(state);
+        let _ = fsm.consume(Input::ProgramEnded);
+        assert_eq!(fsm.transport(), Transport::Stopped);
+        assert!(
+            !fsm.pending_restart(),
+            "ProgramEnded (no loop) must clear a queued restart",
+        );
+    }
+
+    #[test]
+    fn consume_restart_is_noop_when_no_pending() {
+        // Spurious ConsumeRestart (e.g. double-fired by the mixer)
+        // must not snap transport to Playing out of nowhere.
+        let mut fsm = PlaybackFsm::new();
+        let _ = fsm.consume(Input::Play);
+        let _ = fsm.consume(Input::Pause);
+        let before = *fsm.state();
+        let _ = fsm.consume(Input::ConsumeRestart);
+        assert_eq!(
+            *fsm.state(),
+            before,
+            "ConsumeRestart with no pending_restart is a no-op"
+        );
+    }
+
+    #[test]
+    fn consume_restart_is_noop_when_stopped() {
+        // pending_restart can only arrive against a non-Stopped sink
+        // (Restart is a no-op from Stopped), but an earlier ProgramEnded
+        // path now clears it — make sure ConsumeRestart doesn't resurrect
+        // Playing from Stopped even if some path left pending_restart
+        // dangling.
+        let state = PlaybackFsmState {
+            transport: Transport::Stopped,
+            pending_restart: true,
+            ..PlaybackFsmState::default()
+        };
+        let mut fsm = PlaybackFsm::from_state(state);
+        let _ = fsm.consume(Input::ConsumeRestart);
+        assert_eq!(
+            fsm.transport(),
+            Transport::Stopped,
+            "ConsumeRestart must not resurrect Playing from Stopped",
+        );
     }
 
     #[test]

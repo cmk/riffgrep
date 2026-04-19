@@ -53,4 +53,3 @@ pub fn transitions_no_stop_or_program_end(_state: &PlaybackFsmState) -> BoxedStr
     ]
     .boxed()
 }
-
