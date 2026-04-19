@@ -186,6 +186,13 @@ pub enum Input {
     /// Emit a [`Output::ReadCsv`] descriptor; the caller performs the
     /// read and re-injects data via `SetMarkerN` inputs.
     ImportMarkersCsv(PathBuf),
+    /// Replace the in-memory [`MarkerConfig`] wholesale. Used by App
+    /// when a new preview arrives (BEXT parse) or when a preset is
+    /// installed. Bypasses the visibility gate — loading config is a
+    /// data-transport event, not an edit. Selection is preserved; if
+    /// the new config renders the current selection undefined, it is
+    /// cleared to `None`.
+    LoadConfig(MarkerConfig),
 }
 
 impl Input {
@@ -288,6 +295,17 @@ impl StateMachineImpl for MarkerBankMachine {
             }
             Input::ExportMarkersCsv(_) | Input::ImportMarkersCsv(_) => {
                 // State-preserving; output() emits the I/O descriptor.
+            }
+            Input::LoadConfig(cfg) => {
+                next.config = *cfg;
+                // If the current selection no longer lands on a defined
+                // slot, clear it. SOF remains valid because it's always
+                // defined (sample 0).
+                if let Some(sel) = next.selection
+                    && !defined_selections(&next).contains(&sel)
+                {
+                    next.selection = None;
+                }
             }
         }
         Some(next)
@@ -1010,5 +1028,88 @@ mod tests {
         assert_eq!(fsm.config().bank_a.m1, 1_000, "m1 untouched");
         assert_eq!(fsm.config().bank_a.m2, 2_010, "m2 nudged");
         assert_eq!(fsm.config().bank_a.m3, 3_000, "m3 untouched");
+    }
+
+    // ---------- LoadConfig ----------
+
+    #[test]
+    fn load_config_replaces_state_config() {
+        let mut fsm = MarkerFsm::new();
+        let new = MarkerConfig {
+            bank_a: MarkerBank {
+                m1: 100,
+                m2: 200,
+                m3: 300,
+                reps: [2; 4],
+            },
+            bank_b: MarkerBank {
+                m1: 400,
+                m2: 500,
+                m3: 600,
+                reps: [3; 4],
+            },
+        };
+        let _ = fsm.consume(Input::LoadConfig(new));
+        assert_eq!(fsm.config(), &new);
+    }
+
+    #[test]
+    fn load_config_preserves_defined_selection() {
+        let mut fsm = MarkerFsm::new();
+        let cfg = MarkerConfig {
+            bank_a: MarkerBank {
+                m1: 100,
+                m2: 200,
+                m3: 300,
+                reps: [0; 4],
+            },
+            bank_b: EMPTY_BANK,
+        };
+        let _ = fsm.consume(Input::LoadConfig(cfg));
+        let _ = fsm.consume(Input::SelectNextMarker);
+        let _ = fsm.consume(Input::SelectNextMarker); // M1
+        assert_eq!(fsm.selected_marker(), Some(1));
+        // Reloading the same config keeps selection intact.
+        let _ = fsm.consume(Input::LoadConfig(cfg));
+        assert_eq!(fsm.selected_marker(), Some(1));
+    }
+
+    #[test]
+    fn load_config_clears_selection_on_now_undefined_slot() {
+        let mut fsm = MarkerFsm::new();
+        let populated = MarkerConfig {
+            bank_a: MarkerBank {
+                m1: MARKER_EMPTY,
+                m2: 200,
+                m3: MARKER_EMPTY,
+                reps: [0; 4],
+            },
+            bank_b: EMPTY_BANK,
+        };
+        let _ = fsm.consume(Input::LoadConfig(populated));
+        let _ = fsm.consume(Input::SelectNextMarker);
+        let _ = fsm.consume(Input::SelectNextMarker); // M2
+        assert_eq!(fsm.selected_marker(), Some(2));
+        // Replacement where M2 is now undefined — selection clears.
+        let _ = fsm.consume(Input::LoadConfig(MarkerConfig::empty()));
+        assert_eq!(fsm.selected_marker(), None);
+    }
+
+    #[test]
+    fn load_config_bypasses_visibility_gate() {
+        let mut fsm = MarkerFsm::new();
+        let _ = fsm.consume(Input::ToggleMarkerDisplay);
+        assert!(!fsm.markers_visible());
+        let cfg = MarkerConfig {
+            bank_a: MarkerBank {
+                m1: 42,
+                m2: MARKER_EMPTY,
+                m3: MARKER_EMPTY,
+                reps: [0; 4],
+            },
+            bank_b: EMPTY_BANK,
+        };
+        let _ = fsm.consume(Input::LoadConfig(cfg));
+        assert_eq!(fsm.config().bank_a.m1, 42, "LoadConfig must bypass visibility gate");
     }
 }
