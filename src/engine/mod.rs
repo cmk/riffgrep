@@ -9,6 +9,7 @@ pub mod id3;
 pub mod marker_fsm;
 pub mod marks;
 pub mod playback;
+pub mod playback_fsm;
 pub mod pq;
 pub mod riff_info;
 pub mod similarity;
