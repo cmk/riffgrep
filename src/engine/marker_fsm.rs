@@ -135,7 +135,7 @@ const INITIAL_STATE: MarkerFsmState = MarkerFsmState {
 /// IncrementRep, DecrementRep, ExportMarkersCsv, ImportMarkersCsv,
 /// SetSelectedMarker) are dispatched today only by the property suite
 /// and unit tests; App still mutates preview.markers in place and
-/// sync the result with LoadConfig. Plan 04 Task 4c completes the
+/// sync the result with LoadConfig. Plan 04 Task 5c completes the
 /// carve-out by routing those dispatches through here, at which
 /// point the allow below comes off.
 #[allow(dead_code)]
@@ -569,7 +569,7 @@ impl MarkerFsm {
     }
 
     /// Read-only access to both banks' marker data.
-    #[allow(dead_code)] // Consumed by Plan 04 Task 4c; read from tests today.
+    #[allow(dead_code)] // Consumed by Plan 04 Task 5c; read from tests today.
     pub fn config(&self) -> &MarkerConfig {
         &self.state().config
     }
