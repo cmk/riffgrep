@@ -546,7 +546,7 @@ impl App {
             // so that Shift-Right (which some terminals send instead of Ctrl-Shift-Right)
             // still nudges the marker rather than moving the playhead cursor.
             Action::SeekForwardLarge => {
-                if self.selected_marker().filter(|&m| m >= 1).is_some() {
+                if self.markers_visible() && self.selected_marker().filter(|&m| m >= 1).is_some() {
                     self.nudge_marker(true, self.marker_nudge_large);
                 } else {
                     self.seek_relative(self.scrub_large);
@@ -554,7 +554,7 @@ impl App {
             }
             Action::SeekBackwardSmall => self.seek_relative(-self.scrub_small),
             Action::SeekBackwardLarge => {
-                if self.selected_marker().filter(|&m| m >= 1).is_some() {
+                if self.markers_visible() && self.selected_marker().filter(|&m| m >= 1).is_some() {
                     self.nudge_marker(false, self.marker_nudge_large);
                 } else {
                     self.seek_relative(-self.scrub_large);
@@ -1955,10 +1955,6 @@ impl App {
     /// no BEXT markers yet — otherwise only SOF would be navigable.
     fn select_next_marker(&mut self) {
         self.ensure_markers();
-        if self.defined_marker_indices().is_empty() {
-            self.set_status("No markers".to_string());
-            return;
-        }
         let _ = self
             .marker_fsm
             .consume(crate::engine::marker_fsm::Input::SelectNextMarker);
@@ -1970,31 +1966,10 @@ impl App {
     /// Calls `ensure_markers()` for the same reason as `select_next_marker()`.
     fn select_prev_marker(&mut self) {
         self.ensure_markers();
-        if self.defined_marker_indices().is_empty() {
-            self.set_status("No markers".to_string());
-            return;
-        }
         let _ = self
             .marker_fsm
             .consume(crate::engine::marker_fsm::Input::SelectPrevMarker);
         self.seek_to_selected_marker();
-    }
-
-    /// Return sorted indices of defined markers (0=SOF always included, 1-3 if set).
-    fn defined_marker_indices(&self) -> Vec<usize> {
-        let mut indices = vec![0usize]; // SOF
-        if let Some(bank) = self.active_bank_ref() {
-            if bank.m1 != crate::engine::bext::MARKER_EMPTY {
-                indices.push(1);
-            }
-            if bank.m2 != crate::engine::bext::MARKER_EMPTY {
-                indices.push(2);
-            }
-            if bank.m3 != crate::engine::bext::MARKER_EMPTY {
-                indices.push(3);
-            }
-        }
-        indices
     }
 
     /// Seek playback to the selected marker position.
