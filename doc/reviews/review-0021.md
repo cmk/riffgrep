@@ -363,3 +363,34 @@ Fixed in fdfc65d — Input list aligned: dropped `SelectNext` / `SelectPrev` (se
 #### ↳ cmk ([2026-04-19 09:09 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106556290))
 
 Fixed in fdfc65d — `FireSelection` description now says `SearchRunner::dispatch` reads wrapper state and translates it into `TypedAction::LoadSample(PathBuf)`, matching the shipped API.
+
+<!-- gh-id: 4135739233 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-19 09:13 UTC](https://github.com/cmk/riffgrep/pull/21#pullrequestreview-4135739233))
+
+## Pull request overview
+
+Copilot reviewed 10 out of 10 changed files in this pull request and generated 2 comments.
+
+
+
+
+
+<!-- gh-id: 3106560149 -->
+### Copilot on [`src/engine/search_fsm.rs:143`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106560149) (2026-04-19 09:13 UTC)
+
+`Input::SearchFailed` doc comment says it lands Settled with `total_matches = 0`, but `SearchFsmState` does not carry `total_matches` (that’s runner-owned state). Consider rewording this to avoid implying the FSM updates `total_matches`, and instead state that the runner should set its `total_matches` to 0 when emitting `SearchFailed`.
+
+<!-- gh-id: 3106560155 -->
+### Copilot on [`src/engine/search_fsm.rs:133`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106560155) (2026-04-19 09:13 UTC)
+
+`Input::SearchSettled` docs say the transition is "Running → Settled", but the implementation also settles from `Pending` (`transition()` checks `Pending | Running`). Please update this doc comment to match the actual behavior (e.g., "Pending/Running → Settled").
+
+<!-- gh-id: 3106569015 -->
+#### ↳ cmk ([2026-04-19 09:21 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106569015))
+
+Fixed in HEAD — doc no longer claims the FSM sets total_matches=0 (it doesn't carry the field). Now says the runner is expected to set its own total_matches=0 alongside emitting SearchFailed; FSM just collapses transport to Settled.
+
+<!-- gh-id: 3106569043 -->
+#### ↳ cmk ([2026-04-19 09:21 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106569043))
+
+Fixed in HEAD — doc now says `Pending | Running → Settled`, matching the transition() impl which shortcuts Pending when a search cancels before any batch arrives.

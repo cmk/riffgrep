@@ -125,8 +125,10 @@ pub enum Input {
     /// Runner signal: the spawned search task reported its first
     /// batch. Pending → Running.
     SearchStarted,
-    /// Runner signal: search completed. Running → Settled. `total` is
-    /// the total match count to update `App::total_matches`.
+    /// Runner signal: search completed. `Pending | Running → Settled`
+    /// (a settle can short-circuit Pending when a search cancels
+    /// before any batch arrives). `total` is the total match count;
+    /// the runner caches it outside the FSM for rendering.
     SearchSettled {
         /// Total match count reported by the search task.
         total: usize,
@@ -135,11 +137,14 @@ pub enum Input {
     /// arriving or by an external cancel). Any → Settled.
     SearchCancelled,
     /// Runner signal: the search task errored before emitting any
-    /// results (e.g. query parse failed, DB unavailable). Any →
-    /// Settled with `total_matches = 0`. Separate from
-    /// `SearchCancelled` so the runner can show a different status
-    /// message (error vs. "cancelled"), and so stdio can distinguish
-    /// a clean cancel from a failure in form-patch telemetry.
+    /// results (e.g. query parse failed, DB unavailable). `Any →
+    /// Settled` at the FSM level. Runner is expected to set its own
+    /// `total_matches = 0` alongside emitting this input — the FSM
+    /// itself doesn't carry `total_matches` (it's runner-owned
+    /// data). Separate from `SearchCancelled` so the runner can
+    /// show a different status message (error vs. "cancelled"),
+    /// and so stdio can distinguish a clean cancel from a failure
+    /// in form-patch telemetry.
     SearchFailed,
     /// User pressed Enter on a result row. Emits `Output::FireSelection`
     /// (a placeholder; runner synthesizes `TypedAction::LoadSample`
