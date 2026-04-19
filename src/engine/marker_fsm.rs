@@ -70,7 +70,7 @@ impl Selection {
 
 /// Which marker bank is the active edit target.
 ///
-/// Re-exported from `crate::ui::Bank`; this is the canonical
+/// Re-exported by `crate::ui::Bank`; this is the canonical
 /// definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Bank {

@@ -21,8 +21,9 @@ Tooling commitment:
 - `rust-fsm` for the state machines.
 - `proptest-state-machine` for invariant verification, layered on top of
   the already-present `proptest` dev-dep.
-- Per-FSM file layout: `gen.rs` (action generators), `prop.rs` (property
-  tests), `unit.rs` (migrated regressions), `test.rs` (harness entry).
+- Per-FSM file layout: `generators.rs` (action generators — `gen` is a
+  reserved keyword under Rust 2024), `prop.rs` (property tests),
+  `unit.rs` (migrated regressions), `test.rs` (harness entry).
 
 The "Port the existing prop tests from quickcheck to proptest" bullet
 below is obsolete — there are no `quickcheck` deps in the current tree.
@@ -46,7 +47,7 @@ below is obsolete — there are no `quickcheck` deps in the current tree.
   - Gens should obey the necessary constraints for testing the properties below 
   - Consider the desired shrinking behavior (proptest-state-machine may handle this well enough to skip it)
   - Make size, complexity, & constraint specifics configurable wherever possible
-  - Place these gens in gen.rs files for each FSM (e.g. riffgrep/test/engine/gen.rs)
+  - Place these gens in generators.rs files for each FSM (e.g. riffgrep/tests/engine/marker_fsm/generators.rs)
 * Implement a large and varied collection of properties:
   - Unreachable States: certain 'impossible' states are never reached regardless of input
   - Qualified Unreachable States: as above but for a smaller subset of inputs (e.g. Bank A can never differ from Bank B if the initial state is 'synced' and the action stream doesn't include ctl-b / 'toggle bank sync')
