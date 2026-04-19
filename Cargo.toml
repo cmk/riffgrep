@@ -59,6 +59,10 @@ path = "tests/engine/marker_fsm/test.rs"
 name = "playback_fsm"
 path = "tests/engine/playback_fsm/test.rs"
 
+[[test]]
+name = "search_fsm"
+path = "tests/engine/search_fsm/test.rs"
+
 [[bench]]
 name = "metadata_read"
 harness = false
