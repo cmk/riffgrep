@@ -1122,6 +1122,10 @@ mod tests {
             bank_b: EMPTY_BANK,
         };
         let _ = fsm.consume(Input::LoadConfig(cfg));
-        assert_eq!(fsm.config().bank_a.m1, 42, "LoadConfig must bypass visibility gate");
+        assert_eq!(
+            fsm.config().bank_a.m1,
+            42,
+            "LoadConfig must bypass visibility gate"
+        );
     }
 }
