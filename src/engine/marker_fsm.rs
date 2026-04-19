@@ -292,6 +292,13 @@ impl StateMachineImpl for MarkerBankMachine {
             Input::DecrementRep => adjust_rep(&mut next, -1),
             Input::ToggleMarkerDisplay => {
                 next.visible = !next.visible;
+                // Flipping to hidden clears selection so the next time
+                // markers come back on, the cursor doesn't point at a
+                // stale slot. Matches the historical App behavior in
+                // `toggle_marker_display`.
+                if !next.visible {
+                    next.selection = None;
+                }
             }
             Input::ExportMarkersCsv(_) | Input::ImportMarkersCsv(_) => {
                 // State-preserving; output() emits the I/O descriptor.
