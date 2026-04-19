@@ -5,10 +5,14 @@
 //! intents that today live as ad-hoc atomics on
 //! [`crate::engine::playback::SourceControl`].
 //!
-//! The FSM is the single source of truth for UI-observable transitions;
-//! [`PlaybackEngine`](crate::engine::playback::PlaybackEngine) and the TUI
-//! action handlers dispatch through it, then project the resulting state
-//! onto the atomics that the mixer thread consumes per-frame.
+//! This FSM is intended to become the single source of truth for
+//! UI-observable transitions once Plan 07 wires it into
+//! [`PlaybackEngine`](crate::engine::playback::PlaybackEngine) and the
+//! TUI action handlers. In the current state it models those
+//! transitions while the existing atomics remain the active
+//! mixer-thread interface; the `#[allow(dead_code)]` attributes below
+//! on `Input`, `MixerCommand`, and `PlaybackFsm` come off when that
+//! wiring lands.
 //!
 //! See `doc/designs/debt-playback.md` for the reverse-path context and
 //! `doc/plans/plan-2026-04-18-04.md` for this sprint's scope.
@@ -69,8 +73,9 @@ const INITIAL_STATE: PlaybackFsmState = PlaybackFsmState {
 #[allow(dead_code)] // Wiring through PlaybackEngine lands in Task 3.
 pub enum Input {
     /// Transition `Stopped`/`Paused` → `Playing`. A fresh start (new
-    /// program) is `Stop` followed by `Play`; resuming from pause uses
-    /// [`Input::Resume`].
+    /// program) is `Stop` followed by `Play`; when already `Paused`,
+    /// `Play` also resumes playback and emits `MixerCommand::Resume`.
+    /// [`Input::Resume`] is the explicit Paused→Playing alias.
     Play,
     /// Transition `Playing` → `Paused`.
     Pause,
