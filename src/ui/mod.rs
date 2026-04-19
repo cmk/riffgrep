@@ -376,7 +376,7 @@ impl App {
     ///
     /// Call this after any in-place mutation of `preview.markers` so
     /// that FSM-driven reads (selection cycle, etc.) see fresh data.
-    /// During Plan 04 Task 4c the edit methods will dispatch through
+    /// During Plan 04 Task 5c the edit methods will dispatch through
     /// the FSM directly and this helper goes away.
     fn sync_fsm_from_preview(&mut self) {
         let cfg = self
@@ -1370,14 +1370,21 @@ impl App {
     /// Clear all markers in the active bank (or both if synced).
     fn clear_bank_markers(&mut self) {
         if self.bank_sync() {
-            if let Some(ref mut preview) = self.preview
+            let cleared = if let Some(ref mut preview) = self.preview
                 && let Some(ref mut markers) = preview.markers
             {
                 markers.bank_a = crate::engine::bext::MarkerBank::empty();
                 markers.bank_b = crate::engine::bext::MarkerBank::empty();
+                true
+            } else {
+                false
+            };
+            if cleared {
+                self.sync_fsm_from_preview();
+                self.set_status("Banks A+B cleared".to_string());
+            } else {
+                self.set_status("No markers".to_string());
             }
-            self.sync_fsm_from_preview();
-            self.set_status("Banks A+B cleared".to_string());
         } else if let Some(bank) = self.active_bank_mut() {
             *bank = crate::engine::bext::MarkerBank::empty();
             let bank_label = match self.active_bank() {

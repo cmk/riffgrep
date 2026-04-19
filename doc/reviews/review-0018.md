@@ -1,4 +1,4 @@
-# PR #0000 — Markers FSM App Integration (Task 4b carve-out)
+# PR #18 — Markers FSM App Integration (Task 4b carve-out)
 
 ## Local review (2026-04-18)
 
@@ -176,3 +176,87 @@ Copilot reviewed 4 out of 4 changed files in this pull request and generated 1 c
 #### ↳ cmk ([2026-04-19 05:42 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106346252))
 
 Fixed in a4a44e6 — swapped the float arithmetic for `ai.total_samples` directly.
+
+<!-- gh-id: 3106351096 -->
+### Copilot on [`src/ui/mod.rs:1378`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106351096) (2026-04-19 05:48 UTC)
+
+`clear_bank_markers()` reports "Banks A+B cleared" and calls `sync_fsm_from_preview()` even when there is no `preview`/`preview.markers` to clear (the inner `if let` simply skips). This can silently reset the FSM config to `MarkerConfig::empty()` and give a misleading status. Consider early-returning with "No markers" when `preview.markers` is `None`, or only syncing / setting the cleared status when a clear actually occurred.
+```suggestion
+            let Some(ref mut preview) = self.preview else {
+                self.set_status("No markers".to_string());
+                return;
+            };
+            let Some(ref mut markers) = preview.markers else {
+                self.set_status("No markers".to_string());
+                return;
+            };
+            markers.bank_a = crate::engine::bext::MarkerBank::empty();
+            markers.bank_b = crate::engine::bext::MarkerBank::empty();
+```
+
+<!-- gh-id: 3106351110 -->
+### Copilot on [`src/engine/marker_fsm.rs:140`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106351110) (2026-04-19 05:48 UTC)
+
+The Plan/Task reference in this comment appears inconsistent with the rest of the PR docs (Plan 04 uses Task 5c / Plan 05 for the full edit-dispatch migration). Updating the pointer here would avoid sending readers to a non-existent/renamed task.
+```suggestion
+/// sync the result with LoadConfig. Plan 04 Task 5c / Plan 05
+/// completes the carve-out by routing those dispatches through here,
+/// at which point the allow below comes off.
+```
+
+<!-- gh-id: 3106351115 -->
+### Copilot on [`src/engine/marker_fsm.rs:572`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106351115) (2026-04-19 05:48 UTC)
+
+This `#[allow(dead_code)]` note refers to "Plan 04 Task 4c", but the plan/status docs in this PR refer to the follow-up as Task 5c / Plan 05. Please align the task reference so it stays searchable and unambiguous.
+```suggestion
+    #[allow(dead_code)] // Consumed by Plan 05 Task 5c; read from tests today.
+```
+
+<!-- gh-id: 3106351122 -->
+### Copilot on [`doc/plans/plan-2026-04-18-03.md:11`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106351122) (2026-04-19 05:48 UTC)
+
+The Status section references "Task 4 (preview.markers → FSM config migration)" and says the full removal is deferred to **Task 4c**, but the task table directly below calls preview.markers syncing Task 5b/5c. Please align the numbering (e.g., Task 5 / 5c) to avoid a contradiction in the plan.
+```suggestion
+deferred to **Task 5c**.
+```
+
+<!-- gh-id: 4135539356 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-19 05:48 UTC](https://github.com/cmk/riffgrep/pull/18#pullrequestreview-4135539356))
+
+## Pull request overview
+
+Copilot reviewed 5 out of 5 changed files in this pull request and generated 5 comments.
+
+
+
+
+
+<!-- gh-id: 3106351126 -->
+### Copilot on [`doc/reviews/review-0018.md:8`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106351126) (2026-04-19 05:48 UTC)
+
+The header says "PR #0000" but this file is `review-0018.md` and appears to describe PR #18. Please update the PR number in the title (and any other identifiers that depend on it) so the review record is accurately attributable.
+
+<!-- gh-id: 3106368651 -->
+#### ↳ cmk ([2026-04-19 06:08 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106368651))
+
+Fixed in 18ed029 — the synced branch now short-circuits to "No markers" when the preview/config is absent, instead of reporting a phantom clear and reloading empty config into the FSM.
+
+<!-- gh-id: 3106368689 -->
+#### ↳ cmk ([2026-04-19 06:08 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106368689))
+
+Fixed in 18ed029 — aligned all "Plan 04 Task 4c" references (Input enum comment, config() allow attr, sync_fsm_from_preview doc) to "Task 5c" to match the plan's status table.
+
+<!-- gh-id: 3106368705 -->
+#### ↳ cmk ([2026-04-19 06:09 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106368705))
+
+Fixed in 18ed029 along with the other Task 4c → Task 5c alignments.
+
+<!-- gh-id: 3106368739 -->
+#### ↳ cmk ([2026-04-19 06:09 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106368739))
+
+Fixed in 18ed029 — status line says "Task 5c" now, matching the task-status table.
+
+<!-- gh-id: 3106368773 -->
+#### ↳ cmk ([2026-04-19 06:09 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106368773))
+
+Fixed in 18ed029 — header updated to "PR #18".
