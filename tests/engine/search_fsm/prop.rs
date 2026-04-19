@@ -100,13 +100,6 @@ fn input_seq_strategy(
     proptest::collection::vec(generators::any_input(&dummy), len).boxed()
 }
 
-fn no_mode_toggle_seq_strategy(
-    len: impl Into<proptest::collection::SizeRange>,
-) -> BoxedStrategy<Vec<Input>> {
-    let dummy = SearchFsmState::default();
-    proptest::collection::vec(generators::transitions_no_mode_toggle(&dummy), len).boxed()
-}
-
 // =============================================================================
 // R1: DebounceTick without debounce_dirty is a no-op
 // =============================================================================
@@ -228,8 +221,11 @@ proptest! {
         let _ = fsm.consume(Input::SearchCancelled);
         prop_assert_eq!(fsm.state().transport, Transport::Settled);
 
-        // Only Remote mode can re-enter Pending on tick. Force it.
-        let _ = fsm.consume(Input::ExitSimilarityMode); // no-op if already Remote; sets dirty
+        // Only Remote mode can re-enter Pending on tick. The
+        // ExitSimilarityMode transition is guarded to be a no-op when
+        // mode is already Remote (see exit_similarity_from_remote_is_noop
+        // inline test), so this is safe to dispatch unconditionally.
+        let _ = fsm.consume(Input::ExitSimilarityMode);
         let _ = fsm.consume(Input::QueryChanged(q));
 
         let _ = fsm.consume(Input::DebounceTick);
@@ -244,7 +240,7 @@ proptest! {
 proptest! {
     #[test]
     fn r5_same_query_twice_preserves_end_state(
-        prefix in no_mode_toggle_seq_strategy(0..20),
+        prefix in input_seq_strategy(0..20),
         q in "[a-z]{0,8}",
     ) {
         let mut fsm_a = fsm_with_prefix(&prefix);
