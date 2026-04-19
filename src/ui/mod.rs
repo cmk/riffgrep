@@ -185,8 +185,6 @@ pub struct App {
     pub keymap: actions::Keymap,
     /// Whether the help overlay is currently shown.
     pub show_help: bool,
-    /// Active marker bank for editing (A or B).
-    pub active_bank: Bank,
     /// Segment playback: end sample boundary (stop playback when reached).
     pub segment_end: Option<u32>,
     /// Segment playback: start sample (for rep looping).
@@ -309,7 +307,6 @@ impl App {
             sort_ascending: true,
             keymap: actions::Keymap::default(),
             show_help: false,
-            active_bank: Bank::A,
             segment_end: None,
             segment_start: None,
             segment_reps_remaining: 0,
@@ -354,6 +351,11 @@ impl App {
     /// Bank sync: when ON, marker edits mirror to both banks.
     pub fn bank_sync(&self) -> bool {
         self.marker_fsm.bank_sync()
+    }
+
+    /// Active marker bank for editing (A or B).
+    pub fn active_bank(&self) -> Bank {
+        self.marker_fsm.active_bank()
     }
 
     /// Install a pre-computed similarity-ranked result list.
@@ -1086,11 +1088,10 @@ impl App {
             self.set_status("Bank sync is on".to_string());
             return;
         }
-        self.active_bank = match self.active_bank {
-            Bank::A => Bank::B,
-            Bank::B => Bank::A,
-        };
-        let label = match self.active_bank {
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::ToggleBank);
+        let label = match self.active_bank() {
             Bank::A => "Bank A",
             Bank::B => "Bank B",
         };
@@ -1119,8 +1120,9 @@ impl App {
     /// Get a mutable reference to the active bank's MarkerBank within preview markers.
     /// Returns None if no preview or no markers.
     fn active_bank_mut(&mut self) -> Option<&mut crate::engine::bext::MarkerBank> {
+        let active = self.active_bank();
         let markers = self.preview.as_mut()?.markers.as_mut()?;
-        match self.active_bank {
+        match active {
             Bank::A => Some(&mut markers.bank_a),
             Bank::B => Some(&mut markers.bank_b),
         }
@@ -1129,7 +1131,7 @@ impl App {
     /// Get the active bank from preview markers (immutable).
     fn active_bank_ref(&self) -> Option<&crate::engine::bext::MarkerBank> {
         let markers = self.preview.as_ref()?.markers.as_ref()?;
-        match self.active_bank {
+        match self.active_bank() {
             Bank::A => Some(&markers.bank_a),
             Bank::B => Some(&markers.bank_b),
         }
@@ -1207,7 +1209,7 @@ impl App {
         let bank_label = if self.bank_sync() {
             "A+B"
         } else {
-            match self.active_bank {
+            match self.active_bank() {
                 Bank::A => "A",
                 Bank::B => "B",
             }
@@ -1306,7 +1308,7 @@ impl App {
             let bank_label = if self.bank_sync() {
                 "A+B"
             } else {
-                match self.active_bank {
+                match self.active_bank() {
                     Bank::A => "A",
                     Bank::B => "B",
                 }
@@ -1329,7 +1331,7 @@ impl App {
             self.set_status("Banks A+B cleared".to_string());
         } else if let Some(bank) = self.active_bank_mut() {
             *bank = crate::engine::bext::MarkerBank::empty();
-            let bank_label = match self.active_bank {
+            let bank_label = match self.active_bank() {
                 Bank::A => "A",
                 Bank::B => "B",
             };
@@ -2431,7 +2433,7 @@ impl App {
                         .as_ref()
                         .and_then(|p| p.markers.as_ref())
                         .map(|mc| {
-                            let bank = if self.active_bank == Bank::A {
+                            let bank = if self.active_bank() == Bank::A {
                                 mc.bank_a
                             } else {
                                 mc.bank_b
@@ -4541,18 +4543,18 @@ mod tests {
     #[test]
     fn test_toggle_bank() {
         let mut app = App::new(Theme::default());
-        assert_eq!(app.active_bank, Bank::A);
+        assert_eq!(app.active_bank(), Bank::A);
         // Bank sync is on by default, so toggle_bank should refuse.
         app.toggle_bank();
-        assert_eq!(app.active_bank, Bank::A);
+        assert_eq!(app.active_bank(), Bank::A);
         assert_eq!(app.status_message.as_deref(), Some("Bank sync is on"));
         // Turn off bank sync, then toggle.
         app.toggle_bank_sync();
         app.toggle_bank();
-        assert_eq!(app.active_bank, Bank::B);
+        assert_eq!(app.active_bank(), Bank::B);
         assert_eq!(app.status_message.as_deref(), Some("Active: Bank B"));
         app.toggle_bank();
-        assert_eq!(app.active_bank, Bank::A);
+        assert_eq!(app.active_bank(), Bank::A);
         assert_eq!(app.status_message.as_deref(), Some("Active: Bank A"));
     }
 
@@ -4572,7 +4574,8 @@ mod tests {
         assert_eq!(bank_a.m1, 12000);
 
         // Toggle to Bank B and verify.
-        app.active_bank = Bank::B;
+        app.toggle_bank_sync();
+        app.toggle_bank();
         let bank_b = app.active_bank_mut().unwrap();
         assert_eq!(bank_b.m1, 12000); // preset_loop has synced banks
     }
