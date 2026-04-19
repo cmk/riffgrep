@@ -9,13 +9,6 @@
 //! See `doc/designs/debt-fsm.md` for the invariant roadmap and
 //! `doc/plans/plan-2026-04-18-02.md` for this sprint's scope.
 
-// The non-`Bank` items (Selection, MarkerFsm, Input, Output,
-// MarkerFsmState, MarkerBankMachine) are exercised by the property
-// suite but not yet consumed from `App`. The module-level allow comes
-// off when App is carved out to dispatch through MarkerFsm. See
-// doc/designs/debt-fsm.md and plan-2026-04-18-02.md.
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
 use rust_fsm::{StateMachine, StateMachineImpl};
@@ -136,6 +129,16 @@ const INITIAL_STATE: MarkerFsmState = MarkerFsmState {
 /// Transitions that need audio-domain data (zero-crossing search for nudge,
 /// file total for reset bounds) take that data as input payload rather
 /// than holding it in state — keeps the FSM pure.
+///
+/// The data-mutating variants (SetMarkerN, ClearNearestMarker,
+/// ClearBankMarkers, NudgeForward/Backward, MarkerReset,
+/// IncrementRep, DecrementRep, ExportMarkersCsv, ImportMarkersCsv,
+/// SetSelectedMarker) are dispatched today only by the property suite
+/// and unit tests; App still mutates preview.markers in place and
+/// sync the result with LoadConfig. Plan 04 Task 4c completes the
+/// carve-out by routing those dispatches through here, at which
+/// point the allow below comes off.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     /// Set marker 1 to the given absolute sample position.
@@ -417,11 +420,14 @@ fn nudge_selected(state: &mut MarkerFsmState, delta: u32, forward: bool) {
 }
 
 fn reset_to_quartiles(state: &mut MarkerFsmState, sof: u32, eof: u32) {
+    let clamped_sof = sof.min(MAX_MARKER_POS);
     let clamped_eof = eof.min(MAX_MARKER_POS);
-    let len = clamped_eof.saturating_sub(sof);
-    let m1 = sof.saturating_add(len / 4);
-    let m2 = sof.saturating_add(len / 2);
-    let m3 = sof.saturating_add((len / 4).saturating_mul(3));
+    let len = clamped_eof.saturating_sub(clamped_sof);
+    let m1 = clamped_sof.saturating_add(len / 4).min(MAX_MARKER_POS);
+    let m2 = clamped_sof.saturating_add(len / 2).min(MAX_MARKER_POS);
+    let m3 = clamped_sof
+        .saturating_add((len / 4).saturating_mul(3))
+        .min(MAX_MARKER_POS);
     write_slot(state, 1, m1);
     write_slot(state, 2, m2);
     write_slot(state, 3, m3);
@@ -435,9 +441,7 @@ fn adjust_rep(state: &mut MarkerFsmState, delta: i8) {
         Some(s) => s.as_index(),
         None => return,
     };
-    if seg > 3 {
-        return;
-    }
+    // Selection::as_index returns 0..=3 by construction; no bounds check needed.
     let apply = |bank: &mut MarkerBank| {
         let cur = bank.reps[seg] as i16;
         let new = (cur + delta as i16).clamp(0, REP_MAX as i16);
@@ -565,6 +569,7 @@ impl MarkerFsm {
     }
 
     /// Read-only access to both banks' marker data.
+    #[allow(dead_code)] // Consumed by Plan 04 Task 4c; read from tests today.
     pub fn config(&self) -> &MarkerConfig {
         &self.state().config
     }
