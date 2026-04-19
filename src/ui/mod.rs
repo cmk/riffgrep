@@ -205,8 +205,6 @@ pub struct App {
     pub global_loop: bool,
     /// Reverse traversal: when ON, each segment plays end→start.
     pub reversed: bool,
-    /// Bank sync: when ON, marker edits mirror to both banks.
-    pub bank_sync: bool,
     /// Currently selected marker for nudge/snap (0=SOF, 1=m1, 2=m2, 3=m3).
     pub selected_marker: Option<usize>,
     /// Nudge small: number of zero-crossings for small nudge.
@@ -321,7 +319,6 @@ impl App {
             status_message_time: None,
             global_loop: false,
             reversed: false,
-            bank_sync: true,
             selected_marker: None,
             marker_nudge_small: 1,
             marker_nudge_large: 10,
@@ -352,6 +349,11 @@ impl App {
     /// to re-enable).
     pub fn markers_visible(&self) -> bool {
         self.marker_fsm.markers_visible()
+    }
+
+    /// Bank sync: when ON, marker edits mirror to both banks.
+    pub fn bank_sync(&self) -> bool {
+        self.marker_fsm.bank_sync()
     }
 
     /// Install a pre-computed similarity-ranked result list.
@@ -1080,7 +1082,7 @@ impl App {
 
     /// Toggle active marker bank between A and B.
     fn toggle_bank(&mut self) {
-        if self.bank_sync {
+        if self.bank_sync() {
             self.set_status("Bank sync is on".to_string());
             return;
         }
@@ -1097,8 +1099,10 @@ impl App {
 
     /// Toggle bank sync on/off.
     fn toggle_bank_sync(&mut self) {
-        self.bank_sync = !self.bank_sync;
-        let state = if self.bank_sync { "on" } else { "off" };
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::ToggleBankSync);
+        let state = if self.bank_sync() { "on" } else { "off" };
         self.set_status(format!("Bank sync {state}"));
     }
 
@@ -1189,7 +1193,7 @@ impl App {
         self.ensure_markers();
 
         // Apply to active bank (and mirror if bank_sync is on).
-        if self.bank_sync {
+        if self.bank_sync() {
             if let Some(ref mut preview) = self.preview
                 && let Some(ref mut markers) = preview.markers
             {
@@ -1200,7 +1204,7 @@ impl App {
             Self::set_bank_marker(bank, index, snapped);
         }
 
-        let bank_label = if self.bank_sync {
+        let bank_label = if self.bank_sync() {
             "A+B"
         } else {
             match self.active_bank {
@@ -1289,7 +1293,7 @@ impl App {
 
         if let Some(idx) = nearest_idx {
             let empty = crate::engine::bext::MARKER_EMPTY;
-            if self.bank_sync {
+            if self.bank_sync() {
                 if let Some(ref mut preview) = self.preview
                     && let Some(ref mut markers) = preview.markers
                 {
@@ -1299,7 +1303,7 @@ impl App {
             } else if let Some(bank) = self.active_bank_mut() {
                 Self::set_bank_marker(bank, idx, empty);
             }
-            let bank_label = if self.bank_sync {
+            let bank_label = if self.bank_sync() {
                 "A+B"
             } else {
                 match self.active_bank {
@@ -1315,7 +1319,7 @@ impl App {
 
     /// Clear all markers in the active bank (or both if synced).
     fn clear_bank_markers(&mut self) {
-        if self.bank_sync {
+        if self.bank_sync() {
             if let Some(ref mut preview) = self.preview
                 && let Some(ref mut markers) = preview.markers
             {
@@ -1382,7 +1386,7 @@ impl App {
 
         self.ensure_markers();
 
-        if self.bank_sync {
+        if self.bank_sync() {
             if let Some(ref mut preview) = self.preview
                 && let Some(ref mut markers) = preview.markers
             {
@@ -2000,7 +2004,7 @@ impl App {
 
         self.ensure_markers();
 
-        if self.bank_sync {
+        if self.bank_sync() {
             if let Some(ref mut preview) = self.preview
                 && let Some(ref mut markers) = preview.markers
             {
@@ -2082,7 +2086,7 @@ impl App {
         };
 
         self.ensure_markers();
-        if self.bank_sync {
+        if self.bank_sync() {
             if let Some(ref mut preview) = self.preview
                 && let Some(ref mut markers) = preview.markers
             {
@@ -2171,7 +2175,7 @@ impl App {
         };
 
         self.ensure_markers();
-        if self.bank_sync {
+        if self.bank_sync() {
             if let Some(ref mut preview) = self.preview
                 && let Some(ref mut markers) = preview.markers
             {
@@ -4543,7 +4547,7 @@ mod tests {
         assert_eq!(app.active_bank, Bank::A);
         assert_eq!(app.status_message.as_deref(), Some("Bank sync is on"));
         // Turn off bank sync, then toggle.
-        app.bank_sync = false;
+        app.toggle_bank_sync();
         app.toggle_bank();
         assert_eq!(app.active_bank, Bank::B);
         assert_eq!(app.status_message.as_deref(), Some("Active: Bank B"));
@@ -4680,7 +4684,7 @@ mod tests {
     #[test]
     fn test_clear_bank_markers_single_bank() {
         let mut app = App::new(Theme::default());
-        app.bank_sync = false;
+        app.toggle_bank_sync();
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
         app.on_preview_ready(PreviewData {
             metadata: UnifiedMetadata::default(),
@@ -4698,7 +4702,7 @@ mod tests {
     #[test]
     fn test_clear_bank_markers_no_preview() {
         let mut app = App::new(Theme::default());
-        app.bank_sync = false;
+        app.toggle_bank_sync();
         app.clear_bank_markers();
         assert_eq!(app.status_message.as_deref(), Some("No markers"));
     }
@@ -5099,12 +5103,12 @@ mod tests {
     #[test]
     fn test_bank_sync_toggle() {
         let mut app = App::new(Theme::default());
-        assert!(app.bank_sync, "bank_sync should default to true");
+        assert!(app.bank_sync(), "bank_sync should default to true");
         app.toggle_bank_sync();
-        assert!(!app.bank_sync);
+        assert!(!app.bank_sync());
         assert_eq!(app.status_message.as_deref(), Some("Bank sync off"));
         app.toggle_bank_sync();
-        assert!(app.bank_sync);
+        assert!(app.bank_sync());
         assert_eq!(app.status_message.as_deref(), Some("Bank sync on"));
     }
 
