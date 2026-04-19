@@ -81,8 +81,11 @@ pub enum Input {
     /// Record a pending seek target. Valid in any transport; the mixer
     /// consumes it on the next frame boundary via [`Input::ConsumeSeek`].
     Seek(u32),
-    /// Record a pending restart-from-segment-0 intent. Forces transport
-    /// to `Playing` (a restart implies active playback).
+    /// Record a pending restart-from-segment-0 intent. No-op when
+    /// transport is `Stopped` (matches `PlaybackEngine::restart_program`);
+    /// otherwise queues the restart without changing transport. The
+    /// mixer applies it on the next frame boundary via
+    /// [`Input::ConsumeRestart`].
     Restart,
     /// Flip the runtime reverse toggle.
     ToggleReverse,
@@ -160,10 +163,16 @@ impl StateMachineImpl for PlaybackMachine {
                 next.pending_seek = Some(*pos);
             }
             Input::Restart => {
-                next.pending_restart = true;
-                // Restart implies an active stream — never leave transport
-                // Paused (Q7 invariant).
-                next.transport = Transport::Playing;
+                // Match `PlaybackEngine::restart_program`: no-op when
+                // Stopped; otherwise queue the pending_restart intent
+                // and leave transport alone. A user who queues a
+                // restart then pauses sees the restart fire when they
+                // subsequently resume.
+                if matches!(state.transport, Transport::Stopped) {
+                    // no-op
+                } else {
+                    next.pending_restart = true;
+                }
             }
             Input::ToggleReverse => {
                 next.reversed = !next.reversed;
@@ -421,19 +430,43 @@ mod tests {
     }
 
     #[test]
-    fn restart_forces_playing_and_sets_pending() {
+    fn restart_from_stopped_is_a_noop() {
+        let mut fsm = PlaybackFsm::new();
+        let _ = fsm.consume(Input::Restart);
+        assert_eq!(fsm.transport(), Transport::Stopped);
+        assert!(
+            !fsm.pending_restart(),
+            "Restart from Stopped must not queue a restart (matches PlaybackEngine::restart_program)",
+        );
+    }
+
+    #[test]
+    fn restart_from_paused_queues_without_changing_transport() {
         let mut fsm = PlaybackFsm::new();
         let _ = fsm.consume(Input::Play);
         let _ = fsm.consume(Input::Pause);
         assert_eq!(fsm.transport(), Transport::Paused);
         let _ = fsm.consume(Input::Restart);
-        assert_eq!(fsm.transport(), Transport::Playing, "restart forces Playing");
+        // User's paused; the restart waits for them to resume. Mixer
+        // sees pending_restart the moment it advances again.
+        assert_eq!(fsm.transport(), Transport::Paused);
+        assert!(fsm.pending_restart());
+    }
+
+    #[test]
+    fn restart_from_playing_queues_without_changing_transport() {
+        let mut fsm = PlaybackFsm::new();
+        let _ = fsm.consume(Input::Play);
+        let _ = fsm.consume(Input::Restart);
+        assert_eq!(fsm.transport(), Transport::Playing);
         assert!(fsm.pending_restart());
     }
 
     #[test]
     fn consume_restart_clears_flag_and_ensures_playing() {
         let mut fsm = PlaybackFsm::new();
+        // Restart from Stopped is a no-op, so prime Playing first.
+        let _ = fsm.consume(Input::Play);
         let _ = fsm.consume(Input::Restart);
         assert!(fsm.pending_restart());
         let _ = fsm.consume(Input::ConsumeRestart);
@@ -516,20 +549,5 @@ mod tests {
 
         let _ = fsm.consume(Input::Stop);
         assert_eq!(fsm.pending_seek(), None);
-    }
-
-    // ---------- Q7 invariant: never Paused ∧ pending_restart ----------
-
-    #[test]
-    fn restart_from_paused_forces_playing() {
-        let state = PlaybackFsmState {
-            transport: Transport::Paused,
-            ..PlaybackFsmState::default()
-        };
-        let mut fsm = PlaybackFsm::from_state(state);
-        let _ = fsm.consume(Input::Restart);
-        // Q7 invariant: Restart always yields Playing, never Paused.
-        assert_eq!(fsm.transport(), Transport::Playing);
-        assert!(fsm.pending_restart());
     }
 }
