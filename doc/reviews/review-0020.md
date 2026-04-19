@@ -255,3 +255,60 @@ Fixed in 9e17ed2 — Task 6 section now describes `struct TestConfig { cases, ve
 #### ↳ cmk ([2026-04-19 07:34 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106447390))
 
 Fixed in 9e17ed2 — removed the stale F1 follow-up (and updated the summary that referenced it). Follow-ups section now reads "None open" since the round-2 fix shipped the guard + tests.
+
+<!-- gh-id: 3106452038 -->
+### Copilot on [`doc/plans/plan-2026-04-18-04.md:209`](https://github.com/cmk/riffgrep/pull/20#discussion_r3106452038) (2026-04-19 07:38 UTC)
+
+In the Verification table, the Q2 invariant is written as `resume ∘ pause ≡ id`, but the plan (and the actual tests) define Q2 as `pause ∘ resume ≡ id` when transport is `Playing`. Updating this row would prevent a reader from implementing/checking the inverse order by mistake.
+```suggestion
+| Q2 Pause/Resume inverse   | `tests/engine/playback_fsm/prop.rs`   | `pause ∘ resume ≡ id` when playing                     |
+```
+
+<!-- gh-id: 4135626767 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-19 07:38 UTC](https://github.com/cmk/riffgrep/pull/20#pullrequestreview-4135626767))
+
+## Pull request overview
+
+Copilot reviewed 10 out of 10 changed files in this pull request and generated 3 comments.
+
+
+
+
+
+<!-- gh-id: 3106452056 -->
+### Copilot on [`src/engine/playback_fsm.rs:233`](https://github.com/cmk/riffgrep/pull/20#discussion_r3106452056) (2026-04-19 07:38 UTC)
+
+`Input::ConsumeRestart` currently snaps `transport` to `Playing` whenever `pending_restart` is set and `transport != Stopped`, which includes `Paused`. In the current engine, pause uses `sink.pause()` (see `src/engine/playback.rs:599-621`), so the audio path is silent and the mixer isn’t producing frames while paused; a spurious `ConsumeRestart` during `Paused` would therefore desync UI state to `Playing` without any `MixerCommand::Resume`. Consider tightening the guard to only apply when `transport == Playing` (and update the doc comment accordingly), so `ConsumeRestart` can’t resurrect `Playing` while paused/silent.
+```suggestion
+                // `pending_restart` must be set and the transport must
+                // already be Playing (the mixer is producing frames). A
+                // spurious dispatch is a no-op rather than a panic so
+                // property tests can exercise it freely; the guard
+                // protects against the bug-class where ConsumeRestart
+                // accidentally snaps transport to Playing while the
+                // audio path is silent.
+                if state.pending_restart && matches!(state.transport, Transport::Playing) {
+```
+
+<!-- gh-id: 3106452062 -->
+### Copilot on [`tests/engine/playback_fsm/prop.rs:219`](https://github.com/cmk/riffgrep/pull/20#discussion_r3106452062) (2026-04-19 07:38 UTC)
+
+The Q2 header comment says `Resume ∘ Pause ≡ id`, but the property and harness below are explicitly about `Pause` then `Resume` being a no-op when starting from `Playing`. Swapping the composition order in this comment would avoid misdocumenting the property being tested.
+```suggestion
+// Q2: Pause ∘ Resume ≡ id when transport = Playing
+```
+
+<!-- gh-id: 3106456852 -->
+#### ↳ cmk ([2026-04-19 07:43 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106456852))
+
+Fixed in 080270b — Q2 row now reads `pause ∘ resume ≡ id` when playing, matching the property and the prop.rs section header swap in the same commit.
+
+<!-- gh-id: 3106456895 -->
+#### ↳ cmk ([2026-04-19 07:43 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106456895))
+
+Fixed in 080270b — tightened the guard to `pending_restart && transport == Playing`. Paused is now also a no-op (Paused + pending_restart stays queued for the eventual Resume). Also dropped the now-redundant `next.transport = Transport::Playing` since the guard enforces it. New unit test `consume_restart_is_noop_when_paused` covers the [Play, Pause, Restart, ConsumeRestart] sequence explicitly.
+
+<!-- gh-id: 3106456914 -->
+#### ↳ cmk ([2026-04-19 07:43 UTC](https://github.com/cmk/riffgrep/pull/20#discussion_r3106456914))
+
+Fixed in 080270b — Q2 section header in prop.rs now reads `Pause ∘ Resume ≡ id` (matching the harness and the plan table row fixed alongside).
