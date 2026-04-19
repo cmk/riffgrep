@@ -358,6 +358,23 @@ impl App {
         self.marker_fsm.active_bank()
     }
 
+    /// Reload the FSM's config field from the current `preview.markers`.
+    ///
+    /// Call this after any in-place mutation of `preview.markers` so
+    /// that FSM-driven reads (selection cycle, etc.) see fresh data.
+    /// During Plan 04 Task 4c the edit methods will dispatch through
+    /// the FSM directly and this helper goes away.
+    fn sync_fsm_from_preview(&mut self) {
+        let cfg = self
+            .preview
+            .as_ref()
+            .and_then(|p| p.markers)
+            .unwrap_or_else(crate::engine::bext::MarkerConfig::empty);
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::LoadConfig(cfg));
+    }
+
     /// Install a pre-computed similarity-ranked result list.
     ///
     /// Used by `run_tui` at startup when `--similar PATH` is set: the
@@ -762,6 +779,12 @@ impl App {
 
     /// Handle preview data arrival.
     pub fn on_preview_ready(&mut self, data: PreviewData) {
+        let cfg = data
+            .markers
+            .unwrap_or_else(crate::engine::bext::MarkerConfig::empty);
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::LoadConfig(cfg));
         self.preview = Some(data);
     }
 
@@ -1067,10 +1090,13 @@ impl App {
         match result {
             Ok(()) => {
                 self.set_status(format!("Markers saved to {}", path.display()));
-                // Update preview markers to reflect what was written.
+                // Update preview markers and FSM to reflect what was written.
                 if let Some(ref mut preview) = self.preview {
                     preview.markers = Some(markers);
                 }
+                let _ = self
+                    .marker_fsm
+                    .consume(crate::engine::marker_fsm::Input::LoadConfig(markers));
                 // Update the table row as well.
                 if let Some(row) = self.results.get_mut(self.selected) {
                     row.markers = Some(markers);
@@ -1164,17 +1190,26 @@ impl App {
 
     /// Ensure preview has markers (initialize from defaults if needed).
     fn ensure_markers(&mut self) {
-        if let Some(ref mut preview) = self.preview
-            && preview.markers.is_none()
-        {
-            let total = preview
+        let cfg_to_install = self.preview.as_ref().and_then(|p| {
+            if p.markers.is_some() {
+                return None;
+            }
+            let total = p
                 .audio_info
                 .as_ref()
                 .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32);
-            preview.markers = Some(match total {
+            Some(match total {
                 Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
                 _ => crate::engine::bext::MarkerConfig::preset_shot(),
-            });
+            })
+        });
+        if let Some(cfg) = cfg_to_install {
+            if let Some(ref mut preview) = self.preview {
+                preview.markers = Some(cfg);
+            }
+            let _ = self
+                .marker_fsm
+                .consume(crate::engine::marker_fsm::Input::LoadConfig(cfg));
         }
     }
 
@@ -1214,6 +1249,7 @@ impl App {
                 Bank::B => "B",
             }
         };
+        self.sync_fsm_from_preview();
         self.set_status(format!("Marker {} set (bank {bank_label})", index + 1));
     }
 
@@ -1313,6 +1349,7 @@ impl App {
                     Bank::B => "B",
                 }
             };
+            self.sync_fsm_from_preview();
             self.set_status(format!("Marker {} cleared (bank {bank_label})", idx + 1));
         } else {
             self.set_status("No markers to clear".to_string());
@@ -1328,6 +1365,7 @@ impl App {
                 markers.bank_a = crate::engine::bext::MarkerBank::empty();
                 markers.bank_b = crate::engine::bext::MarkerBank::empty();
             }
+            self.sync_fsm_from_preview();
             self.set_status("Banks A+B cleared".to_string());
         } else if let Some(bank) = self.active_bank_mut() {
             *bank = crate::engine::bext::MarkerBank::empty();
@@ -1335,6 +1373,7 @@ impl App {
                 Bank::A => "A",
                 Bank::B => "B",
             };
+            self.sync_fsm_from_preview();
             self.set_status(format!("Bank {bank_label} cleared"));
         } else {
             self.set_status("No markers".to_string());
@@ -1401,6 +1440,7 @@ impl App {
                 } else {
                     format!("{new_val}")
                 };
+                self.sync_fsm_from_preview();
                 self.set_status(format!("Segment {} rep: {label}", seg + 1));
             }
         } else if let Some(bank) = self.active_bank_mut() {
@@ -1412,6 +1452,7 @@ impl App {
             } else {
                 format!("{new_val}")
             };
+            self.sync_fsm_from_preview();
             self.set_status(format!("Segment {} rep: {label}", seg + 1));
         } else {
             self.set_status("No markers".to_string());
@@ -2100,6 +2141,7 @@ impl App {
         }
 
         let dir = if forward { "→" } else { "←" };
+        self.sync_fsm_from_preview();
         self.set_status(format!("Marker {sel} nudged {dir} to {new_sample}"));
     }
 
@@ -2189,6 +2231,7 @@ impl App {
         }
 
         let dir = if forward { "→" } else { "←" };
+        self.sync_fsm_from_preview();
         self.set_status(format!("Marker {sel} snapped {dir} to ZC {new_sample}"));
     }
 
@@ -2225,6 +2268,9 @@ impl App {
         if let Some(ref mut preview) = self.preview {
             preview.markers = Some(preset);
         }
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::LoadConfig(preset));
         self.set_status("Markers reset to preset".to_string());
     }
 
@@ -2320,6 +2366,9 @@ impl App {
         if let Some(ref mut preview) = self.preview {
             preview.markers = Some(config);
         }
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::LoadConfig(config));
         self.set_status(format!("Imported from {}", csv_path.display()));
     }
 
