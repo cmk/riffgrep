@@ -330,3 +330,38 @@ Fixed in eb70094 alongside the mirror guard in `select_next_marker`.
 #### ↳ cmk ([2026-04-19 06:20 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106379429))
 
 Fixed in eb70094 — status paragraph now reads "Tasks 5a-5b" to match the task table.
+
+<!-- gh-id: 4135566722 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-19 06:24 UTC](https://github.com/cmk/riffgrep/pull/18#pullrequestreview-4135566722))
+
+## Pull request overview
+
+Copilot reviewed 5 out of 5 changed files in this pull request and generated 1 comment.
+
+
+<details>
+<summary>Comments suppressed due to low confidence (1)</summary>
+
+**src/ui/mod.rs:1457**
+* `adjust_rep` has the same silent-no-op behavior as `toggle_infinite_loop`: when `bank_sync()` is true but `self.preview` is `None`, the inner `if let` fails and the function exits without updating reps or setting a status. Add an explicit fallback (e.g., early-return with "No markers" / "Preview not loaded") so increment/decrement rep actions behave predictably before preview data is available.
+```
+        if self.bank_sync() {
+            if let Some(ref mut preview) = self.preview
+                && let Some(ref mut markers) = preview.markers
+            {
+                let cur = markers.bank_a.reps[seg];
+                let new_val = (cur as i16 + delta as i16).clamp(0, 15) as u8;
+```
+</details>
+
+
+
+<!-- gh-id: 3106383467 -->
+### Copilot on [`src/ui/mod.rs:2042`](https://github.com/cmk/riffgrep/pull/18#discussion_r3106383467) (2026-04-19 06:24 UTC)
+
+In the `bank_sync()` branch, if `self.preview` is `None` (e.g., before preview data arrives) the inner `if let` fails and this action becomes a silent no-op (no status message, no state change). Consider adding an `else` that sets an explicit status like "No markers" / "Preview not loaded" (and returns), so Ctrl-o after selecting SOF provides feedback instead of doing nothing.
+
+<!-- gh-id: 3106391890 -->
+#### ↳ cmk ([2026-04-19 06:34 UTC](https://github.com/cmk/riffgrep/pull/18#discussion_r3106391890))
+
+Fixed in c11a7a0 — synced branch now short-circuits to "No markers" when preview/config is absent. Ctrl-o (and IncrementRep / DecrementRep generally) now give feedback even before preview data arrives. Parity with the single-bank branch's existing fallback.
