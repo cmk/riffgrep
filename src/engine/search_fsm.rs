@@ -144,7 +144,9 @@ pub enum Input {
     EnterSimilarityMode,
     /// Exit `Mode::Similarity` back to `Mode::Remote`. Sets
     /// `debounce_dirty` so the next `DebounceTick` fires a fresh
-    /// remote search with the current query.
+    /// remote search with the current query. **No-op when already
+    /// in `Mode::Remote`** — otherwise a defensive call from the
+    /// runner would reset a live transport to Idle.
     ExitSimilarityMode,
 }
 
@@ -219,10 +221,15 @@ impl StateMachineImpl for SearchMachine {
                     match state.mode {
                         Mode::Remote => {
                             // New query supersedes any in-flight
-                            // search. Transport collapses to Pending;
-                            // the Output arm emits CancelSearch +
-                            // SpawnSearch so the runner aborts the
-                            // old task and starts a new one.
+                            // search. Transport collapses to Pending.
+                            // The Output arm emits SpawnSearch only —
+                            // rust-fsm's output() returns a single
+                            // Option<Output>, so the "cancel + spawn"
+                            // pair is encoded in SpawnSearch's runner
+                            // contract (see Output::SpawnSearch doc:
+                            // the runner aborts any in-flight handle
+                            // before starting the new one). No
+                            // separate CancelSearch fires on tick.
                             next.transport = Transport::Pending;
                         }
                         Mode::Similarity => {
@@ -266,11 +273,17 @@ impl StateMachineImpl for SearchMachine {
                 // search is moot now that we're filtering locally.
             }
             Input::ExitSimilarityMode => {
-                next.mode = Mode::Remote;
-                next.transport = Transport::Idle;
-                // Next DebounceTick should fire a fresh remote search
-                // for the current query.
-                next.debounce_dirty = true;
+                // Guarded: only flip mode when we're actually in
+                // Similarity. Without this, a defensive Task 4 call
+                // from Remote mode would reset a live Settled/Running
+                // transport to Idle and discard the result state.
+                if matches!(state.mode, Mode::Similarity) {
+                    next.mode = Mode::Remote;
+                    next.transport = Transport::Idle;
+                    // Next DebounceTick should fire a fresh remote
+                    // search for the current query.
+                    next.debounce_dirty = true;
+                }
             }
         }
         Some(next)
@@ -536,6 +549,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn search_failed_always_lands_settled() {
+        // Symmetry check with search_cancelled_always_lands_settled —
+        // SearchFailed must collapse to Settled from every transport
+        // so error paths can never orphan Pending / Running. Fills
+        // the Tier 1 F3 coverage gap (the inline spot check only
+        // exercised from Pending).
+        for initial in [
+            Transport::Idle,
+            Transport::Pending,
+            Transport::Running,
+            Transport::Settled,
+        ] {
+            let state = SearchFsmState {
+                transport: initial,
+                ..SearchFsmState::default()
+            };
+            let mut fsm = SearchFsm::from_state(state);
+            let _ = fsm.consume(Input::SearchFailed);
+            assert_eq!(
+                fsm.state().transport,
+                Transport::Settled,
+                "from {:?}",
+                initial
+            );
+        }
+    }
+
     // ---------- similarity mode ----------
 
     #[test]
@@ -580,6 +621,29 @@ mod tests {
                 query: "foo".to_string()
             })
         );
+    }
+
+    #[test]
+    fn exit_similarity_from_remote_is_noop() {
+        // Regression for Tier 1 review M1: ExitSimilarityMode must not
+        // reset transport when we're already in Remote mode. A defensive
+        // runner call from Remote must not clobber a live Settled or
+        // Running transport.
+        let state = SearchFsmState {
+            transport: Transport::Settled,
+            mode: Mode::Remote,
+            query: "q".to_string(),
+            debounce_dirty: false,
+        };
+        let before = state.clone();
+        let mut fsm = SearchFsm::from_state(state);
+        let out = fsm.consume(Input::ExitSimilarityMode);
+        assert_eq!(
+            fsm.state(),
+            &before,
+            "ExitSimilarityMode from Remote must be a no-op",
+        );
+        assert_eq!(out, None);
     }
 
     #[test]
