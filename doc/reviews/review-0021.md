@@ -394,3 +394,73 @@ Fixed in HEAD — doc no longer claims the FSM sets total_matches=0 (it doesn't 
 #### ↳ cmk ([2026-04-19 09:21 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106569043))
 
 Fixed in HEAD — doc now says `Pending | Running → Settled`, matching the transition() impl which shortcuts Pending when a search cancels before any batch arrives.
+
+<!-- gh-id: 3106574099 -->
+### Copilot on [`src/engine/search_fsm.rs:327`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106574099) (2026-04-19 09:26 UTC)
+
+The `SearchFsm` wrapper doc comment says the runner "owns the tokio task handles", but the `SearchRunner` implemented in this PR explicitly does not own task handles or perform I/O (effects-as-data pattern). Please update this comment to avoid misguiding Task 4 integrators about runner responsibilities.
+```suggestion
+/// maintains the results list, similarity snapshot, and
+/// columns/sort state while consuming emitted outputs to drive
+/// side effects elsewhere.
+```
+
+<!-- gh-id: 3106574101 -->
+### Copilot on [`src/engine/search_runner.rs:127`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106574101) (2026-04-19 09:26 UTC)
+
+`set_results` resets `results/selected/scroll_offset`, but its doc comment also says it's used when "similarity filtering rebuilds the list". In similarity mode, the UI expects `total_matches` to track the visible list size; this method currently leaves `total_matches` unchanged, which would make that usage incorrect. Either update the doc comment to remove the similarity-filtering claim, or update `set_results` to also set `total_matches` when it’s used for similarity/local filtering.
+
+<!-- gh-id: 3106574105 -->
+### Copilot on [`src/engine/search_runner.rs:184`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106574105) (2026-04-19 09:26 UTC)
+
+`apply_similarity_filter` currently omits the existing TUI behavior that warns users when they type a leading `@` (to avoid confusion with normal-mode `@field=value` filters). See `src/ui/mod.rs:455-486` (`filter_similarity_results`). If preserving that UX is desired for the Task 4 carve-out, consider returning a small status/warning indicator (or adding a helper to detect the unsupported column-filter form) so the UI layer can surface the same message while keeping the runner I/O-free.
+
+<!-- gh-id: 4135749389 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-19 09:26 UTC](https://github.com/cmk/riffgrep/pull/21#pullrequestreview-4135749389))
+
+## Pull request overview
+
+Copilot reviewed 10 out of 10 changed files in this pull request and generated 5 comments.
+
+
+
+
+
+<!-- gh-id: 3106574109 -->
+### Copilot on [`doc/plans/plan-2026-04-19-01.md:160`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106574109) (2026-04-19 09:26 UTC)
+
+The transition rule list says `SearchSettled: Running → Settled`, but the implemented FSM settles from `Pending` as well (see `src/engine/search_fsm.rs` where `SearchSettled` matches `Pending | Running`). Please update this line to `Pending | Running → Settled` so the plan matches the shipped behavior and integrators don’t assume `Pending` can’t settle directly.
+```suggestion
+  - `SearchSettled`: Pending | Running → Settled.
+```
+
+<!-- gh-id: 3106574118 -->
+### Copilot on [`doc/plans/plan-2026-04-19-01.md:166`](https://github.com/cmk/riffgrep/pull/21#discussion_r3106574118) (2026-04-19 09:26 UTC)
+
+The `ExitSimilarityMode` transition rule is described unconditionally here, but the shipped FSM intentionally makes it a no-op when already in `Mode::Remote` (to avoid clobbering transport; see the `exit_similarity_from_remote_is_noop` inline test in `src/engine/search_fsm.rs`). Please note that guard/precondition here to prevent a future integration from depending on unguarded behavior.
+```suggestion
+  - `ExitSimilarityMode` while `mode=Similarity`: mode → Remote,
+    transport → Idle, `debounce_dirty=true` (forces a fresh remote
+    search). If already in `mode=Remote`, this input is a no-op so we
+    do not clobber the existing transport state.
+```
+
+<!-- gh-id: 3106579819 -->
+#### ↳ cmk ([2026-04-19 09:32 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106579819))
+
+Fixed in 1d66a56 — set_results doc now correctly scopes to remote first-batch arrival; clarifies that total_matches is set by SearchSettled via set_total_matches, and that similarity rebuilds go through apply_similarity_filter (which updates total_matches itself).
+
+<!-- gh-id: 3106579849 -->
+#### ↳ cmk ([2026-04-19 09:32 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106579849))
+
+Fixed in 1d66a56 — apply_similarity_filter now returns Option<&'static str>. When the trimmed query starts with '@', returns the same warning string App::filter_similarity_results produced. Runner stays I/O-free; caller chooses whether to surface. New test apply_similarity_filter_warns_on_at_prefix covers it. The UX stays intact for the Task 4 carve-out.
+
+<!-- gh-id: 3106579883 -->
+#### ↳ cmk ([2026-04-19 09:32 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106579883))
+
+Fixed in 1d66a56 — plan transition rule now says `Pending | Running → Settled`, matching the impl and the FSM doc fix from round 3.
+
+<!-- gh-id: 3106579922 -->
+#### ↳ cmk ([2026-04-19 09:32 UTC](https://github.com/cmk/riffgrep/pull/21#discussion_r3106579922))
+
+Fixed in 1d66a56 — plan now explicitly notes the guard: ExitSimilarityMode is a no-op when already in Remote, preventing clobbered transport state. References the exit_similarity_from_remote_is_noop test.
