@@ -166,18 +166,31 @@ proptest! {
 // =============================================================================
 // Q5: Seek(p) followed by ConsumeSeek drains pending_seek
 // =============================================================================
-// Uses `transitions_no_stop_or_program_end` so the stream can't clear
-// pending_seek via a side channel. Without that restriction, a Stop
-// injected between Seek and ConsumeSeek would trivially clear
-// pending_seek — satisfying the post-condition but not for the reason
-// the property is checking.
+// Runs an arbitrary prefix that excludes `Stop` and `ProgramEnded` (both
+// clear / can clear `pending_seek` as a side channel), then injects
+// `Seek(pos)` and `ConsumeSeek`. Post-condition: `pending_seek` is `None`
+// regardless of what the prefix touched. Without the prefix this would
+// only test the trivial two-step sequence — the restricted generator is
+// the teeth of the property.
+
+fn restricted_input_seq_strategy(
+    len: impl Into<proptest::collection::SizeRange>,
+) -> BoxedStrategy<Vec<Input>> {
+    let dummy = PlaybackFsmState::default();
+    proptest::collection::vec(
+        generators::transitions_no_stop_or_program_end(&dummy),
+        len,
+    )
+    .boxed()
+}
 
 proptest! {
     #[test]
     fn q5_seek_then_consume_seek_drains(
+        prefix in restricted_input_seq_strategy(0..20),
         pos in 0u32..1_000_000,
     ) {
-        let mut fsm = PlaybackFsm::new();
+        let mut fsm = fsm_with_prefix(&prefix);
         let _ = fsm.consume(Input::Seek(pos));
         let _ = fsm.consume(Input::ConsumeSeek);
         prop_assert_eq!(fsm.pending_seek(), None);

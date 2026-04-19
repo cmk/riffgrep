@@ -2,9 +2,9 @@
 //!
 //! Each generator is parameterised so individual properties can exclude
 //! actions that would invalidate the invariant under test. For example,
-//! Q6 (loop forces restart on ProgramEnded) holds only when
-//! `loop_enabled` stays true throughout the stream, so the generator
-//! drops `ToggleLoop` / `SetLoop` while that property is under test.
+//! Q5 (`Seek` → `ConsumeSeek` drains) uses
+//! [`transitions_no_stop_or_program_end`] so the arbitrary prefix can't
+//! clear `pending_seek` through a side channel.
 
 use proptest::prelude::*;
 
@@ -36,9 +36,8 @@ pub fn any_input(_state: &PlaybackFsmState) -> BoxedStrategy<Input> {
 }
 
 /// Like [`any_input`] but never emits `Stop` or `ProgramEnded`. Used
-/// by Q5 (`Seek` → `ConsumeSeek` drains) so the stream can't clear
+/// by Q5 (`Seek` → `ConsumeSeek` drains) so the prefix can't clear
 /// `pending_seek` through a side channel.
-#[allow(dead_code)] // Referenced by prop.rs; false-positive until that lands.
 pub fn transitions_no_stop_or_program_end(_state: &PlaybackFsmState) -> BoxedStrategy<Input> {
     prop_oneof![
         Just(Input::Play),
@@ -55,23 +54,3 @@ pub fn transitions_no_stop_or_program_end(_state: &PlaybackFsmState) -> BoxedStr
     .boxed()
 }
 
-/// Like [`any_input`] but never flips the loop toggle. Used by Q6
-/// so the initial `loop_enabled=true` persists through the stream.
-#[allow(dead_code)] // Referenced by prop.rs; false-positive until that lands.
-pub fn transitions_no_loop_toggle(_state: &PlaybackFsmState) -> BoxedStrategy<Input> {
-    prop_oneof![
-        Just(Input::Play),
-        Just(Input::Pause),
-        Just(Input::Resume),
-        Just(Input::Stop),
-        (0u32..MAX_GEN_FRAME).prop_map(Input::Seek),
-        Just(Input::Restart),
-        Just(Input::ToggleReverse),
-        any::<bool>().prop_map(Input::SetReverse),
-        Just(Input::SegmentEnded),
-        Just(Input::ProgramEnded),
-        Just(Input::ConsumeSeek),
-        Just(Input::ConsumeRestart),
-    ]
-    .boxed()
-}

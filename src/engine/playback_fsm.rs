@@ -535,6 +535,21 @@ mod tests {
     }
 
     #[test]
+    fn program_ended_from_paused_without_loop_stops() {
+        // Natural program end while paused: mixer finishes its last
+        // segment and signals ProgramEnded. Without loop, transport
+        // collapses to Stopped regardless of prior Paused state.
+        let state = PlaybackFsmState {
+            transport: Transport::Paused,
+            ..PlaybackFsmState::default()
+        };
+        let mut fsm = PlaybackFsm::from_state(state);
+        let _ = fsm.consume(Input::ProgramEnded);
+        assert_eq!(fsm.transport(), Transport::Stopped);
+        assert!(!fsm.pending_restart());
+    }
+
+    #[test]
     fn program_ended_preserves_pending_seek_but_stop_clears() {
         let state = PlaybackFsmState {
             transport: Transport::Playing,
