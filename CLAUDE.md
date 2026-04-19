@@ -150,14 +150,22 @@ the reviewer and leaves an audit trail linking each finding to its
 resolution. Re-running `/pull-reviews <N>` afterward mirrors the replies
 back into `review-NNNN.md`.
 
-**`review-NNNN.md` rides with the next fix commit that addresses the
-round's findings.** Don't land a standalone `doc:` commit to attach
-the audit trail — that forces a CI round-trip for no code change. If
-a round is entirely no-op (all push-back, no code changes), the file
-stays on disk uncommitted and a later round's fix picks up the pending
-replies via one `/pull-reviews` run at that time. Before final push,
-run `/pull-reviews <N>` one last time and fold any trailing comments
-into the last fix commit (or `--amend` if the last push was clean).
+**Every PR ships `review-NNNN.md` in its git history.** Package it
+with a code commit — never a standalone `doc:` commit (that burns a
+CI cycle for zero code change).
+
+| Situation                                          | Where the review lands                                      |
+|----------------------------------------------------|-------------------------------------------------------------|
+| Tier 1 has must-fix items                          | Bundled into the fix commit                                 |
+| Tier 1 is clean (0 must-fix)                       | `git commit --amend` onto the last commit before pushing    |
+| Tier 2 round has findings to address               | Bundled into the fix commit                                 |
+| Tier 2 round is all push-back (no code changes)    | File stays uncommitted; next round's fix picks it up        |
+| Final push is clean, last round was all push-back  | `git commit --amend` onto the last commit before merge      |
+
+Invariant: no PR merges without `review-NNNN.md` in the branch. A
+"clean review" (Tier 1 with no findings) still ships; only a "no-op
+round" (Tier 2 all push-back between pushes) waits on disk, and only
+until the next code-changing commit or final amend.
 
 The local review catches design issues and convention violations early.
 The GitHub review catches anything that slipped through and validates in
