@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a7c9225da1f1fbe8d33e1db3dea0b620b1f80b73999def33b98bdf606ef6ad48 # shrinks to (initial_state, transitions, seen_counter) = (PlaybackFsmState { transport: Playing, reversed: false, loop_enabled: false, pending_seek: None, pending_restart: false }, [Seek(0), ToggleLoop, ProgramEnded, Pause], None)
+cc 5a6246678b6723d37f97dbb195940810f79c9ee48007775efd40e853b214b252 # shrinks to (initial_state, transitions, seen_counter) = (PlaybackFsmState { transport: Stopped, reversed: false, loop_enabled: false, pending_seek: None, pending_restart: false }, [Restart, Pause], None)
