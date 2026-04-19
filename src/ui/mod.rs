@@ -1208,10 +1208,7 @@ impl App {
             if p.markers.is_some() {
                 return None;
             }
-            let total = p
-                .audio_info
-                .as_ref()
-                .map(|ai| (ai.duration_secs * ai.sample_rate as f64) as u32);
+            let total = p.audio_info.as_ref().map(|ai| ai.total_samples);
             Some(match total {
                 Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
                 _ => crate::engine::bext::MarkerConfig::preset_shot(),
@@ -2059,6 +2056,7 @@ impl App {
                 markers.bank_a.reps[seg] = new_val;
                 markers.bank_b.reps[seg] = new_val;
                 let label = if new_val == 15 { "inf" } else { "1" };
+                self.sync_fsm_from_preview();
                 self.set_status(format!("Segment {} rep: {label}", seg + 1));
             }
         } else if let Some(bank) = self.active_bank_mut() {
@@ -2066,6 +2064,7 @@ impl App {
             let new_val = if cur == 15 { 1 } else { 15 };
             bank.reps[seg] = new_val;
             let label = if new_val == 15 { "inf" } else { "1" };
+            self.sync_fsm_from_preview();
             self.set_status(format!("Segment {} rep: {label}", seg + 1));
         }
     }
