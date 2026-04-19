@@ -177,11 +177,7 @@ fn restricted_input_seq_strategy(
     len: impl Into<proptest::collection::SizeRange>,
 ) -> BoxedStrategy<Vec<Input>> {
     let dummy = PlaybackFsmState::default();
-    proptest::collection::vec(
-        generators::transitions_no_stop_or_program_end(&dummy),
-        len,
-    )
-    .boxed()
+    proptest::collection::vec(generators::transitions_no_stop_or_program_end(&dummy), len).boxed()
 }
 
 proptest! {

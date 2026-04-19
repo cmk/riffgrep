@@ -16,15 +16,24 @@ use prop::{PauseResumeTest, SyncedSutTest};
 
 /// Harness configuration. Defaults picked so the full suite runs in
 /// well under the 60 s budget at `cargo test --release`.
+///
+/// Per-case step range is controlled by the `sequential 1..{n}` arg
+/// to `prop_state_machine!` below, not by this struct — the macro
+/// needs a literal range expression, so the single source of truth
+/// for step count is [`MAX_STEPS`].
 #[derive(Debug, Clone, Copy)]
 pub struct TestConfig {
     /// Number of proptest cases per property.
     pub cases: u32,
-    /// Maximum transitions per case in `prop_state_machine!` suites.
-    pub max_steps: usize,
     /// Enable proptest's per-case trace output.
     pub verbose: bool,
 }
+
+/// Maximum transitions per `prop_state_machine!` case. Passed through
+/// to `sequential 1..MAX_STEPS` on each harness invocation. A single
+/// constant so raising it raises both the marker_fsm-style baseline
+/// and every Q-property harness in lockstep.
+pub const MAX_STEPS: usize = 32;
 
 impl Default for TestConfig {
     fn default() -> Self {
@@ -34,7 +43,6 @@ impl Default for TestConfig {
             .unwrap_or(64);
         TestConfig {
             cases,
-            max_steps: 32,
             verbose: false,
         }
     }
@@ -60,8 +68,8 @@ fn default_config() -> ProptestConfig {
 prop_state_machine! {
     #![proptest_config(default_config())]
     #[test]
-    fn synced_sut_matches_reference(sequential 1..32 => SyncedSutTest);
+    fn synced_sut_matches_reference(sequential 1..MAX_STEPS => SyncedSutTest);
 
     #[test]
-    fn q2_pause_resume_inverse_from_playing(sequential 1..32 => PauseResumeTest);
+    fn q2_pause_resume_inverse_from_playing(sequential 1..MAX_STEPS => PauseResumeTest);
 }
