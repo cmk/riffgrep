@@ -209,10 +209,6 @@ pub struct App {
     pub bank_sync: bool,
     /// Currently selected marker for nudge/snap (0=SOF, 1=m1, 2=m2, 3=m3).
     pub selected_marker: Option<usize>,
-    /// Whether marker lines and segment labels are visible on the waveform.
-    ///
-    /// When false, marker-editing actions are no-ops (status shows how to re-enable).
-    pub markers_visible: bool,
     /// Nudge small: number of zero-crossings for small nudge.
     pub marker_nudge_small: u32,
     /// Nudge large: number of zero-crossings for large nudge.
@@ -273,10 +269,7 @@ pub struct App {
 
     /// Marker finite-state machine. Owns selection/bank/sync/visibility
     /// in its own right; data ownership (MarkerConfig) remains in
-    /// `preview.markers` until Task 5 of Plan 04 lands. During the
-    /// carve-out migration the scalars are double-written so cargo test
-    /// stays green between incremental commits.
-    #[allow(dead_code)]
+    /// `preview.markers` until Task 5 of Plan 04 lands.
     pub marker_fsm: MarkerFsm,
 }
 
@@ -330,7 +323,6 @@ impl App {
             reversed: false,
             bank_sync: true,
             selected_marker: None,
-            markers_visible: true,
             marker_nudge_small: 1,
             marker_nudge_large: 10,
             zoom_level: 0,
@@ -352,6 +344,14 @@ impl App {
             similarity_results: None,
             marker_fsm: MarkerFsm::new(),
         }
+    }
+
+    /// Whether marker lines and segment labels are visible on the waveform.
+    ///
+    /// When false, marker-editing actions are no-ops (status shows how
+    /// to re-enable).
+    pub fn markers_visible(&self) -> bool {
+        self.marker_fsm.markers_visible()
     }
 
     /// Install a pre-computed similarity-ranked result list.
@@ -487,7 +487,7 @@ impl App {
         // When markers are hidden, marker-editing actions are no-ops.
         // ToggleBank and ToggleBankSync are also suppressed when markers are hidden.
         let is_bank_toggle = matches!(action, Action::ToggleBank | Action::ToggleBankSync);
-        if !self.markers_visible && (action.is_marker_edit() || is_bank_toggle) {
+        if !self.markers_visible() && (action.is_marker_edit() || is_bank_toggle) {
             self.set_status("Enable markers with Ctrl-Alt-d".to_string());
             return;
         }
@@ -2344,8 +2344,10 @@ impl App {
     /// become no-ops. In-memory marker data is preserved so toggling back on
     /// restores the full marker state without a disk read.
     fn toggle_marker_display(&mut self) {
-        self.markers_visible = !self.markers_visible;
-        if !self.markers_visible {
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::ToggleMarkerDisplay);
+        if !self.markers_visible() {
             self.selected_marker = None;
             self.set_status("Markers hidden — Ctrl-Alt-d to restore".to_string());
         } else {
@@ -2417,7 +2419,7 @@ impl App {
             }
         };
 
-        let zoom_center: u32 = if self.markers_visible {
+        let zoom_center: u32 = if self.markers_visible() {
             self.selected_marker
                 .filter(|&i| i > 0)
                 .and_then(|i| {
@@ -5136,22 +5138,22 @@ mod tests {
     #[test]
     fn test_markers_visible_toggle() {
         let mut app = App::new(Theme::default());
-        assert!(app.markers_visible);
+        assert!(app.markers_visible());
         app.dispatch(actions::Action::ToggleMarkerDisplay);
-        assert!(!app.markers_visible);
+        assert!(!app.markers_visible());
         assert_eq!(
             app.status_message.as_deref(),
             Some("Markers hidden — Ctrl-Alt-d to restore")
         );
         app.dispatch(actions::Action::ToggleMarkerDisplay);
-        assert!(app.markers_visible);
+        assert!(app.markers_visible());
         assert_eq!(app.status_message.as_deref(), Some("Markers visible"));
     }
 
     #[test]
     fn test_markers_hidden_blocks_edits() {
         let mut app = App::new(Theme::default());
-        app.markers_visible = false;
+        app.dispatch(actions::Action::ToggleMarkerDisplay);
         app.dispatch(actions::Action::ClearBankMarkers);
         assert_eq!(
             app.status_message.as_deref(),
@@ -6081,7 +6083,7 @@ mod tests {
             pcm: None,
         });
         app.dispatch(actions::Action::ToggleMarkerDisplay);
-        assert!(!app.markers_visible);
+        assert!(!app.markers_visible());
         // Marker data must survive the toggle.
         let still_has_markers = app
             .preview
@@ -6094,7 +6096,7 @@ mod tests {
         );
         // Toggle back on — data still present.
         app.dispatch(actions::Action::ToggleMarkerDisplay);
-        assert!(app.markers_visible);
+        assert!(app.markers_visible());
         let still_has_markers2 = app
             .preview
             .as_ref()
@@ -6120,7 +6122,7 @@ mod tests {
     #[test]
     fn test_markers_hidden_set_marker_noop() {
         let mut app = App::new(Theme::default());
-        app.markers_visible = false;
+        app.dispatch(actions::Action::ToggleMarkerDisplay);
         app.dispatch(actions::Action::SetMarker1);
         assert_eq!(
             app.status_message.as_deref(),
@@ -6131,7 +6133,7 @@ mod tests {
     #[test]
     fn test_markers_hidden_save_markers_noop() {
         let mut app = App::new(Theme::default());
-        app.markers_visible = false;
+        app.dispatch(actions::Action::ToggleMarkerDisplay);
         app.dispatch(actions::Action::SaveMarkers);
         assert_eq!(
             app.status_message.as_deref(),
