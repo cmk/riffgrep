@@ -715,7 +715,7 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     }
 
     // Marker lines and segment labels overlay (gated by markers_visible).
-    if app.markers_visible
+    if app.markers_visible()
         && let Some(markers) = &preview.markers
         && !markers.is_empty()
     {
