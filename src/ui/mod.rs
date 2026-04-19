@@ -203,8 +203,6 @@ pub struct App {
     pub global_loop: bool,
     /// Reverse traversal: when ON, each segment plays end→start.
     pub reversed: bool,
-    /// Currently selected marker for nudge/snap (0=SOF, 1=m1, 2=m2, 3=m3).
-    pub selected_marker: Option<usize>,
     /// Nudge small: number of zero-crossings for small nudge.
     pub marker_nudge_small: u32,
     /// Nudge large: number of zero-crossings for large nudge.
@@ -316,7 +314,6 @@ impl App {
             status_message_time: None,
             global_loop: false,
             reversed: false,
-            selected_marker: None,
             marker_nudge_small: 1,
             marker_nudge_large: 10,
             zoom_level: 0,
@@ -356,6 +353,23 @@ impl App {
     /// Active marker bank for editing (A or B).
     pub fn active_bank(&self) -> Bank {
         self.marker_fsm.active_bank()
+    }
+
+    /// Currently selected marker index (0=SOF, 1=M1, 2=M2, 3=M3).
+    pub fn selected_marker(&self) -> Option<usize> {
+        self.marker_fsm.selected_marker()
+    }
+
+    /// Force the FSM's selection to a specific slot. Used by file-change
+    /// handlers to pre-emptively clear selection, and by tests that need
+    /// to seed a specific selection without routing through the cycle
+    /// logic.
+    fn set_selected_marker(&mut self, sel: Option<usize>) {
+        use crate::engine::marker_fsm::{MarkerFsm, Selection};
+        let selection = sel.and_then(Selection::from_index);
+        let mut state = *self.marker_fsm.state();
+        state.selection = selection;
+        self.marker_fsm = MarkerFsm::from_state(state);
     }
 
     /// Reload the FSM's config field from the current `preview.markers`.
@@ -532,7 +546,7 @@ impl App {
             // so that Shift-Right (which some terminals send instead of Ctrl-Shift-Right)
             // still nudges the marker rather than moving the playhead cursor.
             Action::SeekForwardLarge => {
-                if self.selected_marker.filter(|&m| m >= 1).is_some() {
+                if self.selected_marker().filter(|&m| m >= 1).is_some() {
                     self.nudge_marker(true, self.marker_nudge_large);
                 } else {
                     self.seek_relative(self.scrub_large);
@@ -540,7 +554,7 @@ impl App {
             }
             Action::SeekBackwardSmall => self.seek_relative(-self.scrub_small),
             Action::SeekBackwardLarge => {
-                if self.selected_marker.filter(|&m| m >= 1).is_some() {
+                if self.selected_marker().filter(|&m| m >= 1).is_some() {
                     self.nudge_marker(false, self.marker_nudge_large);
                 } else {
                     self.seek_relative(-self.scrub_large);
@@ -806,7 +820,7 @@ impl App {
             // Stop playback when selection changes.
             self.stop_playback();
             // Reset marker selection and zoom on file change.
-            self.selected_marker = None;
+            self.set_selected_marker(None);
             self.zoom_level = 0;
             self.zoom_offset = 0;
             self.zoom_center = None;
@@ -1407,7 +1421,7 @@ impl App {
     /// Uses `selected_marker` when set (same pattern as `toggle_infinite_loop`),
     /// falling back to the playback cursor position or segment 0 when stopped.
     fn adjust_rep(&mut self, delta: i8) {
-        let seg = match self.selected_marker {
+        let seg = match self.selected_marker() {
             Some(idx) => idx, // selected_marker: 0=SOF→seg0, 1=m1→seg1, etc.
             None => match self.current_segment_index() {
                 Some(s) if s < 4 => s,
@@ -1937,18 +1951,13 @@ impl App {
     /// no BEXT markers yet — otherwise only SOF would be navigable.
     fn select_next_marker(&mut self) {
         self.ensure_markers();
-        let defined = self.defined_marker_indices();
-        if defined.is_empty() {
+        if self.defined_marker_indices().is_empty() {
             self.set_status("No markers".to_string());
             return;
         }
-        let current = self.selected_marker.unwrap_or(usize::MAX);
-        let next = defined
-            .iter()
-            .find(|&&i| i > current)
-            .copied()
-            .unwrap_or(defined[0]);
-        self.selected_marker = Some(next);
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::SelectNextMarker);
         self.seek_to_selected_marker();
     }
 
@@ -1957,19 +1966,13 @@ impl App {
     /// Calls `ensure_markers()` for the same reason as `select_next_marker()`.
     fn select_prev_marker(&mut self) {
         self.ensure_markers();
-        let defined = self.defined_marker_indices();
-        if defined.is_empty() {
+        if self.defined_marker_indices().is_empty() {
             self.set_status("No markers".to_string());
             return;
         }
-        let current = self.selected_marker.unwrap_or(0);
-        let prev = defined
-            .iter()
-            .rev()
-            .find(|&&i| i < current)
-            .copied()
-            .unwrap_or(*defined.last().unwrap());
-        self.selected_marker = Some(prev);
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::SelectPrevMarker);
         self.seek_to_selected_marker();
     }
 
@@ -1992,7 +1995,7 @@ impl App {
 
     /// Seek playback to the selected marker position.
     fn seek_to_selected_marker(&mut self) {
-        let idx = match self.selected_marker {
+        let idx = match self.selected_marker() {
             Some(i) => i,
             None => return,
         };
@@ -2031,7 +2034,7 @@ impl App {
 
     /// Toggle reps between 15 (infinite) and 1 for the segment after the selected marker.
     fn toggle_infinite_loop(&mut self) {
-        let sel = match self.selected_marker {
+        let sel = match self.selected_marker() {
             Some(s) => s,
             None => {
                 self.set_status("Select a marker first (Tab)".to_string());
@@ -2087,7 +2090,7 @@ impl App {
 
     /// Nudge the selected marker by N zero-crossings in a direction.
     fn nudge_marker(&mut self, forward: bool, n: u32) {
-        let sel = match self.selected_marker {
+        let sel = match self.selected_marker() {
             Some(s) if s >= 1 => s, // SOF (0) is not nudgeable.
             Some(0) => {
                 self.set_status("SOF is not nudgeable".to_string());
@@ -2181,7 +2184,7 @@ impl App {
 
     /// Snap the selected marker to the nearest zero-crossing in a direction.
     fn snap_zero_crossing(&mut self, forward: bool) {
-        let sel = match self.selected_marker {
+        let sel = match self.selected_marker() {
             Some(s) if s >= 1 => s,
             Some(0) => {
                 self.set_status("SOF is not snappable".to_string());
@@ -2402,8 +2405,9 @@ impl App {
         let _ = self
             .marker_fsm
             .consume(crate::engine::marker_fsm::Input::ToggleMarkerDisplay);
+        // FSM's ToggleMarkerDisplay transition clears selection when
+        // flipping to hidden; no need to duplicate that here.
         if !self.markers_visible() {
-            self.selected_marker = None;
             self.set_status("Markers hidden — Ctrl-Alt-d to restore".to_string());
         } else {
             self.set_status("Markers visible".to_string());
@@ -2475,7 +2479,7 @@ impl App {
         };
 
         let zoom_center: u32 = if self.markers_visible() {
-            self.selected_marker
+            self.selected_marker()
                 .filter(|&i| i > 0)
                 .and_then(|i| {
                     self.preview
@@ -5220,9 +5224,9 @@ mod tests {
     #[test]
     fn test_selected_marker_resets_on_file_change() {
         let mut app = make_app_with_results(5);
-        app.selected_marker = Some(2);
+        app.set_selected_marker(Some(2));
         app.move_selection(1);
-        assert_eq!(app.selected_marker, None);
+        assert_eq!(app.selected_marker(), None);
     }
 
     #[test]
@@ -5242,7 +5246,7 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.select_next_marker();
         // No preview, so defined_marker_indices returns [0] (SOF only).
-        assert_eq!(app.selected_marker, Some(0));
+        assert_eq!(app.selected_marker(), Some(0));
     }
 
     #[test]
@@ -5258,15 +5262,15 @@ mod tests {
         });
         // Should have SOF + m1 + m2 + m3 = 4 markers.
         app.select_next_marker(); // 0 → 0 (starts from beginning)
-        assert_eq!(app.selected_marker, Some(0));
+        assert_eq!(app.selected_marker(), Some(0));
         app.select_next_marker(); // 0 → 1
-        assert_eq!(app.selected_marker, Some(1));
+        assert_eq!(app.selected_marker(), Some(1));
         app.select_next_marker(); // 1 → 2
-        assert_eq!(app.selected_marker, Some(2));
+        assert_eq!(app.selected_marker(), Some(2));
         app.select_next_marker(); // 2 → 3
-        assert_eq!(app.selected_marker, Some(3));
+        assert_eq!(app.selected_marker(), Some(3));
         app.select_next_marker(); // 3 → 0 (wrap)
-        assert_eq!(app.selected_marker, Some(0));
+        assert_eq!(app.selected_marker(), Some(0));
     }
 
     #[test]
@@ -5286,13 +5290,13 @@ mod tests {
         // Before the fix: only SOF was navigable (defined_marker_indices returns [0]).
         // After the fix: ensure_markers() creates defaults, so m1/m2/m3 are reachable.
         app.select_next_marker(); // SOF (0)
-        assert_eq!(app.selected_marker, Some(0));
+        assert_eq!(app.selected_marker(), Some(0));
         app.select_next_marker(); // m1 (1)
-        assert_eq!(app.selected_marker, Some(1));
+        assert_eq!(app.selected_marker(), Some(1));
         app.select_next_marker(); // m2 (2)
-        assert_eq!(app.selected_marker, Some(2));
+        assert_eq!(app.selected_marker(), Some(2));
         app.select_next_marker(); // m3 (3)
-        assert_eq!(app.selected_marker, Some(3));
+        assert_eq!(app.selected_marker(), Some(3));
     }
 
     #[test]
@@ -5308,7 +5312,7 @@ mod tests {
         });
         // After ensure_markers() initializes defaults, prev from SOF wraps to m3.
         app.select_prev_marker(); // SOF → m3 (wrap)
-        assert_eq!(app.selected_marker, Some(3));
+        assert_eq!(app.selected_marker(), Some(3));
     }
 
     #[test]
@@ -5332,7 +5336,7 @@ mod tests {
             markers: Some(markers),
             pcm: None,
         });
-        app.selected_marker = Some(0);
+        app.set_selected_marker(Some(0));
         app.toggle_infinite_loop();
         // Segment 0 should now have rep=15.
         let bank = app.active_bank_ref().unwrap();
@@ -5444,7 +5448,7 @@ mod tests {
             pcm: None,
         });
         // Select marker 1 (non-SOF).
-        app.selected_marker = Some(1);
+        app.set_selected_marker(Some(1));
         // SeekForwardLarge with a marker selected should NOT update cursor_sample.
         app.dispatch(actions::Action::SeekForwardLarge);
         // cursor_sample should remain 0 (seek_relative was NOT called).
@@ -5472,7 +5476,7 @@ mod tests {
             markers: None,
             pcm: None,
         });
-        app.selected_marker = None; // No marker selected.
+        app.set_selected_marker(None); // No marker selected.
         app.dispatch(actions::Action::SeekForwardLarge);
         // cursor_sample should have advanced by scrub_large * sample_rate.
         assert!(
@@ -5731,7 +5735,7 @@ mod tests {
     #[test]
     fn test_nudge_sof_blocked() {
         let mut app = App::new(Theme::default());
-        app.selected_marker = Some(0);
+        app.set_selected_marker(Some(0));
         app.nudge_marker(true, 1);
         assert_eq!(app.status_message.as_deref(), Some("SOF is not nudgeable"));
     }
@@ -5949,7 +5953,7 @@ mod tests {
             bank_b: MarkerBank::empty(),
         });
         app.on_preview_ready(preview);
-        app.selected_marker = Some(2); // select marker 2
+        app.set_selected_marker(Some(2)); // select marker 2
         app.zoom_in();
         // zoom_center should be at marker 2's position.
         assert_eq!(
@@ -5963,7 +5967,7 @@ mod tests {
     fn test_zoom_in_falls_back_to_playhead_when_no_marker_selected() {
         let mut app = App::new(Theme::default());
         app.on_preview_ready(preview_with_pcm(48000, 1.0));
-        app.selected_marker = None;
+        app.set_selected_marker(None);
         // No playback active, so position_fraction() == 0.0.
         app.zoom_in();
         // zoom_center should be at sample 0 (0% of file).
@@ -6008,7 +6012,7 @@ mod tests {
     fn test_increment_rep_uses_selected_marker_0() {
         let mut app = app_with_preview_and_markers();
         // selected_marker = Some(0) means SOF (segment 0).
-        app.selected_marker = Some(0);
+        app.set_selected_marker(Some(0));
         let initial = app
             .preview
             .as_ref()
@@ -6039,7 +6043,7 @@ mod tests {
     fn test_increment_rep_uses_selected_marker_2() {
         let mut app = app_with_preview_and_markers();
         // selected_marker = Some(2) means marker 2 → segment 2.
-        app.selected_marker = Some(2);
+        app.set_selected_marker(Some(2));
         let initial = app
             .preview
             .as_ref()
@@ -6075,7 +6079,7 @@ mod tests {
         {
             mc.bank_a.reps[1] = 3;
         }
-        app.selected_marker = Some(1);
+        app.set_selected_marker(Some(1));
         let initial = 3u8;
         app.dispatch(actions::Action::DecrementRep);
         let after = app
@@ -6104,7 +6108,7 @@ mod tests {
         {
             mc.bank_a.reps = [2, 2, 2, 2];
         }
-        app.selected_marker = Some(0); // target segment 0
+        app.set_selected_marker(Some(0)); // target segment 0
         app.dispatch(actions::Action::IncrementRep);
         let reps = app
             .preview
@@ -6167,10 +6171,10 @@ mod tests {
     #[test]
     fn test_toggle_marker_display_clears_selected_marker() {
         let mut app = App::new(Theme::default());
-        app.selected_marker = Some(2);
+        app.set_selected_marker(Some(2));
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert_eq!(
-            app.selected_marker, None,
+            app.selected_marker(), None,
             "selected_marker must be cleared when markers hidden"
         );
     }
@@ -6213,7 +6217,7 @@ mod tests {
         }
 
         for idx in 0..4 {
-            app.selected_marker = Some(idx);
+            app.set_selected_marker(Some(idx));
             app.adjust_rep(1);
         }
 
