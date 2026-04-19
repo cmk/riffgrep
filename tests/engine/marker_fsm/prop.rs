@@ -6,7 +6,7 @@
 //! function, the reference and SUT are guaranteed to stay in lockstep — the
 //! `StateMachineTest::check_invariants` assertion locks that in.
 //!
-//! Property-specific generator restrictions live in [`crate::gen`]. Each
+//! Property-specific generator restrictions live in [`crate::generators`]. Each
 //! property that needs a different generator gets its own
 //! `StateMachineTest` impl below; shared invariants (bank-sync mirroring
 //! when `bank_sync` is on, visibility gating) are checked in

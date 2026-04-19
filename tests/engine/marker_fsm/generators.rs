@@ -52,7 +52,6 @@ pub fn any_input(_state: &MarkerFsmState) -> BoxedStrategy<Input> {
 
 /// Like [`any_input`] but never generates [`Input::ToggleBankSync`]. Used
 /// by property P6 (bank-sync preservation).
-#[allow(dead_code)] // Wired up in Task 6 (P6).
 pub fn transitions_no_sync_toggle(_state: &MarkerFsmState) -> BoxedStrategy<Input> {
     prop_oneof![
         (0u32..MAX_GEN_POS).prop_map(Input::SetMarker1),
@@ -78,7 +77,6 @@ pub fn transitions_no_sync_toggle(_state: &MarkerFsmState) -> BoxedStrategy<Inpu
 /// Used by property P7 (markers-disabled fixed point) once the display
 /// is flipped off — the generator runs until the property loop re-enables
 /// display.
-#[allow(dead_code)] // Wired up in Task 6 (P7).
 pub fn transitions_no_display_toggle(_state: &MarkerFsmState) -> BoxedStrategy<Input> {
     prop_oneof![
         (0u32..MAX_GEN_POS).prop_map(Input::SetMarker1),
