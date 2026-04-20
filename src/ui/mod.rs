@@ -16,6 +16,9 @@ use crate::engine::{TableRow, UnifiedMetadata};
 use theme::Theme;
 
 /// Preview data for the selected result.
+///
+/// Marker data is owned by [`App::marker_fsm`] and loaded via
+/// [`App::on_preview_ready`]'s second argument — not carried here.
 #[derive(Debug, Clone, Default)]
 pub struct PreviewData {
     /// Metadata for the previewed file.
@@ -24,8 +27,6 @@ pub struct PreviewData {
     pub peaks: Vec<u8>,
     /// Audio format info (duration, sample rate, etc.) if available.
     pub audio_info: Option<crate::engine::wav::AudioInfo>,
-    /// Marker configuration from BEXT v2, if available.
-    pub markers: Option<crate::engine::bext::MarkerConfig>,
     /// Raw 16-bit PCM samples for waveform zoom (None for non-16-bit files).
     pub pcm: Option<crate::engine::wav::PcmData>,
 }
@@ -262,8 +263,11 @@ pub struct App {
     pub similarity_results: Option<Vec<TableRow>>,
 
     /// Marker finite-state machine. Owns selection/bank/sync/visibility
-    /// in its own right; data ownership (MarkerConfig) remains in
-    /// `preview.markers` until Task 5 of Plan 04 lands.
+    /// *and* the [`MarkerConfig`] data itself. All marker mutations
+    /// dispatch through [`MarkerFsm::consume`]; there is no other source
+    /// of truth for markers.
+    ///
+    /// [`MarkerConfig`]: crate::engine::bext::MarkerConfig
     pub marker_fsm: MarkerFsm,
 }
 
@@ -370,23 +374,6 @@ impl App {
         let mut state = *self.marker_fsm.state();
         state.selection = selection;
         self.marker_fsm = MarkerFsm::from_state(state);
-    }
-
-    /// Reload the FSM's config field from the current `preview.markers`.
-    ///
-    /// Call this after any in-place mutation of `preview.markers` so
-    /// that FSM-driven reads (selection cycle, etc.) see fresh data.
-    /// During Plan 04 Task 5c the edit methods will dispatch through
-    /// the FSM directly and this helper goes away.
-    fn sync_fsm_from_preview(&mut self) {
-        let cfg = self
-            .preview
-            .as_ref()
-            .and_then(|p| p.markers)
-            .unwrap_or_else(crate::engine::bext::MarkerConfig::empty);
-        let _ = self
-            .marker_fsm
-            .consume(crate::engine::marker_fsm::Input::LoadConfig(cfg));
     }
 
     /// Install a pre-computed similarity-ranked result list.
@@ -791,11 +778,17 @@ impl App {
         self.search_in_progress = false;
     }
 
-    /// Handle preview data arrival.
-    pub fn on_preview_ready(&mut self, data: PreviewData) {
-        let cfg = data
-            .markers
-            .unwrap_or_else(crate::engine::bext::MarkerConfig::empty);
+    /// Handle preview data arrival. `markers` is the config parsed from the
+    /// file's BEXT chunk (or `None` when the file has no v2 header) and is
+    /// loaded into the FSM as a fresh [`Input::LoadConfig`] — always, even
+    /// when `None`, so a new preview resets stale state from the previous
+    /// file.
+    pub fn on_preview_ready(
+        &mut self,
+        data: PreviewData,
+        markers: Option<crate::engine::bext::MarkerConfig>,
+    ) {
+        let cfg = markers.unwrap_or_else(crate::engine::bext::MarkerConfig::empty);
         let _ = self
             .marker_fsm
             .consume(crate::engine::marker_fsm::Input::LoadConfig(cfg));
@@ -1053,15 +1046,17 @@ impl App {
         self.status_message_time = Some(std::time::Instant::now());
     }
 
-    /// Get current markers from preview/row, or generate duration-aware defaults.
+    /// Get current markers from the FSM (post-LoadConfig merges of preview
+    /// and row data) or generate duration-aware defaults when the FSM
+    /// config is empty.
     pub fn current_markers_or_default(&self) -> crate::engine::bext::MarkerConfig {
-        // 1. Check preview.
-        if let Some(ref preview) = self.preview
-            && let Some(m) = preview.markers
-        {
-            return m;
+        // 1. FSM has markers — source of truth.
+        let cfg = self.marker_fsm.config();
+        if !cfg.is_empty() {
+            return *cfg;
         }
-        // 2. Check selected row.
+        // 2. Fall through to the selected row's markers if FSM is empty
+        //    (e.g. tests that populate results but skip the preview path).
         if let Some(row) = self.results.get(self.selected)
             && let Some(m) = row.markers
         {
@@ -1104,10 +1099,10 @@ impl App {
         match result {
             Ok(()) => {
                 self.set_status(format!("Markers saved to {}", path.display()));
-                // Update preview markers and FSM to reflect what was written.
-                if let Some(ref mut preview) = self.preview {
-                    preview.markers = Some(markers);
-                }
+                // Re-LoadConfig so the FSM's config reflects what was just
+                // persisted (no-op when `save_markers` saved the FSM's own
+                // config, but matters when it resolved via the fallback in
+                // `current_markers_or_default`).
                 let _ = self
                     .marker_fsm
                     .consume(crate::engine::marker_fsm::Input::LoadConfig(markers));
@@ -1157,23 +1152,15 @@ impl App {
         self.set_status(format!("Global loop {state}"));
     }
 
-    /// Get a mutable reference to the active bank's MarkerBank within preview markers.
-    /// Returns None if no preview or no markers.
-    fn active_bank_mut(&mut self) -> Option<&mut crate::engine::bext::MarkerBank> {
-        let active = self.active_bank();
-        let markers = self.preview.as_mut()?.markers.as_mut()?;
-        match active {
-            Bank::A => Some(&mut markers.bank_a),
-            Bank::B => Some(&mut markers.bank_b),
-        }
-    }
-
-    /// Get the active bank from preview markers (immutable).
-    fn active_bank_ref(&self) -> Option<&crate::engine::bext::MarkerBank> {
-        let markers = self.preview.as_ref()?.markers.as_ref()?;
+    /// Get the active bank from the FSM's config (immutable).
+    ///
+    /// Returns a reference even when the bank is empty — callers should
+    /// use [`crate::engine::bext::MarkerBank::is_empty`] to detect that.
+    fn active_bank_ref(&self) -> &crate::engine::bext::MarkerBank {
+        let cfg = self.marker_fsm.config();
         match self.active_bank() {
-            Bank::A => Some(&markers.bank_a),
-            Bank::B => Some(&markers.bank_b),
+            Bank::A => &cfg.bank_a,
+            Bank::B => &cfg.bank_b,
         }
     }
 
@@ -1202,26 +1189,24 @@ impl App {
         None
     }
 
-    /// Ensure preview has markers (initialize from defaults if needed).
+    /// Ensure the FSM has markers (install a duration-aware preset when
+    /// the config is empty). No-op when markers already exist.
     fn ensure_markers(&mut self) {
-        let cfg_to_install = self.preview.as_ref().and_then(|p| {
-            if p.markers.is_some() {
-                return None;
-            }
-            let total = p.audio_info.as_ref().map(|ai| ai.total_samples);
-            Some(match total {
-                Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
-                _ => crate::engine::bext::MarkerConfig::preset_shot(),
-            })
-        });
-        if let Some(cfg) = cfg_to_install {
-            if let Some(ref mut preview) = self.preview {
-                preview.markers = Some(cfg);
-            }
-            let _ = self
-                .marker_fsm
-                .consume(crate::engine::marker_fsm::Input::LoadConfig(cfg));
+        if !self.marker_fsm.config().is_empty() {
+            return;
         }
+        let total = self
+            .preview
+            .as_ref()
+            .and_then(|p| p.audio_info.as_ref())
+            .map(|ai| ai.total_samples);
+        let cfg = match total {
+            Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
+            _ => crate::engine::bext::MarkerConfig::preset_shot(),
+        };
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::LoadConfig(cfg));
     }
 
     /// Set marker at index (0=m1, 1=m2, 2=m3) to current playback position.
@@ -1240,17 +1225,14 @@ impl App {
 
         self.ensure_markers();
 
-        // Apply to active bank (and mirror if bank_sync is on).
-        if self.bank_sync() {
-            if let Some(ref mut preview) = self.preview
-                && let Some(ref mut markers) = preview.markers
-            {
-                Self::set_bank_marker(&mut markers.bank_a, index, snapped);
-                Self::set_bank_marker(&mut markers.bank_b, index, snapped);
-            }
-        } else if let Some(bank) = self.active_bank_mut() {
-            Self::set_bank_marker(bank, index, snapped);
-        }
+        use crate::engine::marker_fsm::Input;
+        let input = match index {
+            0 => Input::SetMarker1(snapped),
+            1 => Input::SetMarker2(snapped),
+            2 => Input::SetMarker3(snapped),
+            _ => return,
+        };
+        let _ = self.marker_fsm.consume(input);
 
         let bank_label = if self.bank_sync() {
             "A+B"
@@ -1260,18 +1242,7 @@ impl App {
                 Bank::B => "B",
             }
         };
-        self.sync_fsm_from_preview();
         self.set_status(format!("Marker {} set (bank {bank_label})", index + 1));
-    }
-
-    /// Helper: set a marker value on a MarkerBank.
-    fn set_bank_marker(bank: &mut crate::engine::bext::MarkerBank, index: usize, sample: u32) {
-        match index {
-            0 => bank.m1 = sample,
-            1 => bank.m2 = sample,
-            2 => bank.m3 = sample,
-            _ => {}
-        }
     }
 
     /// Snap a sample position to the nearest zero-crossing in the audio file.
@@ -1322,36 +1293,25 @@ impl App {
             }
         };
 
-        // Find nearest marker index using active bank.
-        let nearest_idx = {
-            let bank = match self.active_bank_ref() {
-                Some(b) => b,
-                None => {
-                    self.set_status("No markers".to_string());
-                    return;
-                }
-            };
-            let markers = [bank.m1, bank.m2, bank.m3];
-            markers
-                .iter()
-                .enumerate()
-                .filter(|&(_, &v)| v != crate::engine::bext::MARKER_EMPTY)
-                .min_by_key(|&(_, &v)| (v as i64 - sample as i64).unsigned_abs())
-                .map(|(idx, _)| idx)
-        };
+        // Capture the active bank BEFORE dispatch so the status message
+        // reports which slot the FSM cleared.
+        let bank_before = *self.active_bank_ref();
+        if bank_before.is_empty() {
+            self.set_status("No markers".to_string());
+            return;
+        }
+        let markers = [bank_before.m1, bank_before.m2, bank_before.m3];
+        let nearest_idx = markers
+            .iter()
+            .enumerate()
+            .filter(|&(_, &v)| v != crate::engine::bext::MARKER_EMPTY)
+            .min_by_key(|&(_, &v)| (v as i64 - sample as i64).unsigned_abs())
+            .map(|(idx, _)| idx);
 
         if let Some(idx) = nearest_idx {
-            let empty = crate::engine::bext::MARKER_EMPTY;
-            if self.bank_sync() {
-                if let Some(ref mut preview) = self.preview
-                    && let Some(ref mut markers) = preview.markers
-                {
-                    Self::set_bank_marker(&mut markers.bank_a, idx, empty);
-                    Self::set_bank_marker(&mut markers.bank_b, idx, empty);
-                }
-            } else if let Some(bank) = self.active_bank_mut() {
-                Self::set_bank_marker(bank, idx, empty);
-            }
+            let _ = self
+                .marker_fsm
+                .consume(crate::engine::marker_fsm::Input::ClearNearestMarker(sample));
             let bank_label = if self.bank_sync() {
                 "A+B"
             } else {
@@ -1360,7 +1320,6 @@ impl App {
                     Bank::B => "B",
                 }
             };
-            self.sync_fsm_from_preview();
             self.set_status(format!("Marker {} cleared (bank {bank_label})", idx + 1));
         } else {
             self.set_status("No markers to clear".to_string());
@@ -1369,33 +1328,23 @@ impl App {
 
     /// Clear all markers in the active bank (or both if synced).
     fn clear_bank_markers(&mut self) {
-        if self.bank_sync() {
-            let cleared = if let Some(ref mut preview) = self.preview
-                && let Some(ref mut markers) = preview.markers
-            {
-                markers.bank_a = crate::engine::bext::MarkerBank::empty();
-                markers.bank_b = crate::engine::bext::MarkerBank::empty();
-                true
-            } else {
-                false
-            };
-            if cleared {
-                self.sync_fsm_from_preview();
-                self.set_status("Banks A+B cleared".to_string());
-            } else {
-                self.set_status("No markers".to_string());
-            }
-        } else if let Some(bank) = self.active_bank_mut() {
-            *bank = crate::engine::bext::MarkerBank::empty();
+        if self.marker_fsm.config().is_empty() {
+            self.set_status("No markers".to_string());
+            return;
+        }
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::ClearBankMarkers);
+        let status = if self.bank_sync() {
+            "Banks A+B cleared".to_string()
+        } else {
             let bank_label = match self.active_bank() {
                 Bank::A => "A",
                 Bank::B => "B",
             };
-            self.sync_fsm_from_preview();
-            self.set_status(format!("Bank {bank_label} cleared"));
-        } else {
-            self.set_status("No markers".to_string());
-        }
+            format!("Bank {bank_label} cleared")
+        };
+        self.set_status(status);
     }
 
     /// Determine which segment (0-3) the playback cursor is in.
@@ -1424,16 +1373,23 @@ impl App {
     ///
     /// Uses `selected_marker` when set (same pattern as `toggle_infinite_loop`),
     /// falling back to the playback cursor position or segment 0 when stopped.
+    /// When the selection is `None`, we set the FSM's selection to the
+    /// resolved segment index before dispatching IncrementRep/DecrementRep
+    /// — the FSM-level rep helpers key off `state.selection`.
     fn adjust_rep(&mut self, delta: i8) {
         let seg = match self.selected_marker() {
             Some(idx) => idx, // selected_marker: 0=SOF→seg0, 1=m1→seg1, etc.
             None => match self.current_segment_index() {
-                Some(s) if s < 4 => s,
+                Some(s) if s < 4 => {
+                    self.set_selected_marker(Some(s));
+                    s
+                }
                 None => {
                     if self.segments().is_empty() {
                         self.set_status("No segments".to_string());
                         return;
                     }
+                    self.set_selected_marker(Some(0));
                     0
                 }
                 _ => {
@@ -1445,43 +1401,24 @@ impl App {
 
         self.ensure_markers();
 
-        if self.bank_sync() {
-            let updated = if let Some(ref mut preview) = self.preview
-                && let Some(ref mut markers) = preview.markers
-            {
-                let cur = markers.bank_a.reps[seg];
-                let new_val = (cur as i16 + delta as i16).clamp(0, 15) as u8;
-                markers.bank_a.reps[seg] = new_val;
-                markers.bank_b.reps[seg] = new_val;
-                Some(new_val)
-            } else {
-                None
-            };
-            if let Some(new_val) = updated {
-                let label = if new_val == 15 {
-                    "inf".to_string()
-                } else {
-                    format!("{new_val}")
-                };
-                self.sync_fsm_from_preview();
-                self.set_status(format!("Segment {} rep: {label}", seg + 1));
-            } else {
-                self.set_status("No markers".to_string());
-            }
-        } else if let Some(bank) = self.active_bank_mut() {
-            let current = bank.reps[seg];
-            let new_val = (current as i16 + delta as i16).clamp(0, 15) as u8;
-            bank.reps[seg] = new_val;
-            let label = if new_val == 15 {
-                "inf".to_string()
-            } else {
-                format!("{new_val}")
-            };
-            self.sync_fsm_from_preview();
-            self.set_status(format!("Segment {} rep: {label}", seg + 1));
+        use crate::engine::marker_fsm::Input;
+        let input = if delta >= 0 {
+            Input::IncrementRep
         } else {
-            self.set_status("No markers".to_string());
+            Input::DecrementRep
+        };
+        for _ in 0..delta.unsigned_abs() {
+            let _ = self.marker_fsm.consume(input.clone());
         }
+
+        let bank = self.active_bank_ref();
+        let new_val = bank.reps[seg];
+        let label = if new_val == 15 {
+            "inf".to_string()
+        } else {
+            format!("{new_val}")
+        };
+        self.set_status(format!("Segment {} rep: {label}", seg + 1));
     }
 
     /// Get segments for the active bank. Always returns exactly 4 segments,
@@ -1491,11 +1428,7 @@ impl App {
             Some(t) if t > 0 => t,
             _ => return Vec::new(),
         };
-        let bank = match self.active_bank_ref() {
-            Some(b) => b,
-            None => return Vec::new(),
-        };
-        segment_bounds(bank, total)
+        segment_bounds(self.active_bank_ref(), total)
     }
 
     /// Play full program: all non-skipped, non-reverse segments with repetitions.
@@ -1511,13 +1444,11 @@ impl App {
     /// other reps are non-zero.
     fn play_program(&mut self) {
         // Sentinel: when the active bank has all reps == 0, play through the
-        // whole file as a single segment (ignoring markers entirely).
-        // None means "markers not loaded yet" — also fall through to whole-file
-        // playback rather than attempting segment-program with missing data.
-        let no_program_markers = match self.active_bank_ref() {
-            Some(b) => b.reps == [0u8; 4],
-            None => true, // no markers loaded — whole-file playback
-        };
+        // whole file as a single segment (ignoring markers entirely). An empty
+        // FSM bank (default state with no LoadConfig yet) also lands here
+        // because its reps are [0,0,0,0] — matches the old "markers not loaded
+        // yet → whole-file playback" fallback.
+        let no_program_markers = self.active_bank_ref().reps == [0u8; 4];
 
         if no_program_markers {
             if let Some(row) = self.results.get(self.selected) {
@@ -1988,20 +1919,17 @@ impl App {
         let sample = match idx {
             0 => 0u32,
             1..=3 => {
-                if let Some(bank) = self.active_bank_ref() {
-                    let val = match idx {
-                        1 => bank.m1,
-                        2 => bank.m2,
-                        3 => bank.m3,
-                        _ => return,
-                    };
-                    if val == crate::engine::bext::MARKER_EMPTY {
-                        return;
-                    }
-                    val
-                } else {
+                let bank = self.active_bank_ref();
+                let val = match idx {
+                    1 => bank.m1,
+                    2 => bank.m2,
+                    3 => bank.m3,
+                    _ => return,
+                };
+                if val == crate::engine::bext::MARKER_EMPTY {
                     return;
                 }
+                val
             }
             _ => return,
         };
@@ -2036,35 +1964,13 @@ impl App {
 
         self.ensure_markers();
 
-        if self.bank_sync() {
-            let updated = if let Some(ref mut preview) = self.preview
-                && let Some(ref mut markers) = preview.markers
-            {
-                let cur = markers.bank_a.reps[seg];
-                let new_val = if cur == 15 { 1 } else { 15 };
-                markers.bank_a.reps[seg] = new_val;
-                markers.bank_b.reps[seg] = new_val;
-                Some(new_val)
-            } else {
-                None
-            };
-            if let Some(new_val) = updated {
-                let label = if new_val == 15 { "inf" } else { "1" };
-                self.sync_fsm_from_preview();
-                self.set_status(format!("Segment {} rep: {label}", seg + 1));
-            } else {
-                self.set_status("No markers".to_string());
-            }
-        } else if let Some(bank) = self.active_bank_mut() {
-            let cur = bank.reps[seg];
-            let new_val = if cur == 15 { 1 } else { 15 };
-            bank.reps[seg] = new_val;
-            let label = if new_val == 15 { "inf" } else { "1" };
-            self.sync_fsm_from_preview();
-            self.set_status(format!("Segment {} rep: {label}", seg + 1));
-        } else {
-            self.set_status("No markers".to_string());
-        }
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::ToggleInfiniteLoop);
+
+        let new_val = self.active_bank_ref().reps[seg];
+        let label = if new_val == 15 { "inf" } else { "1" };
+        self.set_status(format!("Segment {} rep: {label}", seg + 1));
     }
 
     // --- T8: Preview Loop Toggle ---
@@ -2086,6 +1992,10 @@ impl App {
     // --- T9: Nudge Markers ---
 
     /// Nudge the selected marker by N zero-crossings in a direction.
+    ///
+    /// Computes the new absolute sample via zero-crossing search (audio-domain
+    /// data the FSM doesn't own), then dispatches `SetSelectedMarker(pos)` so
+    /// the FSM updates the right slot (and mirrors under `bank_sync`).
     fn nudge_marker(&mut self, forward: bool, n: u32) {
         let sel = match self.selected_marker() {
             Some(s) if s >= 1 => s, // SOF (0) is not nudgeable.
@@ -2099,20 +2009,16 @@ impl App {
             }
         };
 
-        let current_sample = {
-            let bank = match self.active_bank_ref() {
-                Some(b) => b,
-                None => {
-                    self.set_status("No markers".to_string());
-                    return;
-                }
-            };
-            match sel {
-                1 => bank.m1,
-                2 => bank.m2,
-                3 => bank.m3,
-                _ => return,
-            }
+        let bank = self.active_bank_ref();
+        if bank.is_empty() {
+            self.set_status("No markers".to_string());
+            return;
+        }
+        let current_sample = match sel {
+            1 => bank.m1,
+            2 => bank.m2,
+            3 => bank.m3,
+            _ => return,
         };
         if current_sample == crate::engine::bext::MARKER_EMPTY {
             self.set_status("Marker not set".to_string());
@@ -2129,19 +2035,13 @@ impl App {
         };
 
         self.ensure_markers();
-        if self.bank_sync() {
-            if let Some(ref mut preview) = self.preview
-                && let Some(ref mut markers) = preview.markers
-            {
-                Self::set_bank_marker(&mut markers.bank_a, sel - 1, new_sample);
-                Self::set_bank_marker(&mut markers.bank_b, sel - 1, new_sample);
-            }
-        } else if let Some(bank) = self.active_bank_mut() {
-            Self::set_bank_marker(bank, sel - 1, new_sample);
-        }
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::SetSelectedMarker(
+                new_sample,
+            ));
 
         let dir = if forward { "→" } else { "←" };
-        self.sync_fsm_from_preview();
         self.set_status(format!("Marker {sel} nudged {dir} to {new_sample}"));
     }
 
@@ -2193,17 +2093,15 @@ impl App {
             }
         };
 
-        let current_sample = {
-            let bank = match self.active_bank_ref() {
-                Some(b) => b,
-                None => return,
-            };
-            match sel {
-                1 => bank.m1,
-                2 => bank.m2,
-                3 => bank.m3,
-                _ => return,
-            }
+        let bank = self.active_bank_ref();
+        if bank.is_empty() {
+            return;
+        }
+        let current_sample = match sel {
+            1 => bank.m1,
+            2 => bank.m2,
+            3 => bank.m3,
+            _ => return,
         };
         if current_sample == crate::engine::bext::MARKER_EMPTY {
             self.set_status("Marker not set".to_string());
@@ -2219,25 +2117,24 @@ impl App {
         };
 
         self.ensure_markers();
-        if self.bank_sync() {
-            if let Some(ref mut preview) = self.preview
-                && let Some(ref mut markers) = preview.markers
-            {
-                Self::set_bank_marker(&mut markers.bank_a, sel - 1, new_sample);
-                Self::set_bank_marker(&mut markers.bank_b, sel - 1, new_sample);
-            }
-        } else if let Some(bank) = self.active_bank_mut() {
-            Self::set_bank_marker(bank, sel - 1, new_sample);
-        }
+        let _ = self
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::SetSelectedMarker(
+                new_sample,
+            ));
 
         let dir = if forward { "→" } else { "←" };
-        self.sync_fsm_from_preview();
         self.set_status(format!("Marker {sel} snapped {dir} to ZC {new_sample}"));
     }
 
     // --- T11: Marker Reset ---
 
     /// Reset markers to category-based preset, snapped to zero-crossings.
+    ///
+    /// Uses [`Input::LoadConfig`] rather than [`Input::MarkerReset`] because
+    /// we want zero-crossing snapping applied to the preset positions (an
+    /// audio-domain concern the FSM doesn't have access to) before the
+    /// config lands in state.
     fn marker_reset(&mut self) {
         let total_samples = match self.total_samples() {
             Some(t) if t > 0 => t,
@@ -2264,10 +2161,6 @@ impl App {
             }
         }
 
-        // Overwrite both banks regardless of sync state.
-        if let Some(ref mut preview) = self.preview {
-            preview.markers = Some(preset);
-        }
         let _ = self
             .marker_fsm
             .consume(crate::engine::marker_fsm::Input::LoadConfig(preset));
@@ -2277,6 +2170,9 @@ impl App {
     // --- T12: CSV Export/Import ---
 
     /// Export markers to a CSV file (<filename>.markers.csv).
+    ///
+    /// Dispatches [`Input::ExportMarkersCsv`] so the FSM emits
+    /// [`Output::WriteCsv`]; the App performs the actual file I/O.
     fn export_markers_csv(&mut self) {
         let row = match self.results.get(self.selected) {
             Some(r) => r,
@@ -2287,6 +2183,15 @@ impl App {
         };
         let markers = self.current_markers_or_default();
         let csv_path = row.meta.path.with_extension("markers.csv");
+
+        use crate::engine::marker_fsm::{Input, Output};
+        let Some(Output::WriteCsv(out_path)) = self
+            .marker_fsm
+            .consume(Input::ExportMarkersCsv(csv_path.clone()))
+        else {
+            self.set_status("Export failed: FSM produced no output".to_string());
+            return;
+        };
 
         let mut lines = String::new();
         lines.push_str("bank,m1,m2,m3,r1,r2,r3,r4\n");
@@ -2299,13 +2204,17 @@ impl App {
         lines.push_str(&fmt_bank(&markers.bank_a, "A"));
         lines.push_str(&fmt_bank(&markers.bank_b, "B"));
 
-        match std::fs::write(&csv_path, &lines) {
-            Ok(()) => self.set_status(format!("Exported to {}", csv_path.display())),
+        match std::fs::write(&out_path, &lines) {
+            Ok(()) => self.set_status(format!("Exported to {}", out_path.display())),
             Err(e) => self.set_status(format!("Export failed: {e}")),
         }
     }
 
     /// Import markers from a CSV file (<filename>.markers.csv).
+    ///
+    /// Dispatches [`Input::ImportMarkersCsv`] so the FSM emits
+    /// [`Output::ReadCsv`]; the App performs file I/O and parses, then
+    /// dispatches [`Input::LoadConfig`] to install the result.
     fn import_markers_csv(&mut self) {
         let row = match self.results.get(self.selected) {
             Some(r) => r,
@@ -2316,7 +2225,16 @@ impl App {
         };
         let csv_path = row.meta.path.with_extension("markers.csv");
 
-        let content = match std::fs::read_to_string(&csv_path) {
+        use crate::engine::marker_fsm::{Input, Output};
+        let Some(Output::ReadCsv(in_path)) = self
+            .marker_fsm
+            .consume(Input::ImportMarkersCsv(csv_path.clone()))
+        else {
+            self.set_status("Import failed: FSM produced no output".to_string());
+            return;
+        };
+
+        let content = match std::fs::read_to_string(&in_path) {
             Ok(c) => c,
             Err(e) => {
                 self.set_status(format!("Import failed: {e}"));
@@ -2363,13 +2281,8 @@ impl App {
             bank_b: bank_b.unwrap_or_else(crate::engine::bext::MarkerBank::empty),
         };
 
-        if let Some(ref mut preview) = self.preview {
-            preview.markers = Some(config);
-        }
-        let _ = self
-            .marker_fsm
-            .consume(crate::engine::marker_fsm::Input::LoadConfig(config));
-        self.set_status(format!("Imported from {}", csv_path.display()));
+        let _ = self.marker_fsm.consume(Input::LoadConfig(config));
+        self.set_status(format!("Imported from {}", in_path.display()));
     }
 
     // --- T13: Reverse Playback ---
@@ -2479,22 +2392,17 @@ impl App {
             self.selected_marker()
                 .filter(|&i| i > 0)
                 .and_then(|i| {
-                    self.preview
-                        .as_ref()
-                        .and_then(|p| p.markers.as_ref())
-                        .map(|mc| {
-                            let bank = if self.active_bank() == Bank::A {
-                                mc.bank_a
-                            } else {
-                                mc.bank_b
-                            };
-                            match i {
-                                1 => bank.m1,
-                                2 => bank.m2,
-                                _ => bank.m3,
-                            }
-                        })
-                        .filter(|&m| m != crate::engine::bext::MARKER_EMPTY)
+                    let bank = self.active_bank_ref();
+                    let m = match i {
+                        1 => bank.m1,
+                        2 => bank.m2,
+                        _ => bank.m3,
+                    };
+                    if m == crate::engine::bext::MARKER_EMPTY {
+                        None
+                    } else {
+                        Some(m)
+                    }
                 })
                 .unwrap_or(playhead_sample)
         } else {
@@ -3136,13 +3044,15 @@ pub async fn run_tui(opts: crate::engine::cli::Opts) -> anyhow::Result<()> {
                 .await
                 .unwrap_or(None);
 
-                app.on_preview_ready(PreviewData {
-                    metadata: row.meta,
-                    peaks: peaks.unwrap_or_default(),
-                    audio_info,
-                    markers: row.markers,
-                    pcm,
-                });
+                app.on_preview_ready(
+                    PreviewData {
+                        metadata: row.meta,
+                        peaks: peaks.unwrap_or_default(),
+                        audio_info,
+                        pcm,
+                    },
+                    row.markers,
+                );
             }
         }
 
@@ -3484,16 +3394,18 @@ mod tests {
     fn test_played_not_populated_on_preview() {
         let mut app = App::new(Theme::default());
         let path = std::path::PathBuf::from("/test/kick.wav");
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata {
-                path: path.clone(),
-                ..Default::default()
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata {
+                    path: path.clone(),
+                    ..Default::default()
+                },
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
             },
-            peaks: vec![],
-            audio_info: None,
-            markers: None,
-            pcm: None,
-        });
+            None,
+        );
         assert!(
             !app.played.contains(&path),
             "preview should not add to played set"
@@ -4389,32 +4301,6 @@ mod tests {
     // --- S9-T6 tests: Store markers in App state ---
 
     #[test]
-    fn test_preview_data_with_markers() {
-        let markers = crate::engine::bext::MarkerConfig::preset_shot();
-        let preview = PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        };
-        assert!(preview.markers.is_some());
-        assert_eq!(preview.markers.unwrap(), markers);
-    }
-
-    #[test]
-    fn test_preview_data_no_markers() {
-        let preview = PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: None,
-            pcm: None,
-        };
-        assert!(preview.markers.is_none());
-    }
-
-    #[test]
     fn test_table_row_carries_markers() {
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
         let row = TableRow {
@@ -4429,52 +4315,58 @@ mod tests {
     }
 
     #[test]
-    fn test_on_preview_ready_carries_markers() {
+    fn test_on_preview_ready_loads_markers_into_fsm() {
         let mut app = App::new(Theme::default());
         let markers = crate::engine::bext::MarkerConfig::preset_shot();
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata {
-                path: std::path::PathBuf::from("/test/marker.wav"),
-                ..Default::default()
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/marker.wav"),
+                    ..Default::default()
+                },
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
             },
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        });
+            Some(markers),
+        );
         assert!(app.preview.is_some());
-        assert_eq!(app.preview.unwrap().markers, Some(markers));
+        assert_eq!(*app.marker_fsm.config(), markers);
     }
 
     #[test]
-    fn test_preview_markers_cleared_on_new_preview() {
+    fn test_fsm_markers_cleared_on_new_preview() {
         let mut app = App::new(Theme::default());
         // Set up a preview with markers.
         let markers = crate::engine::bext::MarkerConfig::preset_shot();
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata {
-                path: std::path::PathBuf::from("/test/marker.wav"),
-                ..Default::default()
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/marker.wav"),
+                    ..Default::default()
+                },
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
             },
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        });
-        assert!(app.preview.as_ref().unwrap().markers.is_some());
+            Some(markers),
+        );
+        assert!(!app.marker_fsm.config().is_empty());
 
         // Overwrite with a preview that has no markers.
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata {
-                path: std::path::PathBuf::from("/test/no_marker.wav"),
-                ..Default::default()
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/no_marker.wav"),
+                    ..Default::default()
+                },
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
             },
-            peaks: vec![],
-            audio_info: None,
-            markers: None,
-            pcm: None,
-        });
-        assert!(app.preview.as_ref().unwrap().markers.is_none());
+            None,
+        );
+        assert!(app.marker_fsm.config().is_empty());
     }
 
     // --- S9-T9 tests: SaveMarkers action ---
@@ -4491,16 +4383,18 @@ mod tests {
     fn test_current_markers_or_default_uses_existing() {
         let mut app = App::new(Theme::default());
         let custom = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata {
-                path: std::path::PathBuf::from("/test/marker.wav"),
-                ..Default::default()
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/marker.wav"),
+                    ..Default::default()
+                },
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
             },
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(custom),
-            pcm: None,
-        });
+            Some(custom),
+        );
         assert_eq!(app.current_markers_or_default(), custom);
     }
 
@@ -4545,19 +4439,21 @@ mod tests {
     fn test_default_preset_loop_for_long_file() {
         let mut app = App::new(Theme::default());
         // Preview with audio_info showing 5 seconds at 48kHz = 240000 samples.
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 240_000,
-                duration_secs: 5.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: None,
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 240_000,
+                    duration_secs: 5.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            None,
+        );
         let markers = app.current_markers_or_default();
         let expected = crate::engine::bext::MarkerConfig::preset_loop(240000);
         assert_eq!(markers, expected, "5s file should get preset_loop");
@@ -4567,19 +4463,21 @@ mod tests {
     fn test_default_preset_shot_for_short_file() {
         let mut app = App::new(Theme::default());
         // Preview with audio_info showing 0.5 seconds.
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 24_000,
-                duration_secs: 0.5,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: None,
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 24_000,
+                    duration_secs: 0.5,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            None,
+        );
         let markers = app.current_markers_or_default();
         assert_eq!(
             markers,
@@ -4609,44 +4507,46 @@ mod tests {
     }
 
     #[test]
-    fn test_active_bank_mut_returns_correct_bank() {
+    fn test_active_bank_ref_returns_correct_bank() {
         let mut app = App::new(Theme::default());
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            Some(markers),
+        );
         // Bank A is default.
-        let bank_a = app.active_bank_mut().unwrap();
-        assert_eq!(bank_a.m1, 12000);
+        assert_eq!(app.active_bank_ref().m1, 12000);
 
         // Toggle to Bank B and verify.
         app.toggle_bank_sync();
         app.toggle_bank();
-        let bank_b = app.active_bank_mut().unwrap();
-        assert_eq!(bank_b.m1, 12000); // preset_loop has synced banks
+        assert_eq!(app.active_bank_ref().m1, 12000); // preset_loop has synced banks
     }
 
     #[test]
-    fn test_active_bank_mut_none_without_preview() {
-        let mut app = App::new(Theme::default());
-        assert!(app.active_bank_mut().is_none());
+    fn test_active_bank_ref_empty_without_preview() {
+        let app = App::new(Theme::default());
+        assert!(app.active_bank_ref().is_empty());
     }
 
     #[test]
-    fn test_active_bank_mut_none_without_markers() {
+    fn test_active_bank_ref_empty_without_markers() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: None,
-            pcm: None,
-        });
-        assert!(app.active_bank_mut().is_none());
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            None,
+        );
+        assert!(app.active_bank_ref().is_empty());
     }
 
     #[test]
@@ -4654,19 +4554,21 @@ mod tests {
         let mut app = App::new(Theme::default());
         assert!(app.total_samples().is_none());
 
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 48_000,
-                duration_secs: 1.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: None,
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 48_000,
+                    duration_secs: 1.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            None,
+        );
         assert_eq!(app.total_samples(), Some(48000));
     }
 
@@ -4675,26 +4577,26 @@ mod tests {
     #[test]
     fn test_ensure_markers_initializes_when_none() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 240_000,
-                duration_secs: 5.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: None,
-            pcm: None,
-        });
-        assert!(app.preview.as_ref().unwrap().markers.is_none());
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 240_000,
+                    duration_secs: 5.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            None,
+        );
+        assert!(app.marker_fsm.config().is_empty());
         app.ensure_markers();
-        assert!(app.preview.as_ref().unwrap().markers.is_some());
-        let markers = app.preview.as_ref().unwrap().markers.unwrap();
         // 5s @ 48kHz = 240000 samples → preset_loop
         assert_eq!(
-            markers,
+            *app.marker_fsm.config(),
             crate::engine::bext::MarkerConfig::preset_loop(240000)
         );
     }
@@ -4703,15 +4605,17 @@ mod tests {
     fn test_ensure_markers_preserves_existing() {
         let mut app = App::new(Theme::default());
         let custom = crate::engine::bext::MarkerConfig::preset_shot();
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(custom),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            Some(custom),
+        );
         app.ensure_markers();
-        assert_eq!(app.preview.as_ref().unwrap().markers, Some(custom));
+        assert_eq!(*app.marker_fsm.config(), custom);
     }
 
     // --- S10-T5 tests: Clear bank markers ---
@@ -4720,16 +4624,18 @@ mod tests {
     fn test_clear_bank_markers() {
         let mut app = App::new(Theme::default());
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            Some(markers),
+        );
         // With bank_sync=true (default), clears both banks.
         app.clear_bank_markers();
-        let bank_a = app.active_bank_ref().unwrap();
+        let bank_a = app.active_bank_ref();
         assert!(bank_a.is_empty());
         assert_eq!(app.status_message.as_deref(), Some("Banks A+B cleared"));
     }
@@ -4739,15 +4645,17 @@ mod tests {
         let mut app = App::new(Theme::default());
         app.toggle_bank_sync();
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            Some(markers),
+        );
         app.clear_bank_markers();
-        let bank_a = app.active_bank_ref().unwrap();
+        let bank_a = app.active_bank_ref();
         assert!(bank_a.is_empty());
         assert_eq!(app.status_message.as_deref(), Some("Bank A cleared"));
     }
@@ -4769,19 +4677,21 @@ mod tests {
         markers.bank_a.m1 = 12000;
         markers.bank_a.m2 = 24000;
         markers.bank_a.m3 = 36000;
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 48_000,
-                duration_secs: 1.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: Some(markers),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 48_000,
+                    duration_secs: 1.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            Some(markers),
+        );
         let segs = app.segments();
         assert_eq!(segs.len(), 4);
         assert_eq!((segs[0].start, segs[0].end), (0, 12000));
@@ -4800,22 +4710,24 @@ mod tests {
     #[test]
     fn test_segments_empty_markers() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 48_000,
-                duration_secs: 1.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: Some(crate::engine::bext::MarkerConfig {
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 48_000,
+                    duration_secs: 1.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            Some(crate::engine::bext::MarkerConfig {
                 bank_a: crate::engine::bext::MarkerBank::empty(),
                 bank_b: crate::engine::bext::MarkerBank::empty(),
             }),
-            pcm: None,
-        });
+        );
         let segs = app.segments();
         // Always exactly 4 segments. EMPTY markers collapse to zero-length.
         assert_eq!(segs.len(), 4);
@@ -5173,19 +5085,21 @@ mod tests {
         let mut app = App::new(Theme::default());
         // When stopped, marker edits should work (no guard).
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 48_000,
-                duration_secs: 1.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: Some(markers),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 48_000,
+                    duration_secs: 1.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            Some(markers),
+        );
         // Dispatch a marker edit when stopped — should not be guarded.
         app.dispatch(Action::ClearBankMarkers);
         // Should have cleared (not "Stop playback to edit markers").
@@ -5250,13 +5164,15 @@ mod tests {
     fn test_select_next_marker_cycles() {
         let mut app = App::new(Theme::default());
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            Some(markers),
+        );
         // Should have SOF + m1 + m2 + m3 = 4 markers.
         app.select_next_marker(); // 0 → 0 (starts from beginning)
         assert_eq!(app.selected_marker(), Some(0));
@@ -5277,13 +5193,15 @@ mod tests {
         // ensure_markers() must be called so defaults are created.
         let mut app = App::new(Theme::default());
         // Provide a preview with NO markers (simulates a file with no BEXT cue data).
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: None, // <-- the key: no markers yet
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            None, // <-- the key: no markers yet
+        );
         // Before the fix: only SOF was navigable (defined_marker_indices returns [0]).
         // After the fix: ensure_markers() creates defaults, so m1/m2/m3 are reachable.
         app.select_next_marker(); // SOF (0)
@@ -5300,13 +5218,15 @@ mod tests {
     fn test_select_prev_marker_initializes_default_markers_when_none() {
         // Same as above but for select_prev_marker().
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: None,
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            None,
+        );
         // After ensure_markers() initializes defaults, prev from SOF wraps to m3.
         app.select_prev_marker(); // SOF → m3 (wrap)
         assert_eq!(app.selected_marker(), Some(3));
@@ -5326,21 +5246,23 @@ mod tests {
     fn test_toggle_infinite_loop() {
         let mut app = App::new(Theme::default());
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            Some(markers),
+        );
         app.set_selected_marker(Some(0));
         app.toggle_infinite_loop();
         // Segment 0 should now have rep=15.
-        let bank = app.active_bank_ref().unwrap();
+        let bank = app.active_bank_ref();
         assert_eq!(bank.reps[0], 15);
         // Toggle back.
         app.toggle_infinite_loop();
-        let bank = app.active_bank_ref().unwrap();
+        let bank = app.active_bank_ref();
         assert_eq!(bank.reps[0], 1);
     }
 
@@ -5365,27 +5287,28 @@ mod tests {
     #[test]
     fn test_marker_reset() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 240_000,
-                duration_secs: 5.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: None,
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 240_000,
+                    duration_secs: 5.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            None,
+        );
         app.marker_reset();
         assert_eq!(
             app.status_message.as_deref(),
             Some("Markers reset to preset")
         );
         // Should have markers now.
-        let markers = app.preview.as_ref().unwrap().markers.as_ref().unwrap();
-        assert!(!markers.bank_a.is_empty());
+        assert!(!app.marker_fsm.config().bank_a.is_empty());
     }
 
     // --- Sprint 13 B1 fix: marker_reset always uses preset_loop ---
@@ -5395,30 +5318,32 @@ mod tests {
         // B1: marker_reset should use 25%/50%/75% for both LOOP and SHOT samples.
         let total = 240_000u32; // 5s @ 48kHz
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata {
-                // Category does NOT contain "loop" — this is a SHOT sample.
-                category: "SHOT".to_string(),
-                ..UnifiedMetadata::default()
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata {
+                    // Category does NOT contain "loop" — this is a SHOT sample.
+                    category: "SHOT".to_string(),
+                    ..UnifiedMetadata::default()
+                },
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 240_000,
+                    duration_secs: 5.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
             },
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 240_000,
-                duration_secs: 5.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: None,
-            pcm: None,
-        });
+            None,
+        );
         app.marker_reset();
-        let markers = app.preview.as_ref().unwrap().markers.as_ref().unwrap();
+        let cfg = app.marker_fsm.config();
         // Should be quarter points (preset_loop), not all-zero (preset_shot).
         let expected = crate::engine::bext::MarkerConfig::preset_loop(total);
-        assert_eq!(markers.bank_a.m1, expected.bank_a.m1, "m1 should be at 25%");
-        assert_eq!(markers.bank_a.m2, expected.bank_a.m2, "m2 should be at 50%");
-        assert_eq!(markers.bank_a.m3, expected.bank_a.m3, "m3 should be at 75%");
+        assert_eq!(cfg.bank_a.m1, expected.bank_a.m1, "m1 should be at 25%");
+        assert_eq!(cfg.bank_a.m2, expected.bank_a.m2, "m2 should be at 50%");
+        assert_eq!(cfg.bank_a.m3, expected.bank_a.m3, "m3 should be at 75%");
     }
 
     // --- Sprint 13 B2 fix: SeekForwardLarge/BackwardLarge redirects to nudge when marker selected ---
@@ -5431,19 +5356,21 @@ mod tests {
         app.cursor_sample = 0;
         // Set up a preview with markers so nudge has something to work with.
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 48_000,
-                duration_secs: 1.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: Some(markers),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 48_000,
+                    duration_secs: 1.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            Some(markers),
+        );
         // Select marker 1 (non-SOF).
         app.set_selected_marker(Some(1));
         // SeekForwardLarge with a marker selected should NOT update cursor_sample.
@@ -5460,19 +5387,21 @@ mod tests {
         // B2: with no marker selected, SeekForwardLarge/BackwardLarge should still seek.
         let mut app = App::new(Theme::default());
         app.cursor_sample = 0;
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 240_000,
-                duration_secs: 5.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: None,
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 240_000,
+                    duration_secs: 5.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
+            },
+            None,
+        );
         app.set_selected_marker(None); // No marker selected.
         app.dispatch(actions::Action::SeekForwardLarge);
         // cursor_sample should have advanced by scrub_large * sample_rate.
@@ -5538,7 +5467,6 @@ mod tests {
             },
             peaks: vec![],
             audio_info: None,
-            markers: None,
             pcm: None,
         });
         app
@@ -5689,28 +5617,32 @@ mod tests {
             sim: None,
         }];
         let markers = crate::engine::bext::MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata {
-                path: wav_path.clone(),
-                ..Default::default()
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata {
+                    path: wav_path.clone(),
+                    ..Default::default()
+                },
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
             },
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        });
+            Some(markers),
+        );
 
         app.export_markers_csv();
         assert!(csv_path.exists(), "CSV file should be created");
 
-        // Modify markers in memory, then import.
-        if let Some(ref mut preview) = app.preview {
-            preview.markers = Some(crate::engine::bext::MarkerConfig::preset_shot());
-        }
+        // Modify markers in memory via FSM, then import.
+        let _ = app
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::LoadConfig(
+                crate::engine::bext::MarkerConfig::preset_shot(),
+            ));
 
         app.import_markers_csv();
         // Should match original.
-        let imported = app.preview.as_ref().unwrap().markers.as_ref().unwrap();
+        let imported = app.marker_fsm.config();
         assert_eq!(imported.bank_a.m1, 12000);
         assert_eq!(imported.bank_a.m2, 24000);
         assert_eq!(imported.bank_a.m3, 36000);
@@ -5786,7 +5718,6 @@ mod tests {
                 bit_depth: 16,
                 channels: 1,
             }),
-            markers: None,
             pcm: Some(PcmData { samples }),
         }
     }
@@ -5795,13 +5726,15 @@ mod tests {
     fn test_zoom_in_requires_pcm() {
         // Without PCM, zoom_in must refuse.
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![128u8; 360],
-            audio_info: None,
-            markers: None,
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![128u8; 360],
+                audio_info: None,
+                pcm: None,
+            },
+            None,
+        );
         app.zoom_in();
         assert_eq!(app.zoom_level, 0, "level unchanged when pcm is None");
         assert_eq!(
@@ -5813,7 +5746,7 @@ mod tests {
     #[test]
     fn test_zoom_in_increments_level() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.on_preview_ready(preview_with_pcm(48000, 1.0), None);
         app.zoom_in();
         assert_eq!(app.zoom_level, 1);
         assert_eq!(app.status_message.as_deref(), Some("Zoom 2×"));
@@ -5823,7 +5756,7 @@ mod tests {
     fn test_zoom_in_populates_zoom_peaks() {
         use crate::engine::wav::NUM_ZOOM_COLS;
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.on_preview_ready(preview_with_pcm(48000, 1.0), None);
         assert!(
             app.zoom_peaks.is_empty(),
             "zoom_peaks should be empty before first zoom"
@@ -5840,7 +5773,7 @@ mod tests {
     #[test]
     fn test_zoom_out_decrements_level() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.on_preview_ready(preview_with_pcm(48000, 1.0), None);
         app.zoom_in();
         assert_eq!(app.zoom_level, 1);
         app.zoom_out();
@@ -5851,7 +5784,7 @@ mod tests {
     #[test]
     fn test_zoom_out_clears_zoom_peaks_at_level_0() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.on_preview_ready(preview_with_pcm(48000, 1.0), None);
         app.zoom_in();
         assert!(!app.zoom_peaks.is_empty());
         app.zoom_out();
@@ -5865,7 +5798,7 @@ mod tests {
     #[test]
     fn test_zoom_out_at_level_0_noop() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.on_preview_ready(preview_with_pcm(48000, 1.0), None);
         app.zoom_out();
         assert_eq!(app.zoom_level, 0);
         assert_eq!(app.status_message.as_deref(), Some("Already at full view"));
@@ -5874,7 +5807,7 @@ mod tests {
     #[test]
     fn test_zoom_reset_returns_to_zero() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.on_preview_ready(preview_with_pcm(48000, 1.0), None);
         app.zoom_in();
         app.zoom_in();
         assert_eq!(app.zoom_level, 2);
@@ -5890,7 +5823,7 @@ mod tests {
     #[test]
     fn test_zoom_blocked_at_max_level() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.on_preview_ready(preview_with_pcm(48000, 1.0), None);
         for _ in 0..crate::engine::wav::MAX_ZOOM_LEVEL {
             app.zoom_in();
         }
@@ -5911,7 +5844,7 @@ mod tests {
     #[test]
     fn test_zoom_resets_on_file_change() {
         let mut app = make_app_with_results(3);
-        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.on_preview_ready(preview_with_pcm(48000, 1.0), None);
         app.zoom_in();
         assert_eq!(app.zoom_level, 1);
         app.move_selection(1);
@@ -5923,7 +5856,7 @@ mod tests {
     #[test]
     fn test_zoom_in_multiple_steps_increase_level() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(preview_with_pcm(48000, 2.0));
+        app.on_preview_ready(preview_with_pcm(48000, 2.0), None);
         app.zoom_in();
         app.zoom_in();
         assert_eq!(app.zoom_level, 2);
@@ -5939,8 +5872,7 @@ mod tests {
         let total = p.pcm.as_ref().unwrap().samples.len() as u32;
         // Put marker 2 at the 75% point.
         let m2_pos = (total as f64 * 0.75) as u32;
-        let mut preview = p;
-        preview.markers = Some(MarkerConfig {
+        let markers = MarkerConfig {
             bank_a: MarkerBank {
                 m1: total / 4,
                 m2: m2_pos,
@@ -5948,8 +5880,8 @@ mod tests {
                 reps: [1, 1, 0, 1],
             },
             bank_b: MarkerBank::empty(),
-        });
-        app.on_preview_ready(preview);
+        };
+        app.on_preview_ready(p, Some(markers));
         app.set_selected_marker(Some(2)); // select marker 2
         app.zoom_in();
         // zoom_center should be at marker 2's position.
@@ -5963,7 +5895,7 @@ mod tests {
     #[test]
     fn test_zoom_in_falls_back_to_playhead_when_no_marker_selected() {
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(preview_with_pcm(48000, 1.0));
+        app.on_preview_ready(preview_with_pcm(48000, 1.0), None);
         app.set_selected_marker(None);
         // No playback active, so position_fraction() == 0.0.
         app.zoom_in();
@@ -5986,22 +5918,24 @@ mod tests {
             },
             bank_b: MarkerBank::empty(),
         };
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata {
-                path: std::path::PathBuf::from("/test/reps.wav"),
-                ..Default::default()
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata {
+                    path: std::path::PathBuf::from("/test/reps.wav"),
+                    ..Default::default()
+                },
+                peaks: vec![0u8; 360],
+                audio_info: Some(crate::engine::wav::AudioInfo {
+                    total_samples: 48_000,
+                    duration_secs: 1.0,
+                    sample_rate: 48000,
+                    bit_depth: 16,
+                    channels: 1,
+                }),
+                pcm: None,
             },
-            peaks: vec![0u8; 360],
-            audio_info: Some(crate::engine::wav::AudioInfo {
-                total_samples: 48_000,
-                duration_secs: 1.0,
-                sample_rate: 48000,
-                bit_depth: 16,
-                channels: 1,
-            }),
-            markers: Some(markers),
-            pcm: None,
-        });
+            Some(markers),
+        );
         app
     }
 
@@ -6010,25 +5944,9 @@ mod tests {
         let mut app = app_with_preview_and_markers();
         // selected_marker = Some(0) means SOF (segment 0).
         app.set_selected_marker(Some(0));
-        let initial = app
-            .preview
-            .as_ref()
-            .unwrap()
-            .markers
-            .as_ref()
-            .unwrap()
-            .bank_a
-            .reps[0];
+        let initial = app.marker_fsm.config().bank_a.reps[0];
         app.dispatch(actions::Action::IncrementRep);
-        let after = app
-            .preview
-            .as_ref()
-            .unwrap()
-            .markers
-            .as_ref()
-            .unwrap()
-            .bank_a
-            .reps[0];
+        let after = app.marker_fsm.config().bank_a.reps[0];
         assert_eq!(
             after,
             (initial + 1).min(15),
@@ -6041,25 +5959,9 @@ mod tests {
         let mut app = app_with_preview_and_markers();
         // selected_marker = Some(2) means marker 2 → segment 2.
         app.set_selected_marker(Some(2));
-        let initial = app
-            .preview
-            .as_ref()
-            .unwrap()
-            .markers
-            .as_ref()
-            .unwrap()
-            .bank_a
-            .reps[2];
+        let initial = app.marker_fsm.config().bank_a.reps[2];
         app.dispatch(actions::Action::IncrementRep);
-        let after = app
-            .preview
-            .as_ref()
-            .unwrap()
-            .markers
-            .as_ref()
-            .unwrap()
-            .bank_a
-            .reps[2];
+        let after = app.marker_fsm.config().bank_a.reps[2];
         assert_eq!(
             after,
             (initial + 1).min(15),
@@ -6069,25 +5971,30 @@ mod tests {
 
     #[test]
     fn test_decrement_rep_uses_selected_marker_1() {
+        use crate::engine::bext::{MarkerBank, MarkerConfig};
+        use crate::engine::marker_fsm::Input;
         let mut app = app_with_preview_and_markers();
-        // Bump rep[1] to 3 so decrement is clearly visible.
-        if let Some(ref mut p) = app.preview
-            && let Some(ref mut mc) = p.markers
-        {
-            mc.bank_a.reps[1] = 3;
-        }
+        // Bump rep[1] to 3 so decrement is clearly visible. Both banks
+        // because bank_sync=true (default).
+        let bumped = MarkerConfig {
+            bank_a: MarkerBank {
+                m1: 12000,
+                m2: 24000,
+                m3: 36000,
+                reps: [1, 3, 1, 1],
+            },
+            bank_b: MarkerBank {
+                m1: 12000,
+                m2: 24000,
+                m3: 36000,
+                reps: [1, 3, 1, 1],
+            },
+        };
+        let _ = app.marker_fsm.consume(Input::LoadConfig(bumped));
         app.set_selected_marker(Some(1));
         let initial = 3u8;
         app.dispatch(actions::Action::DecrementRep);
-        let after = app
-            .preview
-            .as_ref()
-            .unwrap()
-            .markers
-            .as_ref()
-            .unwrap()
-            .bank_a
-            .reps[1];
+        let after = app.marker_fsm.config().bank_a.reps[1];
         assert_eq!(
             after,
             initial - 1,
@@ -6097,25 +6004,25 @@ mod tests {
 
     #[test]
     fn test_rep_does_not_affect_wrong_segment_when_marker_selected() {
+        use crate::engine::bext::{MarkerBank, MarkerConfig};
+        use crate::engine::marker_fsm::Input;
         // The old bug: reps always modified segment 3 regardless of selected_marker.
         let mut app = app_with_preview_and_markers();
-        // Set all reps to 2.
-        if let Some(ref mut p) = app.preview
-            && let Some(ref mut mc) = p.markers
-        {
-            mc.bank_a.reps = [2, 2, 2, 2];
-        }
+        // Set all reps to 2 on both banks (bank_sync=true).
+        let bank = MarkerBank {
+            m1: 12000,
+            m2: 24000,
+            m3: 36000,
+            reps: [2, 2, 2, 2],
+        };
+        let seeded = MarkerConfig {
+            bank_a: bank,
+            bank_b: bank,
+        };
+        let _ = app.marker_fsm.consume(Input::LoadConfig(seeded));
         app.set_selected_marker(Some(0)); // target segment 0
         app.dispatch(actions::Action::IncrementRep);
-        let reps = app
-            .preview
-            .as_ref()
-            .unwrap()
-            .markers
-            .as_ref()
-            .unwrap()
-            .bank_a
-            .reps;
+        let reps = app.marker_fsm.config().bank_a.reps;
         assert_eq!(reps[0], 3, "segment 0 should have increased");
         assert_eq!(reps[1], 2, "segment 1 should be unchanged");
         assert_eq!(reps[2], 2, "segment 2 should be unchanged");
@@ -6132,35 +6039,27 @@ mod tests {
         use crate::engine::bext::MarkerConfig;
         let mut app = App::new(Theme::default());
         let markers = MarkerConfig::preset_loop(48000);
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![],
-            audio_info: None,
-            markers: Some(markers),
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![],
+                audio_info: None,
+                pcm: None,
+            },
+            Some(markers),
+        );
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert!(!app.markers_visible());
-        // Marker data must survive the toggle.
-        let still_has_markers = app
-            .preview
-            .as_ref()
-            .and_then(|p| p.markers.as_ref())
-            .is_some();
+        // Marker data must survive the toggle (FSM config unchanged).
         assert!(
-            still_has_markers,
+            !app.marker_fsm.config().is_empty(),
             "marker data preserved when display is toggled off"
         );
         // Toggle back on — data still present.
         app.dispatch(actions::Action::ToggleMarkerDisplay);
         assert!(app.markers_visible());
-        let still_has_markers2 = app
-            .preview
-            .as_ref()
-            .and_then(|p| p.markers.as_ref())
-            .is_some();
         assert!(
-            still_has_markers2,
+            !app.marker_fsm.config().is_empty(),
             "marker data preserved after toggle back on"
         );
     }
@@ -6206,28 +6105,20 @@ mod tests {
         // Cycle selected_marker through 0→1→2→3 and increment at each step.
         // Assert each reps[i] changes exactly once.
         let mut app = app_with_preview_and_markers();
-        // Initialize all reps to 1.
-        if let Some(ref mut p) = app.preview
-            && let Some(ref mut mc) = p.markers
-        {
-            mc.bank_a.reps = [1, 1, 1, 1];
-            mc.bank_b.reps = [1, 1, 1, 1];
-        }
+        // Initialize all reps to 1 via FSM.
+        let mut cfg = *app.marker_fsm.config();
+        cfg.bank_a.reps = [1, 1, 1, 1];
+        cfg.bank_b.reps = [1, 1, 1, 1];
+        let _ = app
+            .marker_fsm
+            .consume(crate::engine::marker_fsm::Input::LoadConfig(cfg));
 
         for idx in 0..4 {
             app.set_selected_marker(Some(idx));
             app.adjust_rep(1);
         }
 
-        let reps = app
-            .preview
-            .as_ref()
-            .unwrap()
-            .markers
-            .as_ref()
-            .unwrap()
-            .bank_a
-            .reps;
+        let reps = app.marker_fsm.config().bank_a.reps;
         assert_eq!(
             reps[0], 2,
             "segment 0 rep should be 2 after increment at idx 0"
@@ -6270,13 +6161,15 @@ mod tests {
     fn test_zoom_in_no_path_shows_error() {
         // Without a selected result (no path), zoom_in should show "No audio data for zoom".
         let mut app = App::new(Theme::default());
-        app.on_preview_ready(PreviewData {
-            metadata: UnifiedMetadata::default(),
-            peaks: vec![128u8; 360],
-            audio_info: None,
-            markers: None,
-            pcm: None,
-        });
+        app.on_preview_ready(
+            PreviewData {
+                metadata: UnifiedMetadata::default(),
+                peaks: vec![128u8; 360],
+                audio_info: None,
+                pcm: None,
+            },
+            None,
+        );
         // app.results is empty → no path to load PCM from.
         app.zoom_in();
         assert_eq!(

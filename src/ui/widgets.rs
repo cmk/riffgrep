@@ -723,10 +723,8 @@ pub fn render_waveform_panel(app: &App, area: Rect, buf: &mut Buffer) {
     }
 
     // Marker lines and segment labels overlay (gated by markers_visible).
-    if app.markers_visible()
-        && let Some(markers) = &preview.markers
-        && !markers.is_empty()
-    {
+    let markers = app.marker_fsm.config();
+    if app.markers_visible() && !markers.is_empty() {
         let total_samples = preview
             .audio_info
             .as_ref()
@@ -1453,7 +1451,6 @@ mod tests {
             },
             peaks: vec![128u8; 180],
             audio_info: None,
-            markers: None,
             pcm: None,
         });
         app.results = vec![default_table_row()];
@@ -1497,7 +1494,6 @@ mod tests {
                 bit_depth: 16,
                 channels: 2,
             }),
-            markers: None,
             pcm: None,
         });
         app.results = vec![default_table_row()];
@@ -1524,7 +1520,6 @@ mod tests {
             },
             peaks: vec![128u8; 180],
             audio_info: None,
-            markers: None,
             pcm: None,
         });
         app.results = vec![default_table_row()];
@@ -1781,7 +1776,6 @@ mod tests {
             },
             peaks: vec![128u8; 180],
             audio_info: None,
-            markers: None,
             pcm: None,
         });
         app.results = vec![default_table_row()];
@@ -2475,7 +2469,6 @@ mod tests {
             },
             peaks: vec![128u8; 180],
             audio_info: Some(audio_info),
-            markers: None,
             pcm: Some(pcm),
         });
         app.results = vec![default_table_row()];

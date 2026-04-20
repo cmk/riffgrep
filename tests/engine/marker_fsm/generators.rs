@@ -43,6 +43,7 @@ pub fn any_input(_state: &MarkerFsmState) -> BoxedStrategy<Input> {
         marker_reset_strategy(),
         Just(Input::IncrementRep),
         Just(Input::DecrementRep),
+        Just(Input::ToggleInfiniteLoop),
         Just(Input::ToggleMarkerDisplay),
         csv_export_strategy(),
         csv_import_strategy(),
@@ -68,6 +69,7 @@ pub fn transitions_no_sync_toggle(_state: &MarkerFsmState) -> BoxedStrategy<Inpu
         marker_reset_strategy(),
         Just(Input::IncrementRep),
         Just(Input::DecrementRep),
+        Just(Input::ToggleInfiniteLoop),
         Just(Input::ToggleMarkerDisplay),
     ]
     .boxed()
@@ -94,6 +96,7 @@ pub fn transitions_no_display_toggle(_state: &MarkerFsmState) -> BoxedStrategy<I
         marker_reset_strategy(),
         Just(Input::IncrementRep),
         Just(Input::DecrementRep),
+        Just(Input::ToggleInfiniteLoop),
     ]
     .boxed()
 }
