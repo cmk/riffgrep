@@ -2185,12 +2185,14 @@ impl App {
         let csv_path = row.meta.path.with_extension("markers.csv");
 
         use crate::engine::marker_fsm::{Input, Output};
-        let Some(Output::WriteCsv(out_path)) = self
+        let out_path = match self
             .marker_fsm
             .consume(Input::ExportMarkersCsv(csv_path.clone()))
-        else {
-            self.set_status("Export failed: FSM produced no output".to_string());
-            return;
+        {
+            Some(Output::WriteCsv(p)) => p,
+            other => unreachable!(
+                "marker_fsm contract: ExportMarkersCsv must yield Some(Output::WriteCsv(_)); got {other:?}"
+            ),
         };
 
         let mut lines = String::new();
@@ -2226,12 +2228,14 @@ impl App {
         let csv_path = row.meta.path.with_extension("markers.csv");
 
         use crate::engine::marker_fsm::{Input, Output};
-        let Some(Output::ReadCsv(in_path)) = self
+        let in_path = match self
             .marker_fsm
             .consume(Input::ImportMarkersCsv(csv_path.clone()))
-        else {
-            self.set_status("Import failed: FSM produced no output".to_string());
-            return;
+        {
+            Some(Output::ReadCsv(p)) => p,
+            other => unreachable!(
+                "marker_fsm contract: ImportMarkersCsv must yield Some(Output::ReadCsv(_)); got {other:?}"
+            ),
         };
 
         let content = match std::fs::read_to_string(&in_path) {
@@ -5189,8 +5193,9 @@ mod tests {
     #[test]
     fn test_select_next_marker_initializes_default_markers_when_none() {
         // Bug 1: without first playing the sample, marker navigation beyond SOF was
-        // impossible because preview.markers was None (no BEXT data in file).
-        // ensure_markers() must be called so defaults are created.
+        // impossible because the FSM's MarkerConfig was empty (no BEXT data in file and
+        // no LoadConfig dispatched). ensure_markers() must be called so defaults are
+        // created and committed to the FSM.
         let mut app = App::new(Theme::default());
         // Provide a preview with NO markers (simulates a file with no BEXT cue data).
         app.on_preview_ready(

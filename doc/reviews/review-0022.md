@@ -136,3 +136,100 @@ This is a public method (`pub fn on_preview_ready`). Callers in `run_tui` and te
 
 - Must-fix #1 (stale doc-comment): fixed in this branch; the `App.marker_fsm` doc-comment now states the FSM owns `MarkerConfig` as of Plan 05.
 - Follow-ups #2–#5 deferred for a future sprint — none block merge.
+
+<!-- gh-id: 3114097296 -->
+### Copilot on [`src/ui/mod.rs:2193`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114097296) (2026-04-20 22:53 UTC)
+
+`ExportMarkersCsv` always produces `Some(Output::WriteCsv(_))` in `marker_fsm` (see `MarkerBankMachine::output`), and the transition for this input is state-preserving. That makes the `else` branch here effectively unreachable and can mislead future readers into thinking export can fail at the FSM-dispatch step. Consider removing the `else` branch and treating a non-`WriteCsv`/`None` return as an invariant violation (e.g., `debug_assert!`/`unreachable!()`).
+```suggestion
+        let out_path = match self
+            .marker_fsm
+            .consume(Input::ExportMarkersCsv(csv_path.clone()))
+        {
+            Some(Output::WriteCsv(out_path)) => out_path,
+            other => {
+                debug_assert!(
+                    false,
+                    "ExportMarkersCsv must produce Some(Output::WriteCsv(_)); got {:?}",
+                    other
+                );
+                unreachable!(
+                    "ExportMarkersCsv must produce Some(Output::WriteCsv(_))"
+                );
+            }
+```
+
+<!-- gh-id: 3114097314 -->
+### Copilot on [`src/ui/mod.rs:2234`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114097314) (2026-04-20 22:53 UTC)
+
+Same issue as export: `ImportMarkersCsv` deterministically yields `Some(Output::ReadCsv(_))` from the FSM, so the `else` branch (“FSM produced no output”) should be unreachable under the current `marker_fsm` contract. Consider removing this branch or making it an invariant check so the control flow reflects reality.
+```suggestion
+            unreachable!(
+                "marker_fsm contract violated: ImportMarkersCsv must produce Some(Output::ReadCsv(_))"
+            );
+```
+
+<!-- gh-id: 3114097323 -->
+### Copilot on [`src/engine/marker_fsm.rs:161`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114097323) (2026-04-20 22:53 UTC)
+
+This comment mentions “riffgrep's `Ctrl-L/K` nudge”, but the default key bindings for nudge are on arrow keys (Ctrl-Left/Right and Alt-Left/Right) while Ctrl-L is bound to marker selection. This mismatch makes the rationale harder to trust; consider removing the specific key chords or updating them to match `src/ui/actions.rs`.
+```suggestion
+    /// Not currently wired up from the UI — the current marker-nudge
+    /// path is zero-crossing based and dispatches
+```
+
+<!-- gh-id: 3114097341 -->
+### Copilot on [`doc/plans/plan-2026-04-19-02.md:32`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114097341) (2026-04-20 22:53 UTC)
+
+The plan claims the `#[allow(dead_code)]` on data-mutating `marker_fsm::Input` variants “comes off” because all variants have live callers, but the implementation keeps per-variant `#[allow(dead_code)]` for `NudgeForward`, `NudgeBackward`, and `MarkerReset`. Also, the `## Deferred` section says “None” even though these variants remain intentionally unused from the UI. Please update the plan to reflect the actual delivered state (and rationale).
+
+<!-- gh-id: 4143980423 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-20 22:53 UTC](https://github.com/cmk/riffgrep/pull/22#pullrequestreview-4143980423))
+
+## Pull request overview
+
+This PR completes the Plan 05 refactor to make `MarkerFsm` the single source of truth for marker configuration and routes all UI marker mutations through FSM inputs instead of mutating `preview` state directly.
+
+**Changes:**
+- Removed `PreviewData.markers` and updated preview loading to inject marker configs via `App::on_preview_ready(..., markers)` using `Input::LoadConfig`.
+- Routed marker mutation actions (set/clear/nudge/snap/reset/rep adjustments/CSV import-export) through `MarkerFsm::consume(Input::...)` and migrated UI reads to `app.marker_fsm.config()`.
+- Extended the FSM with `Input::ToggleInfiniteLoop`, plus updated generators and unit tests to cover it.
+
+### Reviewed changes
+
+Copilot reviewed 6 out of 6 changed files in this pull request and generated 6 comments.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| tests/engine/marker_fsm/generators.rs | Adds `ToggleInfiniteLoop` into proptest input generators to exercise the new transition. |
+| src/ui/widgets.rs | Switches waveform marker overlay to read marker config from `marker_fsm` instead of `preview`. |
+| src/ui/mod.rs | Removes `PreviewData.markers`, updates preview readiness API, rewires all marker edits/CSV I/O through FSM dispatch, and migrates tests to read from `marker_fsm.config()`. |
+| src/engine/marker_fsm.rs | Introduces `Input::ToggleInfiniteLoop`, implements its state transition, and adds unit tests. |
+| doc/reviews/review-0022.md | Adds a local review record for the Plan 05 changes. |
+| doc/plans/plan-2026-04-19-02.md | Adds the Plan 05 implementation plan document. |
+</details>
+
+
+
+
+
+
+<!-- gh-id: 3114097350 -->
+### Copilot on [`doc/plans/plan-2026-04-19-02.md:45`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114097350) (2026-04-20 22:53 UTC)
+
+Task 1’s mapping says `nudge_marker` should dispatch `Input::NudgeForward/Backward` and `marker_reset` should dispatch `Input::MarkerReset`, but the PR intentionally uses `SetSelectedMarker` (after ZC search) and `LoadConfig` (after ZC-snapped preset). To avoid the plan becoming misleading reference material, update these bullets to match the chosen approach (or add a note explaining the divergence).
+```suggestion
+- `nudge_marker(forward, n)` → run the zero-crossing search in UI,
+  then dispatch `Input::SetSelectedMarker(zc)`
+- `snap_zero_crossing(forward)` → `Input::SetSelectedMarker(zc)`
+- `marker_reset()` → build the zero-crossing-snapped reset preset,
+  then dispatch `Input::LoadConfig(config)`
+```
+
+<!-- gh-id: 3114097360 -->
+### Copilot on [`src/ui/mod.rs:5193`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114097360) (2026-04-20 22:53 UTC)
+
+This test comment still refers to `preview.markers`, but that field has been removed in this PR. Updating the comment to refer to the FSM state (e.g., empty `marker_fsm.config()` before `ensure_markers()`) will keep the test rationale accurate.
