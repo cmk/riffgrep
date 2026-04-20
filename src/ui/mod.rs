@@ -1190,16 +1190,17 @@ impl App {
     }
 
     /// Ensure the FSM has markers (install a duration-aware preset when
-    /// the config is empty). No-op when markers already exist.
+    /// the config is empty). No-op when markers already exist or when
+    /// no preview is loaded — we don't seed marker state into an empty
+    /// app.
     fn ensure_markers(&mut self) {
         if !self.marker_fsm.config().is_empty() {
             return;
         }
-        let total = self
-            .preview
-            .as_ref()
-            .and_then(|p| p.audio_info.as_ref())
-            .map(|ai| ai.total_samples);
+        let Some(preview) = self.preview.as_ref() else {
+            return;
+        };
+        let total = preview.audio_info.as_ref().map(|ai| ai.total_samples);
         let cfg = match total {
             Some(s) if s >= 2 * 48000 => crate::engine::bext::MarkerConfig::preset_loop(s),
             _ => crate::engine::bext::MarkerConfig::preset_shot(),
