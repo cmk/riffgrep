@@ -130,15 +130,6 @@ const INITIAL_STATE: MarkerFsmState = MarkerFsmState {
 /// file total for reset bounds) take that data as input payload rather
 /// than holding it in state — keeps the FSM pure.
 ///
-/// The data-mutating variants (SetMarkerN, ClearNearestMarker,
-/// ClearBankMarkers, NudgeForward/Backward, MarkerReset,
-/// IncrementRep, DecrementRep, ExportMarkersCsv, ImportMarkersCsv,
-/// SetSelectedMarker) are dispatched today only by the property suite
-/// and unit tests; App still mutates preview.markers in place and
-/// sync the result with LoadConfig. Plan 04 Task 5c completes the
-/// carve-out by routing those dispatches through here, at which
-/// point the allow below comes off.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     /// Set marker 1 to the given absolute sample position.
@@ -165,11 +156,27 @@ pub enum Input {
     ClearBankMarkers,
     /// Nudge the selected marker forward by `delta` samples
     /// ([`u32::saturating_add`], capped at [`MAX_MARKER_POS`]).
+    ///
+    /// Not currently wired up from the UI — riffgrep's `Ctrl-L/K`
+    /// nudge is zero-crossing based and dispatches
+    /// [`Input::SetSelectedMarker`] with the resolved ZC position. This
+    /// variant remains in the FSM API (covered by proptest) for a
+    /// future delta-nudge caller.
+    #[allow(dead_code)]
     NudgeForward(u32),
     /// Nudge the selected marker backward by `delta` samples
-    /// ([`u32::saturating_sub`], floored at 0).
+    /// ([`u32::saturating_sub`], floored at 0). See [`Input::NudgeForward`]
+    /// for why this is currently unused from the UI.
+    #[allow(dead_code)]
     NudgeBackward(u32),
     /// Reset bank markers to the 25/50/75 % layout between `sof` and `eof`.
+    ///
+    /// Not currently wired up from the UI — `marker_reset` pre-computes
+    /// zero-crossing-snapped positions in user space and dispatches
+    /// [`Input::LoadConfig`]. This variant remains in the FSM API
+    /// (covered by proptest) for future callers that want the pure
+    /// quartile layout without the ZC snap.
+    #[allow(dead_code)]
     MarkerReset {
         /// Start-of-file boundary (usually 0).
         sof: u32,
@@ -182,6 +189,10 @@ pub enum Input {
     /// Decrement the rep nibble for the segment indexed by the current
     /// selection (clamped at 0).
     DecrementRep,
+    /// Toggle the rep nibble for the segment indexed by the current
+    /// selection between 1 and [`REP_MAX`] (15). No-op when no marker
+    /// is selected. Mirrors under `bank_sync`.
+    ToggleInfiniteLoop,
     /// Flip `markers_visible`.
     ToggleMarkerDisplay,
     /// Emit a [`Output::WriteCsv`] descriptor; state unchanged.
@@ -215,6 +226,7 @@ impl Input {
                 | Input::MarkerReset { .. }
                 | Input::IncrementRep
                 | Input::DecrementRep
+                | Input::ToggleInfiniteLoop
         )
     }
 }
@@ -293,6 +305,7 @@ impl StateMachineImpl for MarkerBankMachine {
             }
             Input::IncrementRep => adjust_rep(&mut next, 1),
             Input::DecrementRep => adjust_rep(&mut next, -1),
+            Input::ToggleInfiniteLoop => toggle_infinite_rep(&mut next),
             Input::ToggleMarkerDisplay => {
                 next.visible = !next.visible;
                 // Flipping to hidden clears selection so the next time
@@ -458,6 +471,31 @@ fn adjust_rep(state: &mut MarkerFsmState, delta: i8) {
     }
 }
 
+fn toggle_infinite_rep(state: &mut MarkerFsmState) {
+    let seg = match state.selection {
+        Some(s) => s.as_index(),
+        None => return,
+    };
+    // Read the active bank's current rep to decide the toggle direction.
+    // Under bank_sync this matches bank_b by construction; without sync the
+    // active bank is the canonical reference.
+    let current = match state.active_bank {
+        Bank::A => state.config.bank_a.reps[seg],
+        Bank::B => state.config.bank_b.reps[seg],
+    };
+    let new = if current == REP_MAX { 1 } else { REP_MAX };
+    let apply = |bank: &mut MarkerBank| bank.reps[seg] = new;
+    if state.bank_sync {
+        apply(&mut state.config.bank_a);
+        apply(&mut state.config.bank_b);
+    } else {
+        match state.active_bank {
+            Bank::A => apply(&mut state.config.bank_a),
+            Bank::B => apply(&mut state.config.bank_b),
+        }
+    }
+}
+
 /// Direction for [`cycle_selection`].
 #[derive(Debug, Clone, Copy)]
 enum CycleDirection {
@@ -569,7 +607,6 @@ impl MarkerFsm {
     }
 
     /// Read-only access to both banks' marker data.
-    #[allow(dead_code)] // Consumed by Plan 04 Task 5c; read from tests today.
     pub fn config(&self) -> &MarkerConfig {
         &self.state().config
     }
@@ -980,6 +1017,53 @@ mod tests {
         };
         let _ = fsm.consume(Input::IncrementRep);
         assert_eq!(fsm.config().bank_a.reps[1], REP_MAX);
+    }
+
+    // ---------- toggle infinite loop ----------
+
+    #[test]
+    fn toggle_infinite_loop_flips_selected_seg_between_1_and_15() {
+        let mut fsm = with_bank_a(MarkerBank {
+            m1: 1_000,
+            m2: 2_000,
+            m3: 3_000,
+            reps: [1, 1, 1, 1],
+        });
+        let state = MarkerFsmState {
+            selection: Some(Selection::M2),
+            ..*fsm.state()
+        };
+        fsm = MarkerFsm {
+            machine: StateMachine::from_state(state),
+        };
+        let _ = fsm.consume(Input::ToggleInfiniteLoop);
+        assert_eq!(fsm.config().bank_a.reps, [1, 1, 15, 1]);
+        let _ = fsm.consume(Input::ToggleInfiniteLoop);
+        assert_eq!(fsm.config().bank_a.reps, [1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn toggle_infinite_loop_is_noop_without_selection() {
+        let mut fsm = MarkerFsm::new();
+        let before = *fsm.state();
+        let _ = fsm.consume(Input::ToggleInfiniteLoop);
+        assert_eq!(*fsm.state(), before);
+    }
+
+    #[test]
+    fn toggle_infinite_loop_mirrors_under_sync() {
+        let mut fsm = MarkerFsm::new();
+        assert!(fsm.bank_sync());
+        let state = MarkerFsmState {
+            selection: Some(Selection::Sof),
+            ..*fsm.state()
+        };
+        fsm = MarkerFsm {
+            machine: StateMachine::from_state(state),
+        };
+        let _ = fsm.consume(Input::ToggleInfiniteLoop);
+        assert_eq!(fsm.config().bank_a.reps[0], 15);
+        assert_eq!(fsm.config().bank_b.reps[0], 15);
     }
 
     // ---------- I/O outputs ----------
