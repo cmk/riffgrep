@@ -157,11 +157,11 @@ pub enum Input {
     /// Nudge the selected marker forward by `delta` samples
     /// ([`u32::saturating_add`], capped at [`MAX_MARKER_POS`]).
     ///
-    /// Not currently wired up from the UI — riffgrep's `Ctrl-L/K`
-    /// nudge is zero-crossing based and dispatches
-    /// [`Input::SetSelectedMarker`] with the resolved ZC position. This
-    /// variant remains in the FSM API (covered by proptest) for a
-    /// future delta-nudge caller.
+    /// Not currently wired up from the UI — the marker-nudge path is
+    /// zero-crossing based and dispatches [`Input::SetSelectedMarker`]
+    /// with the resolved ZC position. This variant remains in the FSM
+    /// API (covered by proptest) for a future delta-nudge caller. See
+    /// `src/ui/actions.rs` for the actual keybindings.
     #[allow(dead_code)]
     NudgeForward(u32),
     /// Nudge the selected marker backward by `delta` samples
