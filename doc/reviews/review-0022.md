@@ -233,3 +233,74 @@ Task 1’s mapping says `nudge_marker` should dispatch `Input::NudgeForward/Back
 ### Copilot on [`src/ui/mod.rs:5193`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114097360) (2026-04-20 22:53 UTC)
 
 This test comment still refers to `preview.markers`, but that field has been removed in this PR. Updating the comment to refer to the FSM state (e.g., empty `marker_fsm.config()` before `ensure_markers()`) will keep the test rationale accurate.
+
+<!-- gh-id: 3114128684 -->
+### Copilot on [`src/ui/mod.rs:1206`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114128684) (2026-04-20 23:03 UTC)
+
+`ensure_markers()` now installs a preset whenever the FSM config is empty, even if `self.preview` is `None` (no file/preview loaded). Since `SelectNextMarker`/`SelectPrevMarker` call `ensure_markers()` unconditionally, this can seed marker state in an otherwise empty app and make later marker actions behave as if markers exist without a preview context. Consider restoring the previous guard (return early when `self.preview.is_none()`) so presets are only installed once a preview is available (optionally still defaulting to `preset_shot()` when `audio_info` is missing).
+
+<!-- gh-id: 3114128701 -->
+### Copilot on [`src/ui/mod.rs:2194`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114128701) (2026-04-20 23:03 UTC)
+
+In `export_markers_csv`, the `else` branch for `consume(Input::ExportMarkersCsv(..))` looks unreachable with the current FSM: `MarkerBankMachine::output()` always returns `Some(Output::WriteCsv(..))` for this input and `transition()` always returns `Some(_)`, so `MarkerFsm::consume()` should never yield `None` here. Consider replacing this with an `expect`/`unreachable!()` (or removing the branch) to avoid carrying a misleading error path.
+
+<!-- gh-id: 3114128709 -->
+### Copilot on [`src/ui/mod.rs:2238`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114128709) (2026-04-20 23:03 UTC)
+
+Same as export: the `else` branch after `consume(Input::ImportMarkersCsv(..))` appears unreachable given the current FSM contract (`output()` always returns `Some(Output::ReadCsv(..))` for this input and `transition()` is infallible). Consider using `expect`/`unreachable!()` or returning the path directly from the UI without pattern-matching on `Option` to keep the control flow honest.
+```suggestion
+        let output = self
+            .marker_fsm
+            .consume(Input::ImportMarkersCsv(csv_path.clone()))
+            .expect("marker_fsm contract: ImportMarkersCsv must yield Some(Output::ReadCsv(_))");
+        let Output::ReadCsv(in_path) = output else {
+            unreachable!(
+                "marker_fsm contract: ImportMarkersCsv must yield Output::ReadCsv(_); got {output:?}"
+            )
+```
+
+<!-- gh-id: 4144024292 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-20 23:03 UTC](https://github.com/cmk/riffgrep/pull/22#pullrequestreview-4144024292))
+
+## Pull request overview
+
+Copilot reviewed 6 out of 6 changed files in this pull request and generated 4 comments.
+
+
+
+
+
+<!-- gh-id: 3114128725 -->
+### Copilot on [`doc/plans/plan-2026-04-19-02.md:33`](https://github.com/cmk/riffgrep/pull/22#discussion_r3114128725) (2026-04-20 23:03 UTC)
+
+Plan doc is now factually out of sync with the implementation in this PR: it states the `#[allow(dead_code)]` on data-mutating `marker_fsm::Input` variants comes off and that nothing is deferred, but the code keeps per-variant `#[allow(dead_code)]` on `NudgeForward`, `NudgeBackward`, and `MarkerReset` with rationale, and the UI dispatch paths use `SetSelectedMarker`/`LoadConfig` instead of the delta/quartile variants. Please update this plan to match what actually shipped (tasks and the "Deferred" section) so future readers aren’t misled.
+
+<!-- gh-id: 3114130330 -->
+#### ↳ cmk ([2026-04-20 23:03 UTC](https://github.com/cmk/riffgrep/pull/22#discussion_r3114130330))
+
+Addressed in da5fa05: replaced the dead else branch with an exhaustive match whose non-WriteCsv arms hit `unreachable!()`, documenting the FSM contract explicitly.
+
+<!-- gh-id: 3114130423 -->
+#### ↳ cmk ([2026-04-20 23:03 UTC](https://github.com/cmk/riffgrep/pull/22#discussion_r3114130423))
+
+Addressed in da5fa05: same pattern as the export path — exhaustive match on `Some(Output::ReadCsv(_))` with `unreachable!()` for any other variant.
+
+<!-- gh-id: 3114130546 -->
+#### ↳ cmk ([2026-04-20 23:03 UTC](https://github.com/cmk/riffgrep/pull/22#discussion_r3114130546))
+
+Addressed in da5fa05: removed the hard-coded "Ctrl-L/K" keybinding from the doc comment; now points readers to `src/ui/actions.rs` for the actual keybindings.
+
+<!-- gh-id: 3114130689 -->
+#### ↳ cmk ([2026-04-20 23:03 UTC](https://github.com/cmk/riffgrep/pull/22#discussion_r3114130689))
+
+Addressed in da5fa05: plan's Task 4 now notes that most `#[allow(dead_code)]` attrs come off but `NudgeForward`/`NudgeBackward`/`MarkerReset` stay. Deferred section documents the rationale (kept as FSM API surface, covered by proptest).
+
+<!-- gh-id: 3114130821 -->
+#### ↳ cmk ([2026-04-20 23:03 UTC](https://github.com/cmk/riffgrep/pull/22#discussion_r3114130821))
+
+Addressed in da5fa05: Task 1 mapping for `nudge_marker` now reflects the ZC-aware `Input::SetSelectedMarker` dispatch, and `marker_reset` maps to `Input::LoadConfig` with an App-built SOF+EOF config.
+
+<!-- gh-id: 3114130937 -->
+#### ↳ cmk ([2026-04-20 23:03 UTC](https://github.com/cmk/riffgrep/pull/22#discussion_r3114130937))
+
+Addressed in da5fa05: test comment now references the FSM's empty `MarkerConfig` and LoadConfig dispatch instead of the removed `preview.markers` field.
