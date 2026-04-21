@@ -148,6 +148,11 @@ Keep subjects under 72 characters. Use the body for non-obvious decisions.
 
 ## Two-tier review workflow
 
+`doc/workflow.md` has mermaid state diagrams for the review-round
+lifecycle and the `/watch-pr` loop — useful when debugging an
+unexpected situation (stuck fix commit, loop that won't quit). The
+prose below is authoritative; the diagrams are derived views.
+
 ### Tier 1 — Local review (pre-push)
 
 The coding agent makes atomic commits as it works. Each commit must pass
