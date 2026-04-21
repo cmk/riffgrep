@@ -12,15 +12,19 @@ command-line workflow.
 At the start of each conversation, ask the user:
 "Are any other Claude instances working in this repo right now?"
 
-If yes (or if the user says "work in a worktree"), create a git worktree
-before making any changes:
+If yes, a worktree is **mandatory** — see the TDD workflow's Step 1
+for the naming convention (`../<repo>.plan-YYYY-MM-DD-NN` + branch
+`plan/YYYY-MM-DD-NN`).
 
-```zsh
-git worktree add ../riffgrep-<task> -b <branch>
-```
-
-Never run two Claude instances in the same worktree — cargo target-dir
-locks and fd contention will break one or both sessions.
+Never run two Claude instances in the same worktree. Cargo takes a
+file lock on `target/` during each build, so concurrent builds stall
+behind each other ("Blocking waiting for file lock"). Separate
+worktrees each get their own `target/` and sidestep the lock —
+**unless** `CARGO_TARGET_DIR` is exported in your shell or
+`~/.cargo/config.toml` sets `[build] target-dir`, either of which
+forces every worktree to share one directory and reintroduces the
+lock. Verify with `cargo metadata --format-version 1 --no-deps | jq
+-r .target_directory` in two worktrees — different paths = safe.
 
 ## Architecture
 
@@ -71,7 +75,8 @@ src/
 ## Repository conventions
 
 - **Each commit must leave the repo in a state where `cargo test` passes.**
-  Never commit a red test suite. A pre-commit hook enforces this.
+  Do not commit a library module without the tests that cover it in the
+  same commit. Never commit a red test suite.
 - **No merge commits.** Always rebase onto main — never `git merge`. The
   history must be linear.
 - **CI-repair commits must be fixups.** If a commit on this branch broke
@@ -84,29 +89,59 @@ src/
   (addressing reviewer feedback from an earlier push) remain standalone
   so the audit trail survives.
 - **No unsafe code**: `unsafe_code = "forbid"` in Cargo.toml lints.
-- **Property-based testing is mandatory** for any module that parses,
-  encodes, or transforms data. Use `proptest` (dev-dep).
 - **Test fixtures**: tests that depend on fixture files must return early
   when the fixture is absent — do not `#[ignore]` and do not panic.
+- **Property-based testing is mandatory** for any module that parses,
+  encodes, or transforms data. Use `proptest` (dev-dep).
+  - Define strategies as functions returning `impl Strategy`, not
+    `Arbitrary` derive. Use `prop_oneof!` with frequency weights to
+    bias toward boundary values and edge cases.
+  - Properties that must hold for a sprint to ship are defined **in
+    the plan's Verification table** before any code is written.
+  - If a property test blocks progress during implementation, you may
+    `#[ignore]` it temporarily but **you must document it** in the
+    plan's Review section with the reason and a plan to re-enable.
+- **Use Rust's modern module layout.** If you have a specific reason why
+  you cannot then again **you must document it**. The modern layout does
+  not have a `mod.rs` file. The equivalent module sits one level up and
+  is named after the module directory:
+
+  ```
+  src/
+  ├── main.rs
+  ├── network.rs      <-- Defines 'network' module
+  └── network/
+      └── server.rs   <-- Submodule of 'network'
+  ```
 
 ### Session notes
 
 Session notes live in `doc/notes/note-YYYY-MM-DD-nn.md`. The final field
-`nn` is a counter that resets to 01 each day.
+`nn` is a counter that resets to 01 each day. `doc/notes/` is gitignored
+and holds the user's personal notes for the project. Agents may read
+from it for context but must not write to it unless explicitly asked.
 
 When the user says "print to notes", append the requested content to the
 current day's notes file. Create the file if it doesn't exist.
 
 ### Commit style
 
-Conventional commits, present-tense imperative subject:
+Conventional commits, present-tense imperative subject. Accepted prefixes:
+`plan`, `feat`, `fix`, `fmt`, `doc`, `test`, `task`, `debt`. Scopes are
+allowed (e.g. `doc(skills):`, `fix(scripts):`).
+
+- `plan:` lands a new plan doc in `doc/plans/` — always the first
+  commit on a `plan/YYYY-MM-DD-NN` branch.
+- `feat:` and the rest cover the implementation that follows.
 
 ```
+plan: Widget-format parser, sprint goals and verification table
 feat: Add parser for widget format
 fix: Handle timeout on reconnect
 test: Add round-trip property tests for codec
 doc: Append sprint completion report
 task: Add serde to dependencies
+debt: Remove dead handshake branch
 ```
 
 Keep subjects under 72 characters. Use the body for non-obvious decisions.
@@ -120,11 +155,17 @@ The coding agent makes atomic commits as it works. Each commit must pass
 `.claude/settings.json`). Commits can be as small as desired.
 
 Before pushing to GitHub, run `/sprint-review`. This spawns an independent
-reviewer agent that examines `git diff origin/main...HEAD` and the commit log. The
-reviewer flags must-fix issues and follow-ups. The review is appended to
-`doc/reviews/review-NNNN.md`, where `NNNN` is the zero-padded PR number
-for the branch (use `0000` as a placeholder pre-PR and rename once the PR
-is created).
+reviewer agent that examines `git diff origin/main...HEAD` and the commit
+log. The reviewer flags must-fix issues and follow-ups. The review is
+appended to `doc/reviews/review-NNNNN.md`, where `NNNNN` is the zero-padded
+number the branch's PR will receive.
+
+Pre-PR, `/sprint-review` predicts `NNNNN` by calling
+`scripts/next_pr_number.sh`, which queries the repo's highest existing
+issue/PR number via `gh api` and adds one (GitHub shares its numbering
+sequence between issues and PRs). The review file is born with its
+final name and never needs to be renamed. `review-00000.md` is a
+protected sentinel — real reviews start at `00001`.
 
 If must-fix items exist, resolve them before pushing. If the review is
 clean, push and create a PR.
@@ -137,51 +178,118 @@ review on the PR automatically.
 
 After GitHub review activity, run `/pull-reviews <N>` to fetch the PR's
 review bodies and inline comments and **append them chronologically to the
-same `doc/reviews/review-NNNN.md`** used by Tier 1. The skill is idempotent
-— it records `<!-- gh-id: NNNNN -->` markers for each appended item and
-skips any id already present, so running it repeatedly only appends new
-comments. The result is one file per PR containing the full local + GitHub
-review history in order.
+same `doc/reviews/review-NNNNN.md`** used by Tier 1. The command is
+idempotent — it records `<!-- gh-id: NNNNN -->` markers for each appended
+item and skips any id already present, so running it repeatedly only
+appends new comments. The result is one file per PR containing the full
+local + GitHub review history in order.
 
-Once the findings are addressed in a fix commit and pushed, run
-`/reply-reviews <N>` to post short replies to each unresolved comment
-thread on GitHub, citing the fix commit SHA. This closes the loop for
-the reviewer and leaves an audit trail linking each finding to its
-resolution. Re-running `/pull-reviews <N>` afterward mirrors the replies
-back into `review-NNNN.md`.
+Once the findings are addressed in a fix commit **locally (not yet
+pushed)**, run `/reply-reviews <N>`. The command does the whole round
+in order: posts replies to each unresolved thread, runs
+`scripts/pull_reviews.py` to mirror the replies into `review-NNNNN.md`,
+and `git commit --amend`s the mutated doc into the same fix commit. You
+then `git push` once — code + replies + review doc land in a single
+round trip.
 
-**Every PR ships `review-NNNN.md` in its git history.** Package it
-with a code commit — never a standalone `doc:` commit (that burns a
-CI cycle for zero code change).
+**Do not push before running `/reply-reviews`.** The amend-into-fix-commit
+step requires the commit to be unpushed. Pushing first strands the
+mirrored replies in the working tree and forces either a wasted `doc:`
+commit (extra CI round-trip) or a force-push (disallowed by
+`.claude/settings.local.json`'s deny list). `/reply-reviews` enforces
+this: it refuses to run if HEAD is not ahead of `origin/<branch>` while
+unreplied threads still exist.
 
-| Situation                                          | Where the review lands                                      |
-|----------------------------------------------------|-------------------------------------------------------------|
-| Tier 1 has must-fix items                          | Bundled into the fix commit                                 |
-| Tier 1 is clean (0 must-fix)                       | `git commit --amend` onto the last commit before pushing    |
-| Tier 2 round has findings to address               | Bundled into the fix commit                                 |
-| Tier 2 round is all push-back (no code changes)    | File stays uncommitted; next round's fix picks it up        |
-| Final push is clean, last round was all push-back  | `git commit --amend` onto the last commit before merge      |
-
-Invariant: no PR merges without `review-NNNN.md` in the branch. A
-"clean review" (Tier 1 with no findings) still ships; only a "no-op
-round" (Tier 2 all push-back between pushes) waits on disk, and only
-until the next code-changing commit or final amend.
+`/pull-reviews <N>` remains available as a lower-level primitive for
+fetching comments without posting. Use it standalone only to refresh
+the doc right before the final pre-merge push, to capture any trailing
+reviewer comments; its output rides with the next fix commit, never as
+a standalone `doc:` commit.
 
 The local review catches design issues and convention violations early.
 The GitHub review catches anything that slipped through and validates in
 the CI environment. Joining them into a single file per PR preserves the
 conversational flow and keeps the review record in one place.
 
+### Automated poll loop (optional)
+
+For PRs where you don't want to manually ping "check the replies", pair
+`/watch-pr <N>` with `/loop`:
+
+```
+/loop 10m /watch-pr 17
+```
+
+Each tick does one of: (a) heartbeat if no new activity, (b) one
+finish-the-round cycle — auto-fix the trivially-clear items, push back
+or defer the rest, run the `/reply-reviews` flow, **stop before push**,
+or (c) `holding: fix commit pending push` if a previous round is still
+awaiting your push.
+
+Auto-fix is scoped tightly: only items where the reviewer's intent is
+unambiguous and the change is local (one file, under ~20 lines, no
+API removal, no cross-module reasoning). Anything involving judgment
+is classified as **needs you** and surfaced in the round report with
+`path:line` — those threads stay open on GitHub for you to resolve.
+
+The command never pushes. You still review the fix commit and run
+`git push` yourself — the single safety net that stays even when the
+rest of the loop runs unattended.
+
 ## TDD workflow
 
-1. Write the plan to `doc/plans/plan-YYYY-MM-DD-nn.md` before touching source.
-2. Create a branch for the sprint: `git checkout -b sprint/<name>`
-3. Write tests first — property tests define the contract.
-4. Implement until all tests are green.
-5. Commit atomically as you go (hook enforces test + clippy).
-6. Run `/sprint-review` (Tier 1) before pushing.
-7. Push and create PR (Tier 2 runs automatically).
-8. Rebase onto main after approval, fast-forward merge.
+Every sprint follows this order. Naming is keyed to the plan filename:
+a plan at `doc/plans/plan-YYYY-MM-DD-NN.md` maps to branch
+`plan/YYYY-MM-DD-NN` and (if used) worktree `../<repo>.plan-YYYY-MM-DD-NN`.
+One slug, three places.
+
+1. **Pick the plan filename.** `ls doc/plans/plan-YYYY-MM-DD-*.md` to
+   find the next unused `NN` for today's date (zero-padded, starts at
+   `01`). No writes yet — main stays clean.
+2. **Ask the user: worktree or branch?** Worktree is mandatory if
+   another Claude instance is active in this repo; otherwise it's the
+   user's call. Then:
+   - worktree: `git worktree add ../<repo>.plan-YYYY-MM-DD-NN -b plan/YYYY-MM-DD-NN`, `cd` into it.
+   - branch: `git switch -c plan/YYYY-MM-DD-NN`.
+3. **Write the plan** to `doc/plans/plan-YYYY-MM-DD-NN.md` on that branch.
+   The plan's **Verification** table must list the property tests that
+   must pass for the sprint to ship. Commit as `plan: <one-line goal>`
+   — this is the sprint-opener, always the first commit on the branch.
+4. Write proptest properties and test skeletons that compile but
+   trivially fail. Properties come first — they define the contract.
+5. Implement the module until all tests are green.
+6. Commit on the branch, when green.
+7. **Append Deferred and Review sections to the plan document.** If any
+   property tests were `#[ignore]`d during implementation, document
+   the reason and the re-enablement plan here. This must happen
+   *before* the local review — the reviewer agent reads the plan as
+   context and should see the final version, including what was
+   intentionally cut and why. Commit as `doc: Update plan NN deferred/review sections`.
+8. Run `/sprint-review` against the branch before merging.
+9. Rebase and land on main. On the feature branch:
+   `git fetch origin && git rebase origin/main`.
+   Then fast-forward main:
+   `git checkout main && git merge --ff-only plan/YYYY-MM-DD-NN`.
+10. Clean up: `git worktree remove ../<repo>.plan-YYYY-MM-DD-NN`
+    (worktree case only), then `git branch -d plan/YYYY-MM-DD-NN`.
+
+### Pre-commit hook
+
+A Claude Code hook in `.claude/settings.json` runs these checks before
+every `git commit` tool call:
+
+1. `cargo fmt --all -- --check` — **warn-only**. Prints a diff if any
+   files need formatting but does not block the commit. CI mirrors this
+   as a `continue-on-error` step. Run `cargo fmt --all` to fix.
+2. `scripts/check-pii.sh` — grep the staged diff for absolute user-home
+   paths (`/Users/...` on macOS, `/home/...` on Linux), private-key
+   headers, and common API-token shapes. Fail fast on any match.
+   Allow-list exceptions go in `.pii-allow`.
+3. `cargo test --workspace` — all tests must pass.
+4. `cargo clippy --all-targets -- -D warnings` — matches CI.
+
+If a blocking step fails, the commit is blocked. This is the automated
+quality gate; `/sprint-review` is the manual one.
 
 ## Sprint plan format
 
@@ -191,23 +299,40 @@ conversational flow and keeps the review record in one place.
 ## Goal
 One sentence.
 
+## Dependency Graph
+ASCII art showing task dependencies (T1 → T2, T3 → T4, etc.)
+
 ## Tasks
-Each task section includes problem, solution, and API surface.
+Each task is T1, T2, etc. Each task section includes:
+- Problem or motivation
+- Solution / implementation approach
+- Types or API surface
 
 ## Verification
 
 ### Properties (must pass)
+Table of proptest property names, the module they live in, and the
+invariant they assert. These are the contract — if a property can't
+be satisfied, the sprint isn't done.
+
 | Property | Module | Invariant |
 |----------|--------|-----------|
+| `msg_round_trips` | `crate_foo::codec` | encode then decode recovers original |
 
 ### Spot checks
-Unit test names + specific assertions.
+Table of unit test names + specific assertions.
 
 ### Build gates
 - cargo build — no errors
-- cargo test — all pass
+- cargo test — all pass (no `#[ignore]` without Review documentation)
 - cargo clippy --all-targets — no errors
+- End-to-end scenario description
 
 ## Deferred
 What was intentionally left out and why.
+
+## Review
+- Any `#[ignore]`d properties: which ones, why, re-enablement plan
+- Design deviations from the plan
+- Recommendations
 ```
