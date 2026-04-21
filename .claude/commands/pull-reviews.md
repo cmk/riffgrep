@@ -1,22 +1,28 @@
 ---
-name: pull-reviews
-description: >
-  Fetch GitHub review comments for a PR and append them to the local
-  review file. Use when the user says "/pull-reviews <N>", "fetch reviews
-  for PR N", or "pull down the GH comments".
+description: Fetch GitHub PR review bodies and inline comments for a PR and append new ones chronologically to doc/reviews/review-NNNNN.md. Lower-level primitive — normally invoked by /reply-reviews, but usable standalone to refresh the doc before final push.
+argument-hint: <pr-number>
 ---
 
 # Pull Reviews — Fetch GitHub Comments to Local File
 
 Fetch review comments from a GitHub PR and append new ones chronologically
-to `doc/reviews/review-NNNN.md`. The heavy lifting lives in
-`scripts/pull_reviews.py`; this skill is a thin wrapper around it.
+to `doc/reviews/review-NNNNN.md`. The heavy lifting lives in
+`scripts/pull_reviews.py`; this command is a thin wrapper around it.
+
+**In the normal review-round workflow, `/reply-reviews` invokes this
+internally** after posting replies, so you rarely run it by hand.
+Standalone use is for: (a) refreshing `review-NNNNN.md` right before the
+final pre-merge push to capture any trailing reviewer comments; or
+(b) catching up after a round where someone else pushed review activity
+to the PR.
 
 ---
 
 ## Step 1: Parse the PR number
 
 The user provides a PR number as an argument (e.g., `/pull-reviews 17`).
+Argument: `$ARGUMENTS`
+
 If omitted, check if the current branch has an open PR:
 
 ```
@@ -36,7 +42,7 @@ iterating `?per_page=100&page=N` explicitly against the GitHub API
 (chosen over `gh api --paginate --slurp` because `--slurp` requires
 gh >= 2.47), merges them chronologically, de-dupes via set membership
 on `<!-- gh-id: -->` markers, hyperlinks headers to GitHub permalinks,
-absolute-ifies relative links in bodies, and creates `review-NNNN.md`
+absolute-ifies relative links in bodies, and creates `review-NNNNN.md`
 with a `# PR #N — <title>` header if it doesn't exist.
 
 The script is idempotent: any item whose `gh-id` is already present in
@@ -49,26 +55,21 @@ items from the lower-numbered sequence. Set membership avoids this.
 
 The review file is not committed on its own. It rides with the **next
 review round's fix commit** — the commit that addresses the comments
-you just pulled. Using `R` for review rounds (distinct from `N`, which
-is the PR number throughout the docs), the rhythm is:
+you just pulled.
 
-- Round R: reviewer leaves comments → `scripts/pull_reviews.py`
-  appends them to `review-NNNN.md`.
-- Round R+1: you fix what warrants a fix → the fix commit stages the
-  updated `review-NNNN.md` alongside the code changes.
-- If round R+1 is itself no-op (all push-back, no fix), there is no
-  fix commit and nothing to push. The GitHub thread is the canonical
-  record until a later round forces a commit anyway.
+The `/reply-reviews` command enforces this: it posts replies, runs
+`pull_reviews.py`, and `git commit --amend`s the mutated doc into the
+pre-push fix commit, so one push delivers everything in order.
 
-So after running this skill: keep `review-NNNN.md` modified but
-uncommitted until the fix commit is ready, then stage it alongside the
-code changes for that commit. Do **not** open a standalone
-`doc: update review-NNNN.md` commit just to land it — that forces a CI
-round-trip for no code change. The fix commit that addresses this
-round's findings is the vehicle.
+If you invoked `/pull-reviews` standalone (no paired reply round), the
+file stays modified-but-uncommitted on disk. A later `/reply-reviews`
+will pick it up and fold it in. Do **not** open a standalone
+`doc: update review-NNNNN.md` commit just to land it — that forces a CI
+round-trip for no code change and was the ordering bug the unified
+`/reply-reviews` was designed to eliminate.
 
 If there were no new items (script reported `no new items`), there is
-nothing to stage.
+nothing staged and nothing to do.
 
 ## Step 4: Report
 
