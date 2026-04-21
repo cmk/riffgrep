@@ -23,7 +23,7 @@ When `faiss-cpu` is importable (declared in `pyproject.toml` under
 where the native wheel is unavailable), a second test trains a small
 codebook via `embed_train.train()` and asserts the blob length plus
 finite decoded centroids. A stricter centroid-value spot check is
-listed as a follow-up in `doc/reviews/review-0010.md`.
+listed as a follow-up in `doc/reviews/review-00010.md`.
 """
 
 from __future__ import annotations
