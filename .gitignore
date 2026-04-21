@@ -5,6 +5,9 @@
 /target/
 Cargo.lock
 
+# /watch-pr dynamic-mode backoff state (per-PR consecutive-quiet-tick counters)
+/.watch-pr/
+
 # Python
 __pycache__/
 *.pyc
