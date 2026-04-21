@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fetch GitHub PR review bodies and inline comments and append them
-chronologically to `doc/reviews/review-NNNN.md`.
+chronologically to `doc/reviews/review-NNNNN.md`.
 
 Idempotent via set-membership on `<!-- gh-id: N -->` markers: any item
 whose id is already present in the target file is skipped. This avoids
@@ -193,14 +193,14 @@ def main() -> int:
     ap.add_argument(
         "--out",
         default="doc/reviews",
-        help="directory for review-NNNN.md (default: doc/reviews)",
+        help="directory for review-NNNNN.md (default: doc/reviews)",
     )
     args = ap.parse_args()
 
     repo = resolve_repo(args.pr, args.repo)
     out_dir = pathlib.Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"review-{args.pr:04d}.md"
+    path = out_dir / f"review-{args.pr:05d}.md"
 
     if not path.exists():
         path.write_text(
