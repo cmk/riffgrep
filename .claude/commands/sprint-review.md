@@ -1,10 +1,6 @@
 ---
-name: sprint-review
-description: >
-  Local pre-push code review (Tier 1). Spawns an independent reviewer agent
-  to examine the branch diff against `origin/main`. Use when the user says
-  "/sprint-review", "review the branch", "review before push", or after
-  completing work on a feature branch before pushing to GitHub.
+description: Tier-1 local pre-push code review. Spawns an independent reviewer agent to examine the branch diff against origin/main and writes the review to doc/reviews/review-NNNNN.md.
+argument-hint: (no args)
 ---
 
 # Sprint Review — Tier 1 (Local)
@@ -12,10 +8,12 @@ description: >
 You are orchestrating a **local, pre-push** code review. This is Tier 1 of
 a two-tier system:
 
-- **Tier 1 (this skill):** Independent agent reviews `origin/main...HEAD` locally.
+- **Tier 1 (this command):** Independent agent reviews `origin/main...HEAD` locally.
   Gate before pushing.
-- **Tier 2 (GitHub):** After push, CI runs build/test/clippy/fmt. Claude
-  Code Action and/or Copilot review the PR on GitHub.
+- **Tier 2 (GitHub):** After push, CI runs `cargo test --workspace` and
+  `cargo clippy --all-targets -- -D warnings` (see
+  `.github/workflows/ci.yml`). Claude Code Action and/or Copilot review
+  the PR on GitHub.
 
 Your job: gather inputs, launch the reviewer, place the output, then help
 the user push if the review passes.
@@ -94,14 +92,12 @@ The reviewer should write like a thorough human PR reviewer, not a checklist
 robot. Good review comments share these qualities:
 
 - **Cite the contract, then the violation.** When the plan says X and the code
-  does Y, quote both. "The plan specifies a v1→v2 migration that adds the
-  `embedding` column (T2), but `sqlite.rs` calls `ALTER TABLE` without a
-  version check and will crash on re-run."
+  does Y, quote both. "The plan specifies `device = ["dep:tokio", ...]` as an
+  optional feature gate (T1), but `Cargo.toml` lists tokio as unconditional."
 
 - **Name the consequence.** Don't just say "this differs from the plan." Say
-  what breaks: "Without the length guard, `load_all_embeddings` happily returns
-  vectors of the wrong dimension and `pq::encode` panics at runtime on those
-  rows."
+  what breaks: "This means `driver-motu` links tokio/russh/mdns despite only
+  using HTTP+OSC, adding ~3s to clean builds."
 
 - **Distinguish severity.** Some findings block the merge, others are
   improvement opportunities. Be explicit: "Must fix before merge" vs
@@ -162,18 +158,17 @@ sentence is enough — don't pad.
 ### Commit Hygiene
 
 - Does each commit leave the repo in a buildable, testable state?
-- Are commit messages conventional (feat/fix/test/refactor/doc/chore prefix)?
+- Are commit messages conventional (feat/fix/doc/test/task/debt prefix, optional scope)?
 - Are commits reasonably atomic, or are unrelated changes mixed?
 
 ### Code Quality
 
-- Does the code follow repo conventions (`unsafe_code = "forbid"`,
-  `anyhow`/`thiserror` for errors, lints in `Cargo.toml`)?
+- Does the code follow repo conventions (thiserror in libs, no unsafe,
+  lints via Cargo.toml)?
 - Are error messages specific enough to diagnose from a log line?
-  (e.g., `"bext: chunk truncated at offset {n}"` is good;
-  `"parse failed"` is not)
-- Is there unintended coupling between modules that should be
-  independent? (e.g., `engine::ui_*` types leaking into parser modules)
+  (e.g., "qu: tcp connect: {e}" is good; "operation failed" is not)
+- Is there unintended coupling between driver crates that should be
+  independent? (e.g., driver-qu importing types from driver-mpc)
 - Any dead code, redundant logic, or clippy-level issues?
 - Were any features, config options, or feature gates described in the
   plan but absent from the implementation? This is the highest-value
@@ -185,12 +180,12 @@ sentence is enough — don't pad.
 
 - For any module that parses, encodes, or transforms data: are there
   property tests? If not, flag this as a gap.
-- Do fixture-gated tests skip cleanly when the fixture file is absent
-  (return early, don't panic, don't `#[ignore]`)? Per CLAUDE.md, a
-  fresh checkout must pass `cargo test` with zero setup.
+- Do fixture-gated tests use `fixture_or_skip!` from
+  `project_core::testing` (return early when fixture is absent, don't
+  panic, don't `#[ignore]`)?
 - What edge cases do the tests miss? Be specific — "what happens if the
-  BEXT chunk is truncated mid-marker" is useful; "more tests would be
-  good" is not.
+  TCP connection drops mid-NRPN" is useful; "more tests would be good"
+  is not.
 
 {IF plan exists:}
 ### Plan Conformance
@@ -229,26 +224,45 @@ and specific. Cite file paths and line numbers. Keep the total review under
 
 ## Step 5: Place the output
 
-Review files are organized by PR number: `doc/reviews/review-NNNN.md` where
-`NNNN` is the zero-padded PR number (e.g., `review-0017.md`). Each file
-accumulates all review rounds — local and GitHub — as dated sections.
+Review files are organized by PR number: `doc/reviews/review-NNNNN.md`
+where `NNNNN` is the zero-padded PR number (e.g., `review-00017.md`).
+Each file accumulates all review rounds — local and GitHub — as
+dated sections. `review-00000.md` is a protected sentinel; do not write
+review content into it.
 
 When the reviewer agent returns:
 
-1. **Determine the review file path.** If a PR already exists for this
-   branch, use its number. If not (pre-push), ask the user for the
-   expected PR number, or use `0000` as a placeholder and rename after
-   the PR is created.
+1. **Determine the review file path.** Always name the file
+   `doc/reviews/review-NNNNN.md` — there is no placeholder filename.
+   - If a PR already exists for this branch, use its number:
+     ```
+     gh pr view --json number --jq .number
+     ```
+   - Otherwise (the normal pre-push case), predict the number the
+     next-opened PR will receive:
+     ```
+     scripts/next_pr_number.sh
+     ```
+     The script queries `gh api repos/{repo}/issues` (GitHub shares
+     its numbering sequence between issues and PRs) and prints
+     `max + 1`. The next PR/issue opened in the repo will inherit
+     that number, so the file is named correctly the first time it's
+     written.
+   - If another issue or PR is opened in the repo between review and
+     push, the prediction drifts. Re-run the script before pushing
+     and rename the file if the number changed. Collisions surface
+     immediately — a file already at the predicted path means someone
+     else used the number.
 
 2. **Append** (do not overwrite) a dated section to
-   `doc/reviews/review-NNNN.md` (create `doc/reviews/` and the file if
+   `doc/reviews/review-NNNNN.md` (create `doc/reviews/` and the file if
    they don't exist):
 
    ```markdown
    ## Local review (YYYY-MM-DD)
 
    **Branch:** <branch>
-   **Commits:** <count> (main..<branch>)
+   **Commits:** <count> (origin/main..<branch>)
    **Reviewer:** Claude (sonnet, independent)
 
    ---
