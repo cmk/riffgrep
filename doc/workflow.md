@@ -52,8 +52,9 @@ stateDiagram-v2
 ## `/watch-pr` dynamic-mode loop
 
 The `/loop /watch-pr <N>` self-pacing loop, with its 5/5/5/10/10-minute
-backoff and auto-quit after 5 consecutive quiet ticks. Counter state
-lives in `.watch-pr/pr-<N>.count` (gitignored).
+backoff and auto-quit on the 6th consecutive quiet tick (after the
+5-slot backoff is exhausted). Counter state lives in
+`.watch-pr/pr-<N>.count` (gitignored).
 
 ```mermaid
 stateDiagram-v2

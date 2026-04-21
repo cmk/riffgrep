@@ -200,8 +200,8 @@ round trip.
 **Do not push before running `/reply-reviews`.** The amend-into-fix-commit
 step requires the commit to be unpushed. Pushing first strands the
 mirrored replies in the working tree and forces either a wasted `doc:`
-commit (extra CI round-trip) or a force-push (disallowed by
-`.claude/settings.local.json`'s deny list). `/reply-reviews` enforces
+commit (extra CI round-trip) or a force-push that this workflow is
+designed to avoid. `/reply-reviews` enforces
 this: it refuses to run if HEAD is not ahead of `origin/<branch>` while
 unreplied threads still exist.
 
@@ -284,8 +284,10 @@ A Claude Code hook in `.claude/settings.json` runs these checks before
 every `git commit` tool call:
 
 1. `cargo fmt --all -- --check` — **warn-only**. Prints a diff if any
-   files need formatting but does not block the commit. CI mirrors this
-   as a `continue-on-error` step. Run `cargo fmt --all` to fix.
+   files need formatting but does not block the commit. CI still runs
+   `cargo fmt --all -- --check` as a normal, failing step, so
+   formatting diffs will fail CI even though the local hook only
+   warns. Run `cargo fmt --all` to fix.
 2. `scripts/check-pii.sh` — grep the staged diff for absolute user-home
    paths (`/Users/...` on macOS, `/home/...` on Linux), private-key
    headers, and common API-token shapes. Fail fast on any match.

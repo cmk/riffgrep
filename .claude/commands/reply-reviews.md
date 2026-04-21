@@ -14,7 +14,7 @@ code + replies + review doc.
 This ordering — fix → reply → mirror → amend → push — is deliberate.
 Pushing before the mirror strands the reply-mirror in the working tree
 and forces either a wasted `doc:` commit (extra CI round-trip) or a
-force-push (disallowed by `.claude/settings.local.json`'s deny list).
+force-push that this workflow is designed to avoid.
 
 Target PR: `$ARGUMENTS`
 
