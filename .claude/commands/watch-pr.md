@@ -179,7 +179,7 @@ overrides the schedule; see "Fixed vs. dynamic" below.
 ### Backoff schedule
 
 ```
-BACKOFF_MINUTES=(5 5 5 10 10)   # quit after 5 consecutive quiet ticks
+BACKOFF_MINUTES=(5 5 5 10 10)   # quit on the 6th quiet tick (after the 5 slots are exhausted)
 ```
 
 State is a single integer in `.watch-pr/pr-<N>.count` (gitignored,
@@ -211,7 +211,7 @@ N_SLOTS=${#BACKOFF_MINUTES[@]}     # 5
 if [ "$new" -gt "$N_SLOTS" ]; then
   # Out of schedule. End the loop.
   rm -f ".watch-pr/pr-<N>.count"
-  echo "loop ending: $N_SLOTS consecutive quiet ticks ($(( 5+5+5+10+10 ))min total)"
+  echo "loop ending: $((N_SLOTS + 1)) consecutive quiet ticks (backoff exhausted after $(( 5+5+5+10+10 ))min)"
   # DO NOT call ScheduleWakeup.
 else
   if [ "$new" -eq 0 ]; then
