@@ -762,14 +762,17 @@ impl PlaybackEngine {
 
     /// Stop playback and reset state.
     pub fn stop(&self) {
-        let cmd = self
+        // Dispatch Stop for FSM bookkeeping (clears transport + pending
+        // intents) but unconditionally take the sink. If the FSM is
+        // already `Stopped` (e.g., `state()` dispatched `ProgramEnded`
+        // after drain-grace) the FSM returns no `MixerCommand` — but the
+        // sink may still be allocated and must be cleaned up.
+        let _ = self
             .fsm
             .lock()
             .expect("playback lock poisoned")
             .consume(FsmInput::Stop);
-        if matches!(cmd, Some(MixerCommand::Stop))
-            && let Some(sink) = self.sink.lock().expect("playback lock poisoned").take()
-        {
+        if let Some(sink) = self.sink.lock().expect("playback lock poisoned").take() {
             sink.stop();
         }
         *self.source_control.lock().expect("playback lock poisoned") = None;
@@ -960,7 +963,12 @@ impl PlaybackEngine {
         if state == PlaybackState::Stopped {
             return;
         }
-        *self.sample_offset.lock().expect("playback lock poisoned") = 0;
+        // Don't hard-zero sample_offset: the mixer's restart origin is
+        // `first.end - 1` when the first segment's effective direction is
+        // reversed, not 0. The mixer updates `control.frame` on the next
+        // frame boundary after it consumes `pending_restart`, and the
+        // next `update_sample_offset()` tick picks that up — keeping the
+        // UI cursor consistent with the actual playback position.
         *self.paused_elapsed.lock().expect("playback lock poisoned") = Duration::ZERO;
         if state == PlaybackState::Playing {
             *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
