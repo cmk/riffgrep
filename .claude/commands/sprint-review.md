@@ -64,8 +64,8 @@ If the branch has not diverged from `origin/main`, abort with a
 message — there's nothing to review.
 
 **Verify the review file exists.** `/sprint-review` appends to a file
-created by TDD step 7; it never creates the file itself. Resolve
-`NNNNN`:
+created by TDD step 7; it never creates the file itself. Resolve `N`
+(the PR number) from:
 
 - If a PR already exists for this branch:
   ```
@@ -76,11 +76,15 @@ created by TDD step 7; it never creates the file itself. Resolve
   scripts/next_pr_number.sh
   ```
 
-Then confirm `doc/reviews/review-NNNNN.md` exists **and contains a
-`## Summary` section**. If either is missing, abort and tell the user
-to run TDD step 7 (finalize plan + draft PR description). Do not
-create the file and do not proceed to the reviewer — the PR body
-belongs in that commit, not as a post-hoc fabrication by this command.
+Both commands print `N` unpadded. The review filename pads it to 5
+digits: `doc/reviews/review-$(printf '%05d' "$N").md` (PR 17 →
+`review-00017.md`, not `review-17.md`).
+
+Then confirm that file exists **and contains a `## Summary`
+section**. If either is missing, abort and tell the user to run TDD
+step 7 (finalize plan + draft PR description). Do not create the
+file and do not proceed to the reviewer — the PR body belongs in
+that commit, not as a post-hoc fabrication by this command.
 
 ## Step 3: Gather context
 

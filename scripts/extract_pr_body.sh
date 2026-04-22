@@ -9,8 +9,12 @@
 #     gh pr create --title "..." \
 #       --body-file <(scripts/extract_pr_body.sh 17)
 #
-# Content is taken between the `## Summary` heading (exclusive) and the
-# next `## ` heading (exclusive), and printed verbatim to stdout.
+# Content is taken between the `## Summary` heading (exclusive) and
+# the first review-round marker (exclusive) — `## Local review` from
+# /sprint-review or `<!-- gh-id: N -->` from pull_reviews.py. The
+# extracted region is written to stdout; bash's command substitution
+# normalizes trailing newlines, so a caller using `<(...)` sees the
+# body minus any trailing blank lines.
 #
 # Fails loudly with a nonzero exit and a message on stderr if:
 #   - the argument is missing or not numeric
@@ -32,7 +36,10 @@ if ! [[ "$1" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-n=$(printf '%05d' "$1")
+# Force base-10 so zero-padded inputs like `00017` don't trigger bash's
+# octal interpretation (which would silently misroute `00017` → `00015`
+# and error on digits 8-9).
+n=$(printf '%05d' "$((10#$1))")
 file="doc/reviews/review-${n}.md"
 
 if [ ! -f "$file" ]; then
@@ -41,11 +48,15 @@ if [ ! -f "$file" ]; then
   exit 1
 fi
 
+# Extract between `## Summary` (exclusive) and the first review-round
+# marker (exclusive). Stopping at review markers (rather than any
+# `## ` heading) lets the PR body contain sibling sections like
+# `## Test plan` without being truncated.
 if ! body=$(awk '
-  !found && /^## Summary[[:space:]]*$/ { in_s = 1; found = 1; next }
-  in_s && /^## /                       { in_s = 0 }
-  in_s                                 { print }
-  END                                  { if (!found) exit 2 }
+  !found && /^## Summary[[:space:]]*$/                  { in_s = 1; found = 1; next }
+  in_s && (/^## Local review \(/ || /^<!-- gh-id: /)    { in_s = 0 }
+  in_s                                                  { print }
+  END                                                   { if (!found) exit 2 }
 ' "$file"); then
   echo "error: '## Summary' section not found in $file" >&2
   echo "  write the PR body under '## Summary' before opening the PR." >&2
