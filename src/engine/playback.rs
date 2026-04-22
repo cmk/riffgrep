@@ -340,14 +340,13 @@ impl Iterator for SegmentSource {
 
             // Reverse traversal: we just finished emitting frame N (pos now
             // points to frame N+1). Step back 2 frames to land on frame N-1.
-            // Channels within a frame are still emitted L→R. The effective
-            // direction is `segment.reversed ^ global_reversed`.
+            // Channels within a frame are still emitted L→R. Route through
+            // `effective_reversed` so the XOR identity lives in one place.
             let eff_rev = self
                 .playlist
                 .get(self.seg_idx)
-                .map(|s| s.reversed)
-                .unwrap_or(false)
-                ^ self.control.reversed.load(Ordering::Relaxed);
+                .map(|seg| self.effective_reversed(seg))
+                .unwrap_or(false);
             if eff_rev {
                 let stride = 2 * self.channels as usize;
                 if self.pos >= stride {
@@ -518,20 +517,45 @@ impl PlaybackEngine {
     /// Start playing a WAV file from the beginning. Stops any current playback.
     ///
     /// Uses a `SegmentSource` with a single segment spanning the entire file
-    /// (no boundaries, no looping).
+    /// (no boundaries, no looping). When global reverse is on at call time
+    /// the entry frame is `total_frames - 1` rather than `0`, so the mixer
+    /// enters at the reverse origin instead of immediately tripping the
+    /// `past_reverse_start` sentinel.
     pub fn play(&self, path: &Path) -> Result<(), anyhow::Error> {
         self.stop();
 
         let (samples, channels, sample_rate) = pre_decode(path)?;
         let total_frames = samples.len() as u32 / channels as u32;
 
+        // `Input::Stop` does not clear the FSM's `reversed`; the effective
+        // direction for the fresh forward segment is `false ^ fsm.reversed`.
+        let fsm_reversed = self
+            .fsm
+            .lock()
+            .expect("playback lock poisoned")
+            .state()
+            .reversed;
+        let entry_frame = if fsm_reversed {
+            total_frames.saturating_sub(1)
+        } else {
+            0
+        };
+
         let control = Arc::new(SourceControl::new());
+        // Pre-seed the atomics before the mixer thread can poll the source —
+        // `sink.append(source)` hands it off immediately, so defaults would
+        // race with the first frame boundary.
+        control.frame.store(entry_frame, Ordering::Relaxed);
+        control.reversed.store(fsm_reversed, Ordering::Relaxed);
+        // `play()` is always single-shot — loop is explicitly off.
+        control.loop_enabled.store(false, Ordering::Relaxed);
+
         let source = SegmentSource {
             buffer: samples,
             channels,
             rate: sample_rate,
             total_frames,
-            pos: 0,
+            pos: entry_frame as usize * channels as usize,
             channel: 0,
             playlist: vec![PlaySegment {
                 start: 0,
@@ -563,7 +587,7 @@ impl PlaybackEngine {
         *self.paused_elapsed.lock().expect("playback lock poisoned") = Duration::ZERO;
         *self.current_path.lock().expect("playback lock poisoned") = Some(path.to_path_buf());
         *self.drain_start.lock().expect("playback lock poisoned") = None;
-        *self.sample_offset.lock().expect("playback lock poisoned") = 0;
+        *self.sample_offset.lock().expect("playback lock poisoned") = entry_frame;
 
         // Dispatch through the FSM: Stop clears transport & pending, Play
         // transitions Stopped → Playing. `play()` is always single-shot so
@@ -653,7 +677,13 @@ impl PlaybackEngine {
         let first_start_for_offset = first_pos_frame;
 
         let control = Arc::new(SourceControl::new());
+        // Pre-seed atomics before the mixer thread can poll the source —
+        // `sink.append(source)` hands off immediately, and the FSM's
+        // `reversed` + `loop_enabled` would otherwise race with the
+        // default-false values on the first frame boundary.
         control.frame.store(first_pos_frame, Ordering::Relaxed);
+        control.reversed.store(fsm_reversed, Ordering::Relaxed);
+        control.loop_enabled.store(global_loop, Ordering::Relaxed);
 
         let source = SegmentSource {
             buffer: samples,
@@ -2033,35 +2063,63 @@ mod tests {
         );
     }
 
-    // R6 — ToggleReverse pair at the SourceControl layer preserves the
-    // frame counter over one emitted frame (the ToggleReverse dispatch
-    // flips control.reversed twice, a no-op at the source level).
+    // R6 — Toggling global reverse twice (with no emit between the toggles)
+    // is a net no-op on direction. A single forward emit after the pair
+    // advances the frame counter by exactly one, matching the untoggled
+    // equivalent. Emitting *between* the toggles would commit a reverse
+    // step that can't be undone by the second toggle, so the invariant
+    // is specifically about the pair as an indivisible sequence — which
+    // is how the FSM dispatches `Input::ToggleReverse` from user input.
     #[test]
     fn r6_toggle_reverse_pair_preserves_frame() {
         let total = 32u32;
         let (mut src, ctl) = build_one_segment_source(total, 0, 32, false, false);
-        // Walk a few frames forward.
         for _ in 0..8 {
             src.next();
         }
         let frame_before = ctl.frame.load(Ordering::Relaxed);
-        // Toggle reverse twice (net no-op). Between toggles emit one frame
-        // to ensure the state round-trips through next().
-        ctl.reversed
-            .store(!ctl.reversed.load(Ordering::Relaxed), Ordering::Relaxed);
-        src.next();
-        ctl.reversed
-            .store(!ctl.reversed.load(Ordering::Relaxed), Ordering::Relaxed);
+        let rev_before = ctl.reversed.load(Ordering::Relaxed);
+        // Double-toggle with no emit in between.
+        ctl.reversed.store(!rev_before, Ordering::Relaxed);
+        ctl.reversed.store(rev_before, Ordering::Relaxed);
+        // Single forward emit after the pair.
         src.next();
         let frame_after = ctl.frame.load(Ordering::Relaxed);
-        // After the pair, frame should have advanced by 2 in the forward
-        // direction (no direction change net) — not stuck, not reversed.
-        assert!(
-            frame_after >= frame_before,
-            "R6: toggle pair drifted backwards ({} → {})",
-            frame_before,
-            frame_after,
+        let expected_frame_after = frame_before + 1;
+        assert_eq!(
+            frame_after, expected_frame_after,
+            "R6: toggle-reverse pair should be a no-op; expected frame {} → {}, got {}",
+            frame_before, expected_frame_after, frame_after,
         );
+    }
+
+    // Regression for `play()`'s single-file path: when global reverse is on,
+    // the entry frame must be `total_frames - 1`, not 0. Otherwise the
+    // mixer enters at frame 0 with effective direction = true, trips
+    // past_reverse_start immediately, and emits only one frame before
+    // terminating. Matches the shape of the `play_with_segments` regression
+    // below; this one covers C5 from PR #27's Copilot review.
+    #[test]
+    fn play_initial_pos_xors_fsm_reversed() {
+        let engine = match PlaybackEngine::try_new() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let path = std::path::Path::new("test_files/clean_base.wav");
+        if !path.exists() {
+            return;
+        }
+
+        engine.set_reversed(true);
+        engine.play(path).unwrap();
+        let total = engine.total_samples();
+        let offset = engine.sample_offset();
+        assert_eq!(
+            offset,
+            total.saturating_sub(1),
+            "play() with global reverse must enter at total - 1, got {offset}"
+        );
+        engine.stop();
     }
 
     // Regression for the `play_with_segments` initial-position bug
