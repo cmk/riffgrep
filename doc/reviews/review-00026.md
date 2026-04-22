@@ -127,3 +127,73 @@ These are the plan's own deferred items, confirmed as appropriate deferrals — 
 - Add `RUSTDOCFLAGS: -D warnings` after cleaning up the three `search_runner.rs` intra-doc link warnings.
 - Add a docs-status badge to the README once the Pages URL is confirmed live.
 - Per-PR preview docs when a reviewer actually asks for it.
+
+<!-- gh-id: 3122826199 -->
+### Copilot on [`.github/workflows/docs.yml:55`](https://github.com/cmk/riffgrep/pull/26#discussion_r3122826199) (2026-04-22 09:08 UTC)
+
+In GitHub Actions, a job-level `permissions:` block replaces the workflow-level permissions rather than augmenting them. As written, the `deploy` job drops the workflow-level `contents: read`, which can cause unexpected failures (and contradicts the intent of having `contents: read` set globally). Consider adding `contents: read` to the `deploy` job (or move shared permissions to the workflow level and only override where needed).
+
+<!-- gh-id: 3122826245 -->
+### Copilot on [`doc/plans/plan-2026-04-22-01.md:14`](https://github.com/cmk/riffgrep/pull/26#discussion_r3122826245) (2026-04-22 09:08 UTC)
+
+This references Plan 07 as `plan-2026-04-22-02.md`, but that file isn't present in `doc/plans/` in this PR. If the intent is to point at an existing plan, update the reference; otherwise consider rephrasing to avoid implying a navigable in-repo document (or add the referenced plan file in the same PR).
+```suggestion
+suite. It prefaces the planned Plan 07 follow-on work so that by the time
+Plan 07 lands the engine-wiring changes, the published docs already reflect
+the new `PlaybackEngine` / `PlaybackFsm` surface and reviewers can browse the
+API in a rendered form.
+```
+
+<!-- gh-id: 3122826280 -->
+### Copilot on [`doc/reviews/review-00026.md:15`](https://github.com/cmk/riffgrep/pull/26#discussion_r3122826280) (2026-04-22 09:08 UTC)
+
+This refers to Plan 07 as `plan-2026-04-22-02.md`, but that file isn't present in `doc/plans/` in this PR. Consider either updating this to point at an existing plan file, or rewording so it doesn't read like a navigable cross-reference until the plan exists in-repo.
+```suggestion
+**Why now.** Plan 07 is about to rewrite `PlaybackEngine`'s mutators to
+route through `PlaybackFsm` and collapse the two reverse-playback code
+paths. That's a sprint where reviewers benefit from a rendered API
+reference, and where a README refresh is plausibly next on the list.
+Getting Pages deployment working before Plan 07 lands means the first
+post-Plan-07 merge already surfaces the new surface.
+```
+
+<!-- gh-id: 4153446282 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-22 09:08 UTC](https://github.com/cmk/riffgrep/pull/26#pullrequestreview-4153446282))
+
+## Pull request overview
+
+Adds automated rustdoc publishing to GitHub Pages so rendered API docs are available after merges to `main`, with accompanying plan/review documentation.
+
+**Changes:**
+- Adds a GitHub Actions workflow to build `cargo doc --no-deps --workspace` and deploy the artifact to GitHub Pages.
+- Adds a sprint plan describing the workflow design, trigger scope, and verification steps.
+- Adds a review record documenting the local review and checklist.
+
+### Reviewed changes
+
+Copilot reviewed 3 out of 3 changed files in this pull request and generated 3 comments.
+
+| File | Description |
+| ---- | ----------- |
+| `.github/workflows/docs.yml` | New “Docs” workflow that builds rustdoc and deploys it to GitHub Pages. |
+| `doc/plans/plan-2026-04-22-01.md` | Plan for the Pages-based rustdoc publishing task, including verification/deferred items. |
+| `doc/reviews/review-00026.md` | PR review record summarizing rationale, workflow structure, and test plan. |
+
+
+
+
+
+<!-- gh-id: 3122892610 -->
+#### ↳ cmk ([2026-04-22 09:19 UTC](https://github.com/cmk/riffgrep/pull/26#discussion_r3122892610))
+
+Fixed in 7d6d635 — added `contents: read` to the deploy job's permissions block. `deploy-pages@v4` doesn't strictly need it (no checkout; only hits the Pages API), but restating keeps the least-privilege pattern explicit at each job boundary.
+
+<!-- gh-id: 3122893537 -->
+#### ↳ cmk ([2026-04-22 09:19 UTC](https://github.com/cmk/riffgrep/pull/26#discussion_r3122893537))
+
+Intentional forward reference. `plan-2026-04-22-02.md` is already committed on the sibling branch `plan/2026-04-22-02` and opens as the follow-up PR right after this one — the two are a paired sprint where this CI work prefaces Plan 07's engine-wiring changes. Keeping the filename so the link resolves once both land on main.
+
+<!-- gh-id: 3122894226 -->
+#### ↳ cmk ([2026-04-22 09:19 UTC](https://github.com/cmk/riffgrep/pull/26#discussion_r3122894226))
+
+Same as on the plan file — `plan-2026-04-22-02.md` is committed on `plan/2026-04-22-02` and opens as the immediate follow-up PR. Keeping the filename in the 'why now' paragraph so the forward-reference is navigable once the companion PR merges.
