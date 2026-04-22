@@ -630,14 +630,27 @@ impl PlaybackEngine {
 
         let first = segments.first().cloned();
         let first_reps = first.as_ref().map(|s| s.reps).unwrap_or(1);
-        // Entry position depends on the first segment's intrinsic direction.
-        // Global-reverse is false at program start (SourceControl::new()),
-        // so effective == segment.reversed for this initial jump.
-        let (first_pos_frame, first_start_for_offset) = match &first {
-            Some(seg) if seg.reversed => (seg.end.saturating_sub(1), seg.start),
-            Some(seg) => (seg.start, seg.start),
-            None => (0, 0),
+        // Entry position depends on the first segment's *effective* direction:
+        // `seg.reversed ^ fsm.reversed`. `Input::Stop` (fired by the
+        // `self.stop()` call above) does not clear the FSM's reverse flag,
+        // so a user who toggled global-reverse and then called us would
+        // otherwise enter at `seg.start` while the mixer's effective
+        // direction is reverse — the first frame boundary would immediately
+        // fire `past_reverse_start` and skip the whole segment.
+        let fsm_reversed = self
+            .fsm
+            .lock()
+            .expect("playback lock poisoned")
+            .state()
+            .reversed;
+        let first_pos_frame = match &first {
+            Some(seg) if seg.reversed ^ fsm_reversed => seg.end.saturating_sub(1),
+            Some(seg) => seg.start,
+            None => 0,
         };
+        // UI's sample_offset tracks the mixer's actual entry frame so the
+        // TUI cursor lines up with the first emitted sample.
+        let first_start_for_offset = first_pos_frame;
 
         let control = Arc::new(SourceControl::new());
         control.frame.store(first_pos_frame, Ordering::Relaxed);
@@ -2049,6 +2062,53 @@ mod tests {
             frame_before,
             frame_after,
         );
+    }
+
+    // Regression for the `play_with_segments` initial-position bug
+    // caught in Plan 07's local review: `Input::Stop` does not clear
+    // the FSM's `reversed` flag, so a prior `set_reversed(true)`
+    // would otherwise leave pos pointing at `seg.start` while the
+    // mixer's effective direction is reverse — the whole first
+    // segment would be skipped. This test exercises the code path
+    // that computes the initial position given the FSM state, not
+    // the SegmentSource behaviour itself.
+    #[test]
+    fn initial_pos_xors_fsm_reversed_with_segment_reversed() {
+        let engine = match PlaybackEngine::try_new() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let path = std::path::Path::new("test_files/clean_base.wav");
+        if !path.exists() {
+            return;
+        }
+
+        // Toggle global reverse on before the play_with_segments call.
+        engine.set_reversed(true);
+
+        let total = {
+            engine.play(path).unwrap();
+            let t = engine.total_samples();
+            engine.stop();
+            t
+        };
+
+        // Re-enable the flag (stop() doesn't clear FSM.reversed today
+        // but `play()` above may have mirrored the default — assert the
+        // condition explicitly so the test is honest about its setup).
+        engine.set_reversed(true);
+
+        // Forward segment + global reverse → effective reverse → the
+        // entry position must be `end - 1`, not `start`.
+        let seg = (10u32, total.min(1000), 1u8, false);
+        engine.play_with_segments(path, &[seg], false).unwrap();
+        let offset = engine.sample_offset();
+        assert_eq!(
+            offset,
+            seg.1.saturating_sub(1),
+            "effective-reversed entry must be seg.end - 1, got {offset}"
+        );
+        engine.stop();
     }
 
     // R1/R2 proptest: randomized segment + flag combinations, sample-count
