@@ -21,7 +21,7 @@ stateDiagram-v2
     main_clean --> on_branch: git worktree add / git switch -c
     on_branch --> plan_committed: write plan + `plan:` commit
     plan_committed --> impl_green: TDD loop (tests + feat/fix commits)
-    impl_green --> plan_finalized: append Deferred + Review sections
+    impl_green --> plan_finalized: append Deferred + Review, draft PR body
     plan_finalized --> local_reviewed: /sprint-review
     local_reviewed --> impl_green: must-fix items surfaced
     local_reviewed --> pushed: clean, git push
@@ -47,7 +47,11 @@ stateDiagram-v2
   notes, then `/sprint-review` re-runs against the new tip.
 - `plan_finalized` sits deliberately *before* `local_reviewed`: the
   reviewer reads the plan as context and should see its final form,
-  including what was intentionally cut and why.
+  including what was intentionally cut and why. It's also when
+  `doc/reviews/review-NNNNN.md` is created with the PR body under
+  `## Summary`. Committing the description pre-push is what lets a
+  silent PR merge without an extra round-trip — `gh pr create`
+  feeds GitHub a direct copy via `scripts/extract_pr_body.sh`.
 
 ## `/watch-pr` dynamic-mode loop
 

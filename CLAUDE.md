@@ -159,21 +159,29 @@ The coding agent makes atomic commits as it works. Each commit must pass
 `cargo test` and `cargo clippy` (enforced by the pre-commit hook in
 `.claude/settings.json`). Commits can be as small as desired.
 
-Before pushing to GitHub, run `/sprint-review`. This spawns an independent
-reviewer agent that examines `git diff origin/main...HEAD` and the commit
-log. The reviewer flags must-fix issues and follow-ups. The review is
-appended to `doc/reviews/review-NNNNN.md`, where `NNNNN` is the zero-padded
-number the branch's PR will receive.
+Step 7 of the TDD workflow creates `doc/reviews/review-NNNNN.md` with
+the sprint's PR description under a `## Summary` heading. `NNNNN` comes
+from `scripts/next_pr_number.sh`, which queries the repo's highest
+existing issue/PR number via `gh api` and adds one (GitHub shares its
+numbering sequence between issues and PRs). The `## Summary` section
+is the single source of truth for the PR body: open the PR with
+`gh pr create --body-file <(scripts/extract_pr_body.sh NNNNN)` so the
+GitHub body is a direct copy of the file. Because the description is
+committed *before* push, a PR that gets no review comments merges
+without any extra round-trip — the body is already in history. The
+review file is born with its final name and never needs to be
+renamed. `review-00000.md` is a protected sentinel; real reviews
+start at `00001`.
 
-Pre-PR, `/sprint-review` predicts `NNNNN` by calling
-`scripts/next_pr_number.sh`, which queries the repo's highest existing
-issue/PR number via `gh api` and adds one (GitHub shares its numbering
-sequence between issues and PRs). The review file is born with its
-final name and never needs to be renamed. `review-00000.md` is a
-protected sentinel — real reviews start at `00001`.
+Before pushing, run `/sprint-review`. This spawns an independent
+reviewer agent that examines `git diff origin/main...HEAD` and the
+commit log. The reviewer flags must-fix issues and follow-ups, which
+the command appends as a `## Local review (YYYY-MM-DD)` section below
+the summary. `/sprint-review` aborts if the review file or its
+`## Summary` section is missing — step 7 is a prerequisite.
 
-If must-fix items exist, resolve them before pushing. If the review is
-clean, push and create a PR.
+If must-fix items exist, resolve them before pushing. If the review
+is clean, push and open the PR with `--body-file` as above.
 
 ### Tier 2 — GitHub review (post-push)
 
@@ -264,12 +272,22 @@ One slug, three places.
    trivially fail. Properties come first — they define the contract.
 5. Implement the module until all tests are green.
 6. Commit on the branch, when green.
-7. **Append Deferred and Review sections to the plan document.** If any
-   property tests were `#[ignore]`d during implementation, document
-   the reason and the re-enablement plan here. This must happen
-   *before* the local review — the reviewer agent reads the plan as
-   context and should see the final version, including what was
-   intentionally cut and why. Commit as `doc: Update plan NN deferred/review sections`.
+7. **Finalize the sprint docs.** In one commit:
+   - Append Deferred and Review sections to the plan document. If any
+     property tests were `#[ignore]`d during implementation, document
+     the reason and the re-enablement plan here.
+   - Create `doc/reviews/review-NNNNN.md` (`NNNNN` from
+     `scripts/next_pr_number.sh`). File header is `# PR #<N> — <title>`
+     followed by a `## Summary` section containing the PR body. This
+     section is consumed verbatim by
+     `gh pr create --body-file <(scripts/extract_pr_body.sh NNNNN)`,
+     so write it as the PR description (what & why for a human
+     reviewer) — not a ship-report.
+
+   This must happen *before* the local review — the reviewer agent
+   reads the plan as context and should see the final version, and
+   `/sprint-review` aborts if the review file is missing its
+   `## Summary`. Commit as `doc: Finalize plan NN and PR description`.
 8. Run `/sprint-review` against the branch before merging.
 9. Rebase and land on main. On the feature branch:
    `git fetch origin && git rebase origin/main`.
