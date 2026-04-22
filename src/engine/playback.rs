@@ -55,10 +55,7 @@ const CROSSFADE_FRAMES: u32 = 64;
 
 /// Shared state between the `SegmentSource` (mixer thread) and the UI.
 pub struct SourceControl {
-    /// Current frame position (written by source, read by UI).
-    ///
-    /// Always in logical file-space (0..total_frames), even for reversed
-    /// segments whose buffer data lives in an appended scratch region.
+    /// Current frame position in buffer space (written by source, read by UI).
     pub frame: AtomicU32,
     /// Pending seek target frame (written by UI, consumed by source).
     pub pending_seek: AtomicU32,
@@ -66,14 +63,15 @@ pub struct SourceControl {
     /// global playlist restart. Written by UI toggle, read by source per frame.
     pub loop_enabled: AtomicBool,
     /// Restart the program from segment 0. Written by UI, consumed by source.
-    ///
-    /// Unlike `pending_seek`, this resets `seg_idx` so reversed segments
-    /// (whose data lives past `total_frames` in the buffer) play correctly.
     pub pending_restart: AtomicBool,
-    /// When true, each segment is traversed end→start (frames read in reverse
-    /// order, channels within a frame still in L→R order). Toggled by the
-    /// ReversePlayback TUI action. Independent of the pre-reverse buffer copy
-    /// used by marker-ordered reversed segments.
+    /// Global reverse flag. Toggled by the ReversePlayback TUI action.
+    ///
+    /// Effective per-segment direction is `segment.reversed ^ global_reversed`,
+    /// computed by the source on every frame against the current segment.
+    /// Reversed segments (i.e. marker-ordered "reverse" entries in
+    /// `play_with_segments`) carry their own `reversed: true` on the
+    /// `PlaySegment`; XORing with this atomic lets the two compose
+    /// (reversed segment + global reverse = forward playback).
     pub reversed: AtomicBool,
 }
 
@@ -100,11 +98,11 @@ struct PlaySegment {
     end: u32,
     /// Repetitions: 1 = play once, 2+ = repeat, 255 = infinite loop.
     reps: u8,
-    /// For reversed segments: the logical file-space frame at buffer position
-    /// `start` (i.e. the original high-boundary frame minus one).
-    ///
-    /// `None` for forward segments (buffer space == logical space).
-    logical_start: Option<u32>,
+    /// When true, the segment is traversed end→start rather than start→end.
+    /// The effective direction at runtime is
+    /// `reversed ^ SourceControl::reversed` so the global-reverse toggle can
+    /// flip a reversed segment back to forward playback (XOR identity).
+    reversed: bool,
 }
 
 /// Pre-decoded audio buffer with segment-aware, pop-free playback.
@@ -136,6 +134,13 @@ struct SegmentSource {
     /// Fade-in frames remaining after a jump (counts down to 0).
     fade_in: u32,
 
+    /// Reverse-traversal sentinel: set by the iterator when stepping back
+    /// would underflow past `seg.start * channels`. `on_frame_boundary`
+    /// treats this as equivalent to `past_boundary`, which lets us emit
+    /// `frame == seg.start` inclusively without losing it to the boundary
+    /// check. Cleared the moment past-boundary logic runs.
+    past_reverse_start: bool,
+
     /// Shared control for UI communication.
     control: Arc<SourceControl>,
 }
@@ -152,6 +157,7 @@ impl SegmentSource {
         self.channel = 0;
         self.fade_in = CROSSFADE_FRAMES;
         self.fade_out = 0;
+        self.past_reverse_start = false;
         self.control.frame.store(frame, Ordering::Relaxed);
     }
 
@@ -165,21 +171,28 @@ impl SegmentSource {
         }
     }
 
+    /// Effective traversal direction for a given segment index.
+    ///
+    /// `segment.reversed ^ global_reversed`. Called from the boundary
+    /// logic and the iterator step-back path; keeping it in one helper
+    /// keeps the XOR identity in one place.
+    fn effective_reversed(&self, seg: &PlaySegment) -> bool {
+        seg.reversed ^ self.control.reversed.load(Ordering::Relaxed)
+    }
+
     /// Process frame-boundary logic. Returns `false` if the source should end.
     fn on_frame_boundary(&mut self) -> bool {
         // 0. Pending program restart: reset seg_idx and jump to playlist[0].
-        //
-        // Unlike pending_seek (which can't navigate into the appended scratch
-        // region used by reversed segments), pending_restart resets seg_idx
-        // so the first PlaySegment's buffer-space start is used directly.
         if self.control.pending_restart.swap(false, Ordering::Relaxed) {
             self.seg_idx = 0;
             if let Some(first) = self.playlist.first().cloned() {
                 self.reps_left = first.reps;
-                self.jump_to(first.start);
-                // Overwrite with logical frame (jump_to stores buffer frame).
-                let logical = first.logical_start.unwrap_or(first.start);
-                self.control.frame.store(logical, Ordering::Relaxed);
+                let origin = if self.effective_reversed(&first) {
+                    first.end.saturating_sub(1)
+                } else {
+                    first.start
+                };
+                self.jump_to(origin);
             }
             return true;
         }
@@ -195,7 +208,7 @@ impl SegmentSource {
         // 2. Segment boundary logic.
         if let Some(seg) = self.playlist.get(self.seg_idx).cloned() {
             let frame = self.frame();
-            let rev = self.control.reversed.load(Ordering::Relaxed);
+            let rev = self.effective_reversed(&seg);
 
             // In reverse mode, traversal runs seg.end-1 → seg.start, so the
             // "playback origin" is seg.end-1 and the "boundary" is seg.start.
@@ -214,7 +227,13 @@ impl SegmentSource {
                 frame >= boundary.saturating_sub(fade_len) && frame < boundary
             };
             let past_boundary = if rev {
-                frame <= boundary
+                // Exclusive below-start mirrors forward's exclusive-end:
+                // frame==start is still inside the segment and gets emitted.
+                // The iterator's step-back sets `past_reverse_start` when it
+                // would underflow past seg.start (the only way past-boundary
+                // can be reached at seg.start == 0), so we treat that as a
+                // one-shot equivalent to past_boundary.
+                frame < boundary || self.past_reverse_start
             } else {
                 frame >= boundary
             };
@@ -229,6 +248,7 @@ impl SegmentSource {
 
             // 2b. At segment boundary: handle loop or advance.
             if past_boundary {
+                self.past_reverse_start = false;
                 self.fade_out = 0;
                 let loop_en = self.control.loop_enabled.load(Ordering::Relaxed);
 
@@ -256,7 +276,7 @@ impl SegmentSource {
                     }
                     let next = self.playlist[self.seg_idx].clone();
                     self.reps_left = next.reps;
-                    let next_origin = if rev {
+                    let next_origin = if self.effective_reversed(&next) {
                         next.end.saturating_sub(1)
                     } else {
                         next.start
@@ -270,19 +290,10 @@ impl SegmentSource {
             }
         }
 
-        // 3. Update UI position (always in logical file-space).
-        //
-        // For reversed segments, the buffer frame is in the appended scratch
-        // region (> total_frames). Map it back to file space:
-        //   logical = logical_start - (buffer_frame - seg.start)
-        let logical = match self.playlist.get(self.seg_idx) {
-            Some(seg) if seg.logical_start.is_some() => {
-                let ls = seg.logical_start.unwrap();
-                ls.saturating_sub(self.frame().saturating_sub(seg.start))
-            }
-            _ => self.frame(),
-        };
-        self.control.frame.store(logical, Ordering::Relaxed);
+        // 3. Update UI position — buffer frame is the logical frame (Plan 07
+        // unified the two; reversed segments no longer live in an appended
+        // scratch region).
+        self.control.frame.store(self.frame(), Ordering::Relaxed);
         true
     }
 }
@@ -327,18 +338,28 @@ impl Iterator for SegmentSource {
 
             // Reverse traversal: we just finished emitting frame N (pos now
             // points to frame N+1). Step back 2 frames to land on frame N-1.
-            // Channels within a frame are still emitted L→R.
-            if self.control.reversed.load(Ordering::Relaxed) {
+            // Channels within a frame are still emitted L→R. The effective
+            // direction is `segment.reversed ^ global_reversed`.
+            let eff_rev = self
+                .playlist
+                .get(self.seg_idx)
+                .map(|s| s.reversed)
+                .unwrap_or(false)
+                ^ self.control.reversed.load(Ordering::Relaxed);
+            if eff_rev {
                 let stride = 2 * self.channels as usize;
                 if self.pos >= stride {
                     self.pos -= stride;
                 } else {
-                    // Reached the start of the segment — signal boundary.
-                    // Set pos to segment start so on_frame_boundary handles
-                    // loop/advance logic on the next call.
+                    // Reached the start of the segment — the sample we just
+                    // emitted was frame == seg.start. Park pos at seg.start
+                    // (so buffer[pos] stays in-range if next() is polled
+                    // before on_frame_boundary runs) and flag the boundary
+                    // for on_frame_boundary to pick up.
                     if let Some(seg) = self.playlist.get(self.seg_idx) {
                         self.pos = seg.start as usize * self.channels as usize;
                     }
+                    self.past_reverse_start = true;
                 }
             }
         }
@@ -459,12 +480,13 @@ impl PlaybackEngine {
                 start: 0,
                 end: total_frames,
                 reps: 1,
-                logical_start: None,
+                reversed: false,
             }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
@@ -494,13 +516,18 @@ impl PlaybackEngine {
     /// Start segment-based playback with a program playlist.
     ///
     /// Each entry is `(start_frame, end_frame, reps, reverse)` where:
-    /// - reps: 1 = play once, 2+ = repeat, 15 = infinite loop
-    /// - reverse: when true, start > end; playback runs end→start (frames reversed)
+    /// - `reps`: 1 = play once, 2+ = repeat, 15 = infinite loop
+    /// - `reverse`: when true, the segment is traversed end→start at runtime.
+    ///   The caller may pass either `start > end` or `start < end`; the
+    ///   frame range is normalized and stored forward-oriented with
+    ///   `reversed = true` on the [`PlaySegment`].
     ///
-    /// Reversed segments are pre-reversed into a scratch region appended to the
-    /// decoded buffer, then played forward through that region. `global_loop`
-    /// restarts the entire playlist when all segments complete. Boundaries,
-    /// looping, and crossfades are handled at the sample level — no pops.
+    /// The effective per-segment direction is `segment.reversed ^
+    /// SourceControl::reversed` (the global reverse toggle), so a reversed
+    /// segment flips back to forward playback when the user toggles global
+    /// reverse. `global_loop` restarts the entire playlist when all segments
+    /// complete. Boundaries, looping, and crossfades are handled at the
+    /// sample level — no pops.
     pub fn play_with_segments(
         &self,
         path: &Path,
@@ -509,54 +536,45 @@ impl PlaybackEngine {
     ) -> Result<(), anyhow::Error> {
         self.stop();
 
-        let (mut samples, channels, sample_rate) = pre_decode(path)?;
+        let (samples, channels, sample_rate) = pre_decode(path)?;
         let total_frames = samples.len() as u32 / channels as u32;
-        let ch = channels as usize;
 
         let mut segments: Vec<PlaySegment> = Vec::with_capacity(playlist.len());
         for &(start, end, reps, reverse) in playlist {
             let reps = if reps == 15 { 255 } else { reps };
-            if reverse {
-                // start > end for a reversed segment: the buffer region is [end, start).
-                let lo = end as usize * ch;
-                let hi = (start as usize * ch).min(samples.len());
-                if lo >= hi {
-                    // Degenerate reversed segment — treat as skip.
-                    continue;
-                }
-                // Append frames in reverse order (preserving within-frame channel order).
-                let new_start = (samples.len() / ch) as u32;
-                let reversed: Vec<f32> = samples[lo..hi]
-                    .chunks(ch)
-                    .rev()
-                    .flat_map(|frame| frame.iter().copied())
-                    .collect();
-                samples.extend_from_slice(&reversed);
-                let new_end = (samples.len() / ch) as u32;
-                // logical_start: the file-space frame that maps to buffer position new_start.
-                // Frame new_start in buffer = original frame start-1 (the reversed segment
-                // begins at the highest original frame and descends toward end).
-                segments.push(PlaySegment {
-                    start: new_start,
-                    end: new_end,
-                    reps,
-                    logical_start: Some(start.saturating_sub(1)),
-                });
+            // Normalize the frame range to forward-oriented [lo, hi) — the
+            // caller may pass start > end for reversed entries. The traversal
+            // direction is stored on PlaySegment.reversed.
+            let (lo, hi) = if start <= end {
+                (start, end.min(total_frames))
             } else {
-                segments.push(PlaySegment {
-                    start,
-                    end: end.min(total_frames),
-                    reps,
-                    logical_start: None,
-                });
+                (end, start.min(total_frames))
+            };
+            if lo >= hi {
+                // Degenerate segment (empty range) — skip.
+                continue;
             }
+            segments.push(PlaySegment {
+                start: lo,
+                end: hi,
+                reps,
+                reversed: reverse,
+            });
         }
 
-        let first_reps = segments.first().map(|s| s.reps).unwrap_or(1);
-        let first_start = segments.first().map(|s| s.start).unwrap_or(0);
+        let first = segments.first().cloned();
+        let first_reps = first.as_ref().map(|s| s.reps).unwrap_or(1);
+        // Entry position depends on the first segment's intrinsic direction.
+        // Global-reverse is false at program start (SourceControl::new()),
+        // so effective == segment.reversed for this initial jump.
+        let (first_pos_frame, first_start_for_offset) = match &first {
+            Some(seg) if seg.reversed => (seg.end.saturating_sub(1), seg.start),
+            Some(seg) => (seg.start, seg.start),
+            None => (0, 0),
+        };
 
         let control = Arc::new(SourceControl::new());
-        control.frame.store(first_start, Ordering::Relaxed);
+        control.frame.store(first_pos_frame, Ordering::Relaxed);
         control.loop_enabled.store(global_loop, Ordering::Relaxed);
 
         let source = SegmentSource {
@@ -564,13 +582,14 @@ impl PlaybackEngine {
             channels,
             rate: sample_rate,
             total_frames,
-            pos: first_start as usize * channels as usize,
+            pos: first_pos_frame as usize * channels as usize,
             channel: 0,
             playlist: segments,
             seg_idx: 0,
             reps_left: first_reps,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
@@ -589,7 +608,7 @@ impl PlaybackEngine {
         *self.paused_elapsed.lock().expect("playback lock poisoned") = Duration::ZERO;
         *self.current_path.lock().expect("playback lock poisoned") = Some(path.to_path_buf());
         *self.drain_start.lock().expect("playback lock poisoned") = None;
-        *self.sample_offset.lock().expect("playback lock poisoned") = first_start;
+        *self.sample_offset.lock().expect("playback lock poisoned") = first_start_for_offset;
         self.state
             .store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
 
@@ -1319,12 +1338,13 @@ mod tests {
                 start: 0,
                 end: 100,
                 reps: 1,
-                logical_start: None,
+                reversed: false,
             }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
@@ -1353,12 +1373,13 @@ mod tests {
                 start: 0,
                 end: 100,
                 reps: 2,
-                logical_start: None,
+                reversed: false,
             }],
             seg_idx: 0,
             reps_left: 2,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
@@ -1387,12 +1408,13 @@ mod tests {
                 start: 0,
                 end: 100,
                 reps: 1,
-                logical_start: None,
+                reversed: false,
             }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
@@ -1429,19 +1451,20 @@ mod tests {
                     start: 0,
                     end: 50,
                     reps: 1,
-                    logical_start: None,
+                    reversed: false,
                 },
                 PlaySegment {
                     start: 50,
                     end: 100,
                     reps: 1,
-                    logical_start: None,
+                    reversed: false,
                 },
             ],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
@@ -1474,12 +1497,13 @@ mod tests {
                 start: 0,
                 end: 50,
                 reps: 2,
-                logical_start: None,
+                reversed: false,
             }],
             seg_idx: 0,
             reps_left: 2,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
@@ -1499,51 +1523,40 @@ mod tests {
     }
 
     #[test]
-    fn test_segment_source_reverse_segment() {
-        // A reversed segment: play_with_segments pre-reverses the buffer region
-        // and creates a forward PlaySegment pointing to the reversed copy.
-        // Verify that the samples come out in reversed frame order.
+    fn test_segment_source_reversed_segment_yields_frames_in_reverse() {
+        // A reversed segment reads the original buffer end→start (no scratch
+        // copy). Setup: 10 mono frames with values 0.0..0.9. Segment covers
+        // frames 2..8 (values 0.2..0.7) with `reversed: true`. Starting
+        // position is the reverse origin (end - 1 = 7).
         //
-        // Buffer: 10 mono frames with values 0.0, 0.1, ..., 0.9.
-        // Reversed segment covers frames 2..8 (values 0.2..0.7).
-        // Expected output: 0.7, 0.6, 0.5, 0.4, 0.3, 0.2 (6 samples).
+        // Expected output: 0.7, 0.6, 0.5, 0.4, 0.3, 0.2 (6 samples, reversed).
+        let ch = 1usize;
         let buffer: Vec<f32> = (0..10).map(|i| i as f32 / 10.0).collect();
         let control = Arc::new(SourceControl::new());
-        // pre_reverse: frames 2..8 reversed → frame order [7,6,5,4,3,2]
-        let ch = 1usize;
-        let reversed: Vec<f32> = buffer[2 * ch..8 * ch]
-            .chunks(ch)
-            .rev()
-            .flat_map(|f| f.iter().copied())
-            .collect();
-        let mut buf = buffer.clone();
-        let new_start = (buf.len() / ch) as u32; // = 10
-        buf.extend_from_slice(&reversed);
-        let new_end = (buf.len() / ch) as u32; // = 16
 
         let mut src = SegmentSource {
-            buffer: buf,
+            buffer,
             channels: 1,
             rate: 48000,
             total_frames: 10,
-            pos: new_start as usize * ch,
+            pos: 7 * ch, // reverse origin = end - 1
             channel: 0,
             playlist: vec![PlaySegment {
-                start: new_start,
-                end: new_end,
+                start: 2,
+                end: 8,
                 reps: 1,
-                logical_start: Some(7),
+                reversed: true,
             }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
         let samples: Vec<f32> = std::iter::from_fn(|| src.next()).collect();
         assert_eq!(samples.len(), 6, "reversed segment should yield 6 samples");
-        // Values should be ~0.7, 0.6, 0.5, 0.4, 0.3, 0.2 (in reverse order of original).
         for (i, &s) in samples.iter().enumerate() {
             let expected = (7 - i) as f32 / 10.0;
             assert!(
@@ -1554,63 +1567,89 @@ mod tests {
     }
 
     #[test]
-    fn test_segment_source_reversed_logical_frame() {
-        // Verify that control.frame reports file-space (logical) frames during
-        // reversed segment playback, not buffer-space frames.
+    fn test_xor_reversed_segment_plus_global_reverse_plays_forward() {
+        // Plan 07 XOR identity: a reversed segment with global reverse on
+        // plays forward. Setup same as above (segment frames 2..8,
+        // `reversed: true`) but start position is `seg.start = 2` because
+        // effective direction is false (true ^ true).
         //
-        // Setup: 10-frame mono buffer. Reversed segment: original frames 2..8.
-        // Pre-reversed copy appended at buffer frames 10..16.
-        // logical_start = 7 (original frame start-1 = 8-1).
-        //
-        // At buffer frame 10: logical = 7 - (10 - 10) = 7
-        // At buffer frame 11: logical = 7 - (11 - 10) = 6
-        // At buffer frame 15: logical = 7 - (15 - 10) = 2
+        // Expected output: 0.2, 0.3, 0.4, 0.5, 0.6, 0.7 (forward order).
         let ch = 1usize;
         let buffer: Vec<f32> = (0..10).map(|i| i as f32 / 10.0).collect();
-        let reversed: Vec<f32> = buffer[2 * ch..8 * ch]
-            .chunks(ch)
-            .rev()
-            .flat_map(|f| f.iter().copied())
-            .collect();
-        let mut buf = buffer;
-        let new_start = (buf.len() / ch) as u32; // = 10
-        buf.extend_from_slice(&reversed);
-        let new_end = (buf.len() / ch) as u32; // = 16
-
         let control = Arc::new(SourceControl::new());
+        control.reversed.store(true, Ordering::Relaxed); // global reverse on
+
         let mut src = SegmentSource {
-            buffer: buf,
+            buffer,
             channels: 1,
             rate: 48000,
             total_frames: 10,
-            pos: new_start as usize * ch,
+            pos: 2 * ch, // effective-forward origin = seg.start
             channel: 0,
             playlist: vec![PlaySegment {
-                start: new_start,
-                end: new_end,
+                start: 2,
+                end: 8,
                 reps: 1,
-                logical_start: Some(7),
+                reversed: true,
             }],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
-        // Consume frames one at a time and check logical frame after each.
-        let mut logical_frames: Vec<u32> = Vec::new();
-        while src.next().is_some() {
-            logical_frames.push(control.frame.load(Ordering::Relaxed));
-        }
-        assert_eq!(logical_frames.len(), 6);
-        // Logical frames should count down: 7, 6, 5, 4, 3, 2.
-        for (i, &lf) in logical_frames.iter().enumerate() {
-            let expected = 7u32.saturating_sub(i as u32);
-            assert_eq!(
-                lf, expected,
-                "logical_frame[{i}] = {lf}, expected {expected}"
+        let samples: Vec<f32> = std::iter::from_fn(|| src.next()).collect();
+        assert_eq!(samples.len(), 6);
+        for (i, &s) in samples.iter().enumerate() {
+            let expected = (2 + i) as f32 / 10.0;
+            assert!(
+                (s - expected).abs() < 1e-5,
+                "sample[{i}] = {s}, expected {expected} (forward order via XOR)"
             );
+        }
+    }
+
+    #[test]
+    fn test_reversed_segment_frame_counts_down_in_buffer_space() {
+        // After Plan 07, `control.frame` reports buffer-space frames (the
+        // scratch region is gone; buffer space == logical space). A reversed
+        // segment's frame counter counts down from end-1 to start.
+        let ch = 1usize;
+        let buffer: Vec<f32> = (0..10).map(|i| i as f32 / 10.0).collect();
+        let control = Arc::new(SourceControl::new());
+
+        let mut src = SegmentSource {
+            buffer,
+            channels: 1,
+            rate: 48000,
+            total_frames: 10,
+            pos: 7 * ch,
+            channel: 0,
+            playlist: vec![PlaySegment {
+                start: 2,
+                end: 8,
+                reps: 1,
+                reversed: true,
+            }],
+            seg_idx: 0,
+            reps_left: 1,
+            fade_out: 0,
+            fade_in: 0,
+            past_reverse_start: false,
+            control: Arc::clone(&control),
+        };
+
+        let mut frames: Vec<u32> = Vec::new();
+        while src.next().is_some() {
+            frames.push(control.frame.load(Ordering::Relaxed));
+        }
+        assert_eq!(frames.len(), 6);
+        // Counts down: 7, 6, 5, 4, 3, 2.
+        for (i, &f) in frames.iter().enumerate() {
+            let expected = 7u32.saturating_sub(i as u32);
+            assert_eq!(f, expected, "frame[{i}] = {f}, expected {expected}");
         }
     }
 
@@ -1635,19 +1674,20 @@ mod tests {
                     start: 0,
                     end: 50,
                     reps: 1,
-                    logical_start: None,
+                    reversed: false,
                 },
                 PlaySegment {
                     start: 50,
                     end: 100,
                     reps: 1,
-                    logical_start: None,
+                    reversed: false,
                 },
             ],
             seg_idx: 0,
             reps_left: 1,
             fade_out: 0,
             fade_in: 0,
+            past_reverse_start: false,
             control: Arc::clone(&control),
         };
 
