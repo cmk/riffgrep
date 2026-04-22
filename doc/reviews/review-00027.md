@@ -204,3 +204,97 @@ pointers; items 6–7 remain open with documented rationale.
 - Issue 3: tighten R3 to assert `fade_out == fade_in == fade_len` at
   the crossover and that `seg_idx` returned to its pre-loop value.
 - Issue 4: tighten R6 to assert exact frame advance (`+ 2`).
+
+<!-- gh-id: 3123967705 -->
+### Copilot on [`src/engine/playback.rs:350`](https://github.com/cmk/riffgrep/pull/27#discussion_r3123967705) (2026-04-22 12:36 UTC)
+
+`SegmentSource::next()` re-derives the effective reverse flag by inlining `segment.reversed ^ control.reversed`, which duplicates the XOR identity already centralized in `effective_reversed()`. Consider reusing `effective_reversed()` here (or grabbing the current segment once and passing it through) so future direction changes only need to be updated in one place.
+
+<!-- gh-id: 3123967743 -->
+### Copilot on [`src/engine/playback.rs:2062`](https://github.com/cmk/riffgrep/pull/27#discussion_r3123967743) (2026-04-22 12:36 UTC)
+
+`r6_toggle_reverse_pair_preserves_frame`’s assertion (`frame_after >= frame_before`) is weaker than the invariant stated in the comment above it (“should have advanced by 2 …”). As written, it will pass even if the toggle pair causes extra drift forward. Tighten the assertion to match the intended invariant (e.g., exact expected delta) so regressions in frame accounting are caught.
+```suggestion
+        let expected_frame_after = frame_before + 2;
+        // After the pair, frame should have advanced by 2 in the forward
+        // direction (no direction change net) — not stuck, not reversed.
+        assert_eq!(
+            frame_after,
+            expected_frame_after,
+            "R6: toggle pair changed frame by an unexpected amount (expected {} → {}, got {})",
+            frame_before,
+            expected_frame_after,
+```
+
+<!-- gh-id: 4154687187 -->
+### copilot-pull-request-reviewer[bot] — COMMENTED ([2026-04-22 12:36 UTC](https://github.com/cmk/riffgrep/pull/27#pullrequestreview-4154687187))
+
+## Pull request overview
+
+This PR completes Plan 07 by unifying reverse playback semantics (segment-level `reversed` XOR global reverse) and making `PlaybackFsm` the UI-side source of truth, mirrored into mixer-thread atomics.
+
+**Changes:**
+- Removed the pre-reversed scratch-buffer path and replaced it with per-segment `reversed: bool` plus `effective = segment.reversed ^ global_reversed`.
+- Routed `PlaybackEngine` mutators through `PlaybackFsm`, mirroring FSM state into `SourceControl` atomics and applying `MixerCommand`s.
+- Added inline `SegmentSource` reverse-path property tests (R1–R6) and updated related design docs/review records.
+
+### Reviewed changes
+
+Copilot reviewed 5 out of 5 changed files in this pull request and generated 5 comments.
+
+<details>
+<summary>Show a summary per file</summary>
+
+| File | Description |
+| ---- | ----------- |
+| `src/engine/playback_fsm.rs` | Updates module docs and narrows/removes `dead_code` allowances now that the FSM is wired into the engine. |
+| `src/engine/playback.rs` | Implements XOR-based reverse unification, adds `PlaybackFsm` wiring, and expands inline tests for reverse/seek/restart behavior. |
+| `doc/reviews/review-00027.md` | Adds an in-repo review record for Plan 07 with identified follow-ups and risk notes. |
+| `doc/plans/plan-2026-04-22-02.md` | Adds the Plan 07 sprint plan and review notes for the reverse-path/FSM wiring work. |
+| `doc/designs/debt-playback.md` | Updates the playback debt doc checklist/status to reflect Plan 07 completion and test pointers. |
+</details>
+
+
+
+
+
+
+<!-- gh-id: 3123967797 -->
+### Copilot on [`doc/plans/plan-2026-04-22-02.md:184`](https://github.com/cmk/riffgrep/pull/27#discussion_r3123967797) (2026-04-22 12:36 UTC)
+
+The “Properties (must pass)” table still claims the R1–R6 properties live in `tests/engine/playback_fsm/prop.rs` and that R3 asserts “symmetric fade-out/fade-in ramps”. In this PR the properties are implemented as inline `SegmentSource` tests in `src/engine/playback.rs`, and `r3_reverse_loop_crossfade_engages_fade_ramps` only checks ramp engagement (nonzero), not symmetry. Updating this table to match the implemented test location/strength would prevent it from misleading future readers.
+
+<!-- gh-id: 3123967820 -->
+### Copilot on [`src/engine/playback.rs:541`](https://github.com/cmk/riffgrep/pull/27#discussion_r3123967820) (2026-04-22 12:36 UTC)
+
+In `PlaybackEngine::play()`, the single `PlaySegment` is always created as `reversed: false`, but global reverse (FSM.reversed mirrored into `SourceControl::reversed`) still makes the effective direction reversed. In that case, starting the source at frame 0 causes the reverse boundary logic (`past_reverse_start` → past_boundary) to terminate playback after emitting just the first frame. Initialize the entry frame/pos (and `control.frame`/`sample_offset`) based on the effective direction (start at `total_frames - 1` when reversed, else 0) before starting the sink.
+
+<!-- gh-id: 3123967845 -->
+### Copilot on [`src/engine/playback.rs:657`](https://github.com/cmk/riffgrep/pull/27#discussion_r3123967845) (2026-04-22 12:36 UTC)
+
+`play_with_segments()` computes `first_pos_frame` using `fsm.reversed`, but the newly created `SourceControl` still has default atomics (`reversed=false`, `loop_enabled=false`) until after `sink.append(source)` when `mirror_fsm_to_atomics()` runs. Since `SegmentSource` reads these atomics on its very first frame boundary, there’s a race where initial playback can run with the wrong direction/loop setting. Set `control.reversed`/`control.loop_enabled` to the intended initial values before starting the sink (or mirror before appending) to make startup deterministic.
+
+<!-- gh-id: 3124013407 -->
+#### ↳ cmk ([2026-04-22 12:44 UTC](https://github.com/cmk/riffgrep/pull/27#discussion_r3124013407))
+
+Fixed in 95be361 — `next()` now maps through the current segment with `self.effective_reversed(seg)` instead of duplicating the XOR inline, so the identity lives in one place.
+
+<!-- gh-id: 3124013889 -->
+#### ↳ cmk ([2026-04-22 12:44 UTC](https://github.com/cmk/riffgrep/pull/27#discussion_r3124013889))
+
+Reframed and fixed in 95be361. The `frame_before + 2` form turns out to be the wrong invariant too: emitting between the two toggles commits a reverse step-back the second toggle can't undo (first emit flips direction mid-next() and decrements pos). The clean net-no-op invariant is "toggle pair with no emit between," so the test now double-toggles atomically and then emits one frame forward, asserting `frame_after == frame_before + 1`. Test comment updated to match.
+
+<!-- gh-id: 3124014320 -->
+#### ↳ cmk ([2026-04-22 12:44 UTC](https://github.com/cmk/riffgrep/pull/27#discussion_r3124014320))
+
+Fixed in 95be361 — the Verification table now points at `src/engine/playback.rs` with an implementation note explaining the move (SegmentSource is module-private so integration tests can't reach it). R3's invariant is softened to "engages both ramps"; symmetry and spectral continuity stay in Deferred.
+
+<!-- gh-id: 3124014973 -->
+#### ↳ cmk ([2026-04-22 12:44 UTC](https://github.com/cmk/riffgrep/pull/27#discussion_r3124014973))
+
+Real bug — same class as the pre-push Issue 2 fix but for the single-file `play()` path. Fixed in 95be361: `play()` reads `fsm.state().reversed` after the internal `stop()`, sets `entry_frame = total_frames - 1` when global reverse is on, and pre-seeds `control.reversed` + `control.loop_enabled` before `sink.append` so the mixer doesn't race with default atomics on its first frame boundary. Regression test `play_initial_pos_xors_fsm_reversed` locks it in.
+
+<!-- gh-id: 3124015504 -->
+#### ↳ cmk ([2026-04-22 12:44 UTC](https://github.com/cmk/riffgrep/pull/27#discussion_r3124015504))
+
+Real race — fixed in 95be361. `play_with_segments` now pre-seeds `control.reversed` and `control.loop_enabled` directly from `fsm.state().reversed` and `global_loop` before constructing the source, so the mixer thread's first frame boundary reads the intended values rather than `SourceControl::new()` defaults. The late `mirror_fsm_to_atomics` call still runs for transport + pending_* atomics; it's idempotent for reversed/loop_enabled at that point.
