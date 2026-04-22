@@ -966,9 +966,14 @@ impl PlaybackEngine {
         // Don't hard-zero sample_offset: the mixer's restart origin is
         // `first.end - 1` when the first segment's effective direction is
         // reversed, not 0. The mixer updates `control.frame` on the next
-        // frame boundary after it consumes `pending_restart`, and the
-        // next `update_sample_offset()` tick picks that up — keeping the
-        // UI cursor consistent with the actual playback position.
+        // frame boundary after it consumes `pending_restart`. While
+        // transport is Playing, `update_sample_offset()` then picks that
+        // up on its next tick and resyncs the UI cursor. If restart is
+        // invoked while Paused, `update_sample_offset()` short-circuits
+        // (it's gated on Playing), so the cursor stays at its paused
+        // position until playback resumes — at which point the tick
+        // catches up naturally. Either way, the visible cursor reflects
+        // real playback state instead of snapping to 0.
         *self.paused_elapsed.lock().expect("playback lock poisoned") = Duration::ZERO;
         if state == PlaybackState::Playing {
             *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
@@ -1050,6 +1055,11 @@ impl PlaybackEngine {
         if let Ok(sink) = Sink::try_new(&self.stream_handle) {
             *self.sink.lock().expect("playback lock poisoned") = Some(sink);
         }
+    }
+
+    /// Test helper: whether a sink is currently allocated.
+    pub fn test_has_sink(&self) -> bool {
+        self.sink.lock().expect("playback lock poisoned").is_some()
     }
 
     /// Test helper: set sample position fields directly.
@@ -1251,6 +1261,44 @@ mod tests {
             engine.state(),
             PlaybackState::Stopped,
             "should transition to Stopped after drain grace period"
+        );
+    }
+
+    // T1 regression — `stop()` must clean up the sink even when the FSM
+    // is already `Stopped`. Setup reproduces the post-drain-grace edge:
+    // create an empty sink, force state=Playing with an expired
+    // `drain_start`, call `state()` to trip the drain-grace path (which
+    // dispatches `ProgramEnded` on the FSM and leaves the sink
+    // allocated), then `stop()` and assert the sink is gone.
+    #[test]
+    fn test_stop_cleans_sink_after_drain_grace_program_end() {
+        let engine = match PlaybackEngine::try_new() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        engine.test_create_empty_sink();
+        engine
+            .state
+            .store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
+        // Drive the drain-grace transition: FSM must receive ProgramEnded.
+        engine.test_set_drain_start(Some(Instant::now() - Duration::from_millis(200)));
+        assert_eq!(
+            engine.state(),
+            PlaybackState::Stopped,
+            "drain-grace must land state on Stopped"
+        );
+        assert!(
+            engine.test_has_sink(),
+            "sink should still be allocated after drain-grace ProgramEnded — \
+             the bug T1 fixes"
+        );
+
+        // The FSM is already Stopped. Pre-fix, `stop()` would see
+        // `MixerCommand::Stop` = None and skip the sink cleanup.
+        engine.stop();
+        assert!(
+            !engine.test_has_sink(),
+            "stop() must take the sink even when FSM is already Stopped"
         );
     }
 
