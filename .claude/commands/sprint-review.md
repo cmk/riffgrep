@@ -49,7 +49,7 @@ topic), read it. You'll pass its text to the reviewer.
 If no plan exists or none is relevant, that's fine — the review proceeds
 in **code-only mode** (no plan-conformance section).
 
-## Step 2: Collect the diff
+## Step 2: Collect the diff and verify prerequisites
 
 The review always targets the current branch against `origin/main`.
 Refresh the ref first so the base isn't stale:
@@ -62,6 +62,25 @@ git log origin/main..HEAD --oneline
 
 If the branch has not diverged from `origin/main`, abort with a
 message — there's nothing to review.
+
+**Verify the review file exists.** `/sprint-review` appends to a file
+created by TDD step 7; it never creates the file itself. Resolve
+`NNNNN`:
+
+- If a PR already exists for this branch:
+  ```
+  gh pr view --json number --jq .number
+  ```
+- Otherwise (the normal pre-push case):
+  ```
+  scripts/next_pr_number.sh
+  ```
+
+Then confirm `doc/reviews/review-NNNNN.md` exists **and contains a
+`## Summary` section**. If either is missing, abort and tell the user
+to run TDD step 7 (finalize plan + draft PR description). Do not
+create the file and do not proceed to the reviewer — the PR body
+belongs in that commit, not as a post-hoc fabrication by this command.
 
 ## Step 3: Gather context
 
@@ -224,66 +243,42 @@ and specific. Cite file paths and line numbers. Keep the total review under
 
 ## Step 5: Place the output
 
-Review files are organized by PR number: `doc/reviews/review-NNNNN.md`
-where `NNNNN` is the zero-padded PR number (e.g., `review-00017.md`).
-Each file accumulates all review rounds — local and GitHub — as
-dated sections. `review-00000.md` is a protected sentinel; do not write
-review content into it.
+Append (never overwrite) a dated section to the already-existing
+`doc/reviews/review-NNNNN.md`, below the `## Summary` and any prior
+review rounds:
 
-When the reviewer agent returns:
+```markdown
+## Local review (YYYY-MM-DD)
 
-1. **Determine the review file path.** Always name the file
-   `doc/reviews/review-NNNNN.md` — there is no placeholder filename.
-   - If a PR already exists for this branch, use its number:
-     ```
-     gh pr view --json number --jq .number
-     ```
-   - Otherwise (the normal pre-push case), predict the number the
-     next-opened PR will receive:
-     ```
-     scripts/next_pr_number.sh
-     ```
-     The script queries `gh api repos/{repo}/issues` (GitHub shares
-     its numbering sequence between issues and PRs) and prints
-     `max + 1`. The next PR/issue opened in the repo will inherit
-     that number, so the file is named correctly the first time it's
-     written.
-   - If another issue or PR is opened in the repo between review and
-     push, the prediction drifts. Re-run the script before pushing
-     and rename the file if the number changed. Collisions surface
-     immediately — a file already at the predicted path means someone
-     else used the number.
+**Branch:** <branch>
+**Commits:** <count> (origin/main..<branch>)
+**Reviewer:** Claude (sonnet, independent)
 
-2. **Append** (do not overwrite) a dated section to
-   `doc/reviews/review-NNNNN.md` (create `doc/reviews/` and the file if
-   they don't exist):
+---
 
-   ```markdown
-   ## Local review (YYYY-MM-DD)
+{reviewer output}
+```
 
-   **Branch:** <branch>
-   **Commits:** <count> (origin/main..<branch>)
-   **Reviewer:** Claude (sonnet, independent)
+Then:
 
-   ---
+1. **Print a summary** to the conversation: how many must-fix items,
+   how many follow-ups, and the path to the review file. One paragraph
+   max.
 
-   {reviewer output}
+2. **If zero must-fix items:**
+   Tell the user the branch is clear to push. Offer to push and open
+   the PR (but don't do it without confirmation). The PR-create
+   command is:
+
+   ```
+   gh pr create --title "<title>" \
+     --body-file <(scripts/extract_pr_body.sh NNNNN)
    ```
 
-   If the file is new, add a top-level header first:
+   This makes the GitHub body a direct copy of the `## Summary`
+   section — the two can't drift. Remind the user that Tier 2 (CI +
+   GitHub review) will run automatically on the PR.
 
-   ```markdown
-   # PR #<N> — <PR title or branch name>
-   ```
-
-3. **Print a summary** to the conversation: how many must-fix items, how
-   many follow-ups, and the path to the review file. One paragraph max.
-
-4. **If zero must-fix items:**
-   Tell the user the branch is clear to push. Offer to push and create a
-   PR (but don't do it without confirmation). Remind them that Tier 2
-   (CI + GitHub review) will run automatically on the PR.
-
-5. **If must-fix items exist:**
-   Stop. Do not push. Do not offer to fix the issues. The user reads the
-   review and decides what to do next.
+3. **If must-fix items exist:**
+   Stop. Do not push. Do not offer to fix the issues. The user reads
+   the review and decides what to do next.
