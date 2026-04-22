@@ -59,3 +59,70 @@ findings rot on a branch.
 - [ ] Manual spot-check that no existing UI flow regressed on the
   `stop()` change (sink cleanup happens whether the FSM returned
   `MixerCommand::Stop` or not; other state resets are unchanged).
+
+## Local review (2026-04-22)
+
+**Branch:** plan/2026-04-22-03
+**Commits:** 3 (origin/main..plan/2026-04-22-03)
+**Reviewer:** Claude (sonnet, independent)
+
+---
+
+### Commit Hygiene
+
+Three commits, conventional prefixes (`plan:` → `fix:` → `doc:`),
+`plan:` first per TDD workflow. Pieces cleanly split. No issues.
+
+### Code Quality
+
+**T1 (`stop()` unconditional sink cleanup).** FSM dispatch is
+idempotent when already Stopped; no downstream consumer depends on
+the discarded `MixerCommand` return. `sample_offset = 0` at the end
+of `stop()` is unchanged (full-reset semantics, unrelated to T2).
+Back-to-back `stop()` calls remain safe: second call sees sink=None
+and the `if let Some` branch short-circuits. No issues.
+
+**T2 (`restart_program()` drops `sample_offset = 0`).** Under
+Paused, `update_sample_offset()` is gated on `Playing`, so
+`sample_offset` stays at its pre-restart value until resume — no
+worse than the pre-fix behaviour (which snapped to the wrong value
+of 0). `restart_program` still has no live UI caller
+(`#[allow(dead_code)]`), so this is pre-emptive correctness.
+`paused_elapsed`/`play_start` bookkeeping stays (wall-clock, not
+frame-space). No issues.
+
+### Plan Conformance
+
+T1, T2, T3 match the code and doc changes exactly. The drift-fix
+corrections on `plan-2026-04-22-02.md` are accurate: Context
+paragraph reframes pre-sprint state, T1 snippet shows the real
+module-private struct with `reps: u8`, T3 solution text matches the
+actual `effective_reversed()` per-frame XOR implementation.
+`Deferred: None` is accurate.
+
+### Risks
+
+- Double `stop()`: safe (sink.take()=None, FSM Stopped idempotent).
+- Paused restart with stale `sample_offset`: no worse than the prior
+  behaviour (0 was also wrong for reverse mode); acceptable for a
+  dead-code function.
+- T3 doc drift re-sync: corrections target an already-merged
+  historical plan; no live code depends on it.
+
+### Must fix before push
+
+None.
+
+### Follow-up (future work)
+
+**Test-coverage precision for T1.** The plan's Verification section
+lists three existing tests (`test_stop_when_already_stopped`,
+`test_stop_clears_drain_start`, `test_playback_state_transitions`)
+as covering the T1 fix. None of them exercises the specific scenario
+being fixed — sink allocated, FSM already `Stopped` after
+drain-grace `ProgramEnded` — because they either start with no sink
+or call `stop()` from `Playing`. A targeted test that calls
+`test_create_empty_sink()`, dispatches the FSM to `Stopped` via
+`ProgramEnded`, then calls `stop()` and asserts the sink was
+cleaned up would close the gap. Not blocking — the fix is correct
+and the edge has no live caller today — but worth tracking.
