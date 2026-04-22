@@ -2,20 +2,15 @@
 //!
 //! Formalizes the tri-state transport (`Stopped | Playing | Paused`) plus
 //! the runtime reverse / loop toggles and the pending seek / restart
-//! intents that today live as ad-hoc atomics on
-//! [`crate::engine::playback::SourceControl`].
-//!
-//! This FSM is intended to become the single source of truth for
-//! UI-observable transitions once Plan 07 wires it into
-//! [`PlaybackEngine`](crate::engine::playback::PlaybackEngine) and the
-//! TUI action handlers. In the current state it models those
-//! transitions while the existing atomics remain the active
-//! mixer-thread interface; the `#[allow(dead_code)]` attributes below
-//! on `Input`, `MixerCommand`, and `PlaybackFsm` come off when that
-//! wiring lands.
+//! intents. The FSM is the UI-side source of truth for observable
+//! transitions; [`crate::engine::playback::SourceControl`]'s atomics
+//! remain the lock-free wire to the mixer thread and are mirrored from
+//! FSM state on each mutation. Mixer-consumed intents (seek drained,
+//! restart applied, program ended) are fed back via the `Consume*` and
+//! `ProgramEnded` inputs from the TUI tick path.
 //!
 //! See `doc/designs/debt-playback.md` for the reverse-path context and
-//! `doc/plans/plan-2026-04-18-04.md` for this sprint's scope.
+//! `doc/plans/plan-2026-04-22-02.md` for the wiring details.
 
 use rust_fsm::{StateMachine, StateMachineImpl};
 
@@ -70,7 +65,6 @@ const INITIAL_STATE: PlaybackFsmState = PlaybackFsmState {
 /// actually applied the pending intent, closing the feedback loop so the
 /// FSM knows the atomic is now clear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Wiring through PlaybackEngine lands in Task 3.
 pub enum Input {
     /// Transition `Stopped`/`Paused` → `Playing`. A fresh start (new
     /// program) is `Stop` followed by `Play`; when already `Paused`,
@@ -92,17 +86,26 @@ pub enum Input {
     /// mixer applies it on the next frame boundary via
     /// [`Input::ConsumeRestart`].
     Restart,
-    /// Flip the runtime reverse toggle.
+    /// Flip the runtime reverse toggle. Not dispatched by the engine
+    /// today (the UI calls [`Input::SetReverse`] with an absolute value);
+    /// kept for proptest generators and potential future toggle actions.
+    #[allow(dead_code)]
     ToggleReverse,
     /// Set the runtime reverse toggle to a specific value.
     SetReverse(bool),
-    /// Flip the loop-enabled toggle.
+    /// Flip the loop-enabled toggle. Not dispatched by the engine today
+    /// (the UI calls [`Input::SetLoop`] with an absolute value); kept for
+    /// proptest generators and potential future toggle actions.
+    #[allow(dead_code)]
     ToggleLoop,
     /// Set the loop-enabled toggle to a specific value.
     SetLoop(bool),
     /// Mixer signal: current segment's repetition count exhausted.
     /// State-preserving; exists so the reference model sees the same
-    /// transition the SUT does.
+    /// transition the SUT does. Not dispatched by the engine (segment
+    /// advance is internal to the mixer and has no UI-observable
+    /// impact); kept for proptest generators.
+    #[allow(dead_code)]
     SegmentEnded,
     /// Mixer signal: all segments done. If `loop_enabled`, triggers
     /// `pending_restart = true`; else transitions to `Stopped`.
@@ -124,7 +127,6 @@ pub enum Input {
 /// rodio sink). Pure state transitions return `None` from
 /// [`StateMachineImpl::output`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Consumed by PlaybackEngine wiring (Task 3).
 pub enum MixerCommand {
     /// Start the mixer (sink.play() + SegmentSource).
     Start,
@@ -269,12 +271,10 @@ impl StateMachineImpl for PlaybackMachine {
 // ---------- App-facing wrapper ----------
 
 /// App-facing wrapper around [`StateMachine<PlaybackMachine>`].
-#[allow(dead_code)] // Consumed by PlaybackEngine wiring (Task 3).
 pub struct PlaybackFsm {
     machine: StateMachine<PlaybackMachine>,
 }
 
-#[allow(dead_code)] // Consumed by PlaybackEngine wiring (Task 3).
 impl PlaybackFsm {
     /// Create a fresh machine at the initial state.
     pub fn new() -> Self {
@@ -285,6 +285,7 @@ impl PlaybackFsm {
 
     /// Create a machine pre-seeded with the given state. Useful for
     /// tests that need to start from a non-default configuration.
+    #[allow(dead_code)] // Used from inline + proptest tests.
     pub fn from_state(state: PlaybackFsmState) -> Self {
         Self {
             machine: StateMachine::from_state(state),
@@ -306,12 +307,16 @@ impl PlaybackFsm {
         self.state().transport
     }
 
-    /// Whether the runtime reverse toggle is on.
+    /// Whether the runtime reverse toggle is on. Legacy accessor; engine
+    /// callers read via [`PlaybackFsm::state`] directly.
+    #[allow(dead_code)]
     pub fn reversed(&self) -> bool {
         self.state().reversed
     }
 
     /// Whether the program auto-restarts when the final segment ends.
+    /// Legacy accessor; engine callers read via [`PlaybackFsm::state`].
+    #[allow(dead_code)]
     pub fn loop_enabled(&self) -> bool {
         self.state().loop_enabled
     }

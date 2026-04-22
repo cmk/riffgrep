@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 
+use crate::engine::playback_fsm::{Input as FsmInput, MixerCommand, PlaybackFsm, Transport};
+
 /// Playback state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
@@ -413,11 +415,20 @@ fn pre_decode(path: &Path) -> Result<(Vec<f32>, u16, u32), anyhow::Error> {
 ///
 /// Holds the audio output stream and provides play/pause/stop controls.
 /// All methods are safe to call from any thread.
+///
+/// UI-observable state is owned by `fsm` (a [`PlaybackFsm`]). Each mutator
+/// dispatches an [`FsmInput`], mirrors the resulting FSM state to the
+/// mixer-thread atomics on [`SourceControl`], then applies any
+/// [`MixerCommand`] side effects returned by the FSM. The `state` atomic
+/// is a lock-free mirror of `FsmState::transport` for fast reads by
+/// [`PlaybackEngine::state`].
 pub struct PlaybackEngine {
     _stream: OutputStream,
     stream_handle: OutputStreamHandle,
     sink: Arc<Mutex<Option<Sink>>>,
     state: Arc<AtomicU8>,
+    /// UI-side source of truth for transport and pending intents.
+    fsm: Arc<Mutex<PlaybackFsm>>,
     play_start: Arc<Mutex<Option<Instant>>>,
     paused_elapsed: Arc<Mutex<Duration>>,
     current_path: Arc<Mutex<Option<PathBuf>>>,
@@ -445,6 +456,7 @@ impl PlaybackEngine {
             stream_handle,
             sink: Arc::new(Mutex::new(None)),
             state: Arc::new(AtomicU8::new(PlaybackState::Stopped.to_u8())),
+            fsm: Arc::new(Mutex::new(PlaybackFsm::new())),
             play_start: Arc::new(Mutex::new(None)),
             paused_elapsed: Arc::new(Mutex::new(Duration::ZERO)),
             current_path: Arc::new(Mutex::new(None)),
@@ -455,6 +467,52 @@ impl PlaybackEngine {
             sample_rate_hz: Arc::new(Mutex::new(0)),
             source_control: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Mirror the FSM state into the mixer-thread atomics on
+    /// `SourceControl`, and into the lock-free `state` atomic.
+    ///
+    /// Every UI-side FSM dispatch ends with a mirror call so the mixer
+    /// thread's view of pending intents and flags is kept in sync.
+    fn mirror_fsm_to_atomics(&self) {
+        let state = *self.fsm.lock().expect("playback lock poisoned").state();
+        let transport = match state.transport {
+            Transport::Stopped => PlaybackState::Stopped,
+            Transport::Playing => PlaybackState::Playing,
+            Transport::Paused => PlaybackState::Paused,
+        };
+        self.state.store(transport.to_u8(), Ordering::Relaxed);
+        if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
+            ctl.reversed.store(state.reversed, Ordering::Relaxed);
+            ctl.loop_enabled
+                .store(state.loop_enabled, Ordering::Relaxed);
+            ctl.pending_seek
+                .store(state.pending_seek.unwrap_or(NO_SEEK), Ordering::Relaxed);
+            ctl.pending_restart
+                .store(state.pending_restart, Ordering::Relaxed);
+        }
+    }
+
+    /// Observe the mixer-thread atomics and close the loop by dispatching
+    /// [`FsmInput::ConsumeSeek`] / [`FsmInput::ConsumeRestart`] back into
+    /// the FSM when the mixer has drained an intent. Called from the TUI
+    /// tick via [`PlaybackEngine::update_sample_offset`].
+    fn sync_consumed_intents(&self) {
+        let Some(ctl) = self
+            .source_control
+            .lock()
+            .expect("playback lock poisoned")
+            .clone()
+        else {
+            return;
+        };
+        let mut fsm = self.fsm.lock().expect("playback lock poisoned");
+        if fsm.pending_seek().is_some() && ctl.pending_seek.load(Ordering::Relaxed) == NO_SEEK {
+            let _ = fsm.consume(FsmInput::ConsumeSeek);
+        }
+        if fsm.pending_restart() && !ctl.pending_restart.load(Ordering::Relaxed) {
+            let _ = fsm.consume(FsmInput::ConsumeRestart);
+        }
     }
 
     /// Start playing a WAV file from the beginning. Stops any current playback.
@@ -468,7 +526,6 @@ impl PlaybackEngine {
         let total_frames = samples.len() as u32 / channels as u32;
 
         let control = Arc::new(SourceControl::new());
-        control.loop_enabled.store(false, Ordering::Relaxed); // play() is always single-shot
         let source = SegmentSource {
             buffer: samples,
             channels,
@@ -507,8 +564,17 @@ impl PlaybackEngine {
         *self.current_path.lock().expect("playback lock poisoned") = Some(path.to_path_buf());
         *self.drain_start.lock().expect("playback lock poisoned") = None;
         *self.sample_offset.lock().expect("playback lock poisoned") = 0;
-        self.state
-            .store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
+
+        // Dispatch through the FSM: Stop clears transport & pending, Play
+        // transitions Stopped → Playing. `play()` is always single-shot so
+        // SetLoop(false) is included explicitly for symmetry with
+        // `play_with_segments`, which sets it per `global_loop`.
+        {
+            let mut fsm = self.fsm.lock().expect("playback lock poisoned");
+            let _ = fsm.consume(FsmInput::SetLoop(false));
+            let _ = fsm.consume(FsmInput::Play);
+        }
+        self.mirror_fsm_to_atomics();
 
         Ok(())
     }
@@ -575,7 +641,6 @@ impl PlaybackEngine {
 
         let control = Arc::new(SourceControl::new());
         control.frame.store(first_pos_frame, Ordering::Relaxed);
-        control.loop_enabled.store(global_loop, Ordering::Relaxed);
 
         let source = SegmentSource {
             buffer: samples,
@@ -609,42 +674,59 @@ impl PlaybackEngine {
         *self.current_path.lock().expect("playback lock poisoned") = Some(path.to_path_buf());
         *self.drain_start.lock().expect("playback lock poisoned") = None;
         *self.sample_offset.lock().expect("playback lock poisoned") = first_start_for_offset;
-        self.state
-            .store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
+
+        // Dispatch through the FSM: Stop has already cleared state via the
+        // stop() call above. Set loop to the requested value, then Play.
+        {
+            let mut fsm = self.fsm.lock().expect("playback lock poisoned");
+            let _ = fsm.consume(FsmInput::SetLoop(global_loop));
+            let _ = fsm.consume(FsmInput::Play);
+        }
+        self.mirror_fsm_to_atomics();
 
         Ok(())
     }
 
     /// Toggle pause/resume. If stopped, this is a no-op.
     pub fn toggle_pause(&self) {
-        let current = PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
-        match current {
-            PlaybackState::Playing => {
+        let cmd = {
+            let mut fsm = self.fsm.lock().expect("playback lock poisoned");
+            match fsm.transport() {
+                Transport::Playing => fsm.consume(FsmInput::Pause),
+                Transport::Paused => fsm.consume(FsmInput::Resume),
+                Transport::Stopped => return,
+            }
+        };
+        match cmd {
+            Some(MixerCommand::Pause) => {
                 if let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned") {
                     sink.pause();
                 }
-                // Save elapsed time before pausing.
                 let elapsed = self.compute_elapsed();
                 *self.paused_elapsed.lock().expect("playback lock poisoned") = elapsed;
                 *self.play_start.lock().expect("playback lock poisoned") = None;
-                self.state
-                    .store(PlaybackState::Paused.to_u8(), Ordering::Relaxed);
             }
-            PlaybackState::Paused => {
+            Some(MixerCommand::Resume) => {
                 if let Some(ref sink) = *self.sink.lock().expect("playback lock poisoned") {
                     sink.play();
                 }
                 *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
-                self.state
-                    .store(PlaybackState::Playing.to_u8(), Ordering::Relaxed);
             }
-            PlaybackState::Stopped => {}
+            _ => {}
         }
+        self.mirror_fsm_to_atomics();
     }
 
     /// Stop playback and reset state.
     pub fn stop(&self) {
-        if let Some(sink) = self.sink.lock().expect("playback lock poisoned").take() {
+        let cmd = self
+            .fsm
+            .lock()
+            .expect("playback lock poisoned")
+            .consume(FsmInput::Stop);
+        if matches!(cmd, Some(MixerCommand::Stop))
+            && let Some(sink) = self.sink.lock().expect("playback lock poisoned").take()
+        {
             sink.stop();
         }
         *self.source_control.lock().expect("playback lock poisoned") = None;
@@ -654,8 +736,9 @@ impl PlaybackEngine {
         *self.duration.lock().expect("playback lock poisoned") = None;
         *self.drain_start.lock().expect("playback lock poisoned") = None;
         *self.sample_offset.lock().expect("playback lock poisoned") = 0;
-        self.state
-            .store(PlaybackState::Stopped.to_u8(), Ordering::Relaxed);
+        // Mirror runs after source_control is None — it updates the state
+        // atomic but the control-mirror short-circuits cleanly.
+        self.mirror_fsm_to_atomics();
     }
 
     /// Get the current playback state.
@@ -676,11 +759,20 @@ impl PlaybackEngine {
             if drain.unwrap().elapsed() < Duration::from_millis(DRAIN_GRACE_MS) {
                 return PlaybackState::Playing;
             }
-            // Grace period elapsed — transition to Stopped.
+            // Grace period elapsed — transition to Stopped. Dispatch
+            // ProgramEnded to the FSM so it sees the natural end (which
+            // clears any queued pending_restart and lands transport =
+            // Stopped when loop_enabled is false). Drop `drain` first so
+            // the FSM lock ordering stays sink → drain → fsm.
             *drain = None;
-            self.state
-                .store(PlaybackState::Stopped.to_u8(), Ordering::Relaxed);
-            return PlaybackState::Stopped;
+            drop(drain);
+            let _ = self
+                .fsm
+                .lock()
+                .expect("playback lock poisoned")
+                .consume(FsmInput::ProgramEnded);
+            self.mirror_fsm_to_atomics();
+            return PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
         }
         state
     }
@@ -744,13 +836,11 @@ impl PlaybackEngine {
             return Ok(());
         }
 
-        // Request seek via source control (consumed on mixer thread).
+        // Update the frame snapshot immediately for UI responsiveness; the
+        // pending_seek atomic is mirrored from the FSM below.
         if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
-            ctl.pending_seek.store(clamped, Ordering::Relaxed);
             ctl.frame.store(clamped, Ordering::Relaxed);
         }
-
-        // Update sample offset immediately for UI responsiveness.
         *self.sample_offset.lock().expect("playback lock poisoned") = clamped;
 
         // Reset elapsed tracking to match the new position.
@@ -759,9 +849,15 @@ impl PlaybackEngine {
         if state == PlaybackState::Playing {
             *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
         }
-
         // Clear drain_start (seeking restarts drain detection).
         *self.drain_start.lock().expect("playback lock poisoned") = None;
+
+        let _ = self
+            .fsm
+            .lock()
+            .expect("playback lock poisoned")
+            .consume(FsmInput::Seek(clamped));
+        self.mirror_fsm_to_atomics();
 
         Ok(())
     }
@@ -784,39 +880,42 @@ impl PlaybackEngine {
         }
     }
 
-    /// Enable or disable looping on the currently active source.
-    ///
-    /// Writes to [`SourceControl::loop_enabled`] which is read by the mixer
-    /// thread on every frame boundary. Gates both infinite per-segment reps
-    /// (`reps == 255`) and global playlist restart. No-op when stopped.
+    /// Enable or disable looping on the currently active source. Gates
+    /// both infinite per-segment reps (`reps == 255`) and global playlist
+    /// restart. No-op when stopped (FSM retains the flag for the next play).
     pub fn set_loop_enabled(&self, enabled: bool) {
-        if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
-            ctl.loop_enabled.store(enabled, Ordering::Relaxed);
-        }
+        let _ = self
+            .fsm
+            .lock()
+            .expect("playback lock poisoned")
+            .consume(FsmInput::SetLoop(enabled));
+        self.mirror_fsm_to_atomics();
     }
 
-    /// Toggle the reverse flag on the active source. When reversed, each
-    /// segment is traversed end→start (frames read backwards, channels
-    /// within a frame still L→R). No-op when stopped.
+    /// Set the global reverse flag. The effective per-segment direction is
+    /// `segment.reversed ^ global_reversed`; see Plan 07. Safe to call in
+    /// any transport — the FSM mirrors the flag to
+    /// [`SourceControl::reversed`] so the next frame picks it up.
     pub fn set_reversed(&self, reversed: bool) {
-        if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
-            ctl.reversed.store(reversed, Ordering::Relaxed);
-        }
+        let _ = self
+            .fsm
+            .lock()
+            .expect("playback lock poisoned")
+            .consume(FsmInput::SetReverse(reversed));
+        self.mirror_fsm_to_atomics();
     }
 
     /// Restart the active program from segment 0.
     ///
-    /// Unlike `seek_to_sample(0)`, this resets `seg_idx` inside the source so
-    /// reversed segments (whose buffer data lives past `total_frames`) are
-    /// reached correctly. No-op when stopped.
+    /// Unlike `seek_to_sample(0)`, this resets `seg_idx` inside the source
+    /// and, for reversed first segments, restarts from `seg.end - 1` rather
+    /// than `seg.start`. No-op when stopped (matches the FSM's `Restart`
+    /// transition rule).
     #[allow(dead_code)] // Reserved for program segment restart.
     pub fn restart_program(&self) {
         let state = PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
         if state == PlaybackState::Stopped {
             return;
-        }
-        if let Some(ref ctl) = *self.source_control.lock().expect("playback lock poisoned") {
-            ctl.pending_restart.store(true, Ordering::Relaxed);
         }
         *self.sample_offset.lock().expect("playback lock poisoned") = 0;
         *self.paused_elapsed.lock().expect("playback lock poisoned") = Duration::ZERO;
@@ -824,6 +923,13 @@ impl PlaybackEngine {
             *self.play_start.lock().expect("playback lock poisoned") = Some(Instant::now());
         }
         *self.drain_start.lock().expect("playback lock poisoned") = None;
+
+        let _ = self
+            .fsm
+            .lock()
+            .expect("playback lock poisoned")
+            .consume(FsmInput::Restart);
+        self.mirror_fsm_to_atomics();
     }
 
     /// Seek relative to current position in seconds.
@@ -842,10 +948,15 @@ impl PlaybackEngine {
         self.seek_to_sample(target)
     }
 
-    /// Sync sample_offset from the source's authoritative frame position.
+    /// Sync sample_offset from the source's authoritative frame position,
+    /// and close the loop on pending-intent atomics so the FSM matches the
+    /// mixer's view.
     ///
-    /// Called from the TUI tick loop. Reads from the [`SourceControl`] atomic
-    /// on the mixer thread — no wall-clock drift.
+    /// Called from the TUI tick loop. Reads from the [`SourceControl`]
+    /// atomic on the mixer thread — no wall-clock drift. After the frame
+    /// snapshot, any `pending_seek` or `pending_restart` the mixer has
+    /// already drained is reflected back into the FSM via
+    /// [`FsmInput::ConsumeSeek`] / [`FsmInput::ConsumeRestart`].
     pub fn update_sample_offset(&self) {
         let state = PlaybackState::from_u8(self.state.load(Ordering::Relaxed));
         if state != PlaybackState::Playing {
@@ -855,6 +966,7 @@ impl PlaybackEngine {
             let frame = ctl.frame.load(Ordering::Relaxed);
             *self.sample_offset.lock().expect("playback lock poisoned") = frame;
         }
+        self.sync_consumed_intents();
     }
 
     fn compute_elapsed(&self) -> Duration {
