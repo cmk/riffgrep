@@ -289,10 +289,13 @@ One slug, three places.
    `/sprint-review` aborts if the review file is missing its
    `## Summary`. Commit as `doc: Finalize plan NN and PR description`.
 8. Run `/sprint-review` against the branch before merging.
-9. Rebase and land on main. On the feature branch:
-   `git fetch origin && git rebase origin/main`.
-   Then fast-forward main:
-   `git checkout main && git merge --ff-only plan/YYYY-MM-DD-NN`.
+9. Rebase and land on main. First, on the feature branch:
+   `git fetch origin && git rebase origin/main`. Then fast-forward main:
+   - **Branch case**: `git checkout main && git merge --ff-only plan/YYYY-MM-DD-NN`.
+   - **Worktree case**: main is already checked out in the *primary*
+     worktree, so you can't `checkout main` here. `cd` back to the
+     primary and run `git merge --ff-only plan/YYYY-MM-DD-NN` there.
+     Step 10's `git worktree remove` then runs from the primary too.
 10. Clean up: `git worktree remove ../<repo>.plan-YYYY-MM-DD-NN`
     (worktree case only), then `git branch -d plan/YYYY-MM-DD-NN`.
 
