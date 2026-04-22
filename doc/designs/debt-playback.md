@@ -115,10 +115,24 @@ Collapse both paths into the atomic flag approach:
   After unification it needs to use `first.end - 1` when reversed.
 
 ### Testing
-- [ ] Unit test: forward segment + global reverse = reversed playback
-- [ ] Unit test: reversed segment + global reverse = forward playback (XOR)
-- [ ] Unit test: crossfade at loop boundary in reverse mode
-- [ ] Unit test: seek during reversed playback lands at correct position
-- [ ] Unit test: restart during reversed playback starts from correct end
-- [ ] Verify UI cursor tracks correctly during reversed playback
-- [ ] Audio quality test: no clicks/pops at reverse loop boundaries
+- [x] Unit test: forward segment + global reverse = reversed playback
+  — `r1_forward_seg_plus_global_reverse_plays_backwards` in `src/engine/playback.rs`
+- [x] Unit test: reversed segment + global reverse = forward playback (XOR)
+  — `r2_reversed_seg_plus_global_reverse_plays_forwards` in `src/engine/playback.rs`
+- [x] Unit test: crossfade at loop boundary in reverse mode
+  — `r3_reverse_loop_crossfade_engages_fade_ramps` in `src/engine/playback.rs`
+- [x] Unit test: seek during reversed playback lands at correct position
+  — `r4_seek_during_reverse_lands_at_target` in `src/engine/playback.rs`
+- [x] Unit test: restart during reversed playback starts from correct end
+  — `r5_restart_reversed_first_starts_at_end_minus_1` in `src/engine/playback.rs`
+- [ ] Verify UI cursor tracks correctly during reversed playback — manual TUI smoke, not automated.
+- [ ] Audio quality test: no clicks/pops at reverse loop boundaries — R3 asserts ramp engagement; a spectral-null harness is deferred (see Plan 07 Review).
+
+## Status (2026-04-22)
+
+Completed by Plan 07 (`doc/plans/plan-2026-04-22-02.md`). The
+pre-reverse buffer copy ("path 1") is gone; segments now carry a
+`reversed: bool` flag and the effective direction at every frame is
+`segment.reversed ^ SourceControl::reversed` (XOR identity). The
+`pending_restart` reverse-origin bug listed above (items 3–4 of the
+Bugs section) is fixed — reverse restart lands at `first.end - 1`.
