@@ -159,21 +159,21 @@ The coding agent makes atomic commits as it works. Each commit must pass
 `cargo test` and `cargo clippy` (enforced by the pre-commit hook in
 `.claude/settings.json`). Commits can be as small as desired.
 
-Step 7 of the TDD workflow creates `doc/reviews/review-NNNNN.md` with
-the sprint's PR description under a `## Summary` heading. `NNNNN` is
-the PR number zero-padded to 5 digits (PR 17 → `review-00017.md`);
-`scripts/next_pr_number.sh` returns the unpadded integer, so pad it
-(e.g. `printf '%05d'`) when creating the file. The script queries the
-repo's highest existing issue/PR number via `gh api` and adds one
-(GitHub shares its numbering sequence between issues and PRs). The
-`## Summary` section is the single source of truth for the PR body:
-open the PR with
+Step 7 of the TDD workflow creates the PR's review file with the
+sprint's PR description under a `## Summary` heading. The path comes
+from `scripts/review_path.sh` — no argument, it predicts the next PR
+number (via `scripts/next_pr_number.sh`) and emits the zero-padded
+filename, e.g. `doc/reviews/review-00017.md`. `next_pr_number.sh`
+queries the repo's highest existing issue/PR number via `gh api` and
+adds one (GitHub shares its numbering sequence between issues and
+PRs). The `## Summary` section is the single source of truth for the
+PR body: open the PR with
 `gh pr create --body-file <(scripts/extract_pr_body.sh N)` so the
-GitHub body is a direct copy of the file (the extractor handles the
-zero-padding). Because the description is committed *before* push, a
-PR that gets no review comments merges without any extra round-trip
-— the body is already in history. `review-00000.md` is a protected
-sentinel; real reviews start at `00001`.
+GitHub body is a direct copy of the file. Because the description is
+committed *before* push, a PR that gets no review comments merges
+without any extra round-trip — the body is already in history.
+`review-00000.md` is a protected sentinel; real reviews start at
+`00001`.
 
 Before pushing, run `/sprint-review`. This spawns an independent
 reviewer agent that examines `git diff origin/main...HEAD` and the
@@ -184,8 +184,8 @@ the summary. `/sprint-review` aborts if the review file or its
 
 If another issue or PR is opened between running step 7 and opening
 this branch's PR, the predicted number can drift — re-run
-`scripts/next_pr_number.sh` before pushing and rename the review
-file if needed. `/sprint-review` re-predicts on each run, so the
+`scripts/review_path.sh` before pushing and `mv` the old file to the
+new path if needed. `/sprint-review` re-predicts on each run, so the
 rename keeps it pointed at the same file.
 
 If must-fix items exist, resolve them before pushing. If the review
@@ -284,15 +284,14 @@ One slug, three places.
    - Append Deferred and Review sections to the plan document. If any
      property tests were `#[ignore]`d during implementation, document
      the reason and the re-enablement plan here.
-   - Create `doc/reviews/review-NNNNN.md`. `NNNNN` is the PR number
-     from `scripts/next_pr_number.sh` zero-padded to 5 digits (PR 17
-     → `review-00017.md`). File header is `# PR #<N> — <title>`
-     followed by a `## Summary` section containing the PR body. This
-     section is consumed verbatim by
-     `gh pr create --body-file <(scripts/extract_pr_body.sh N)`
-     (the extractor handles the zero-padding), so write it as the PR
-     description (what & why for a human reviewer) — not a
-     ship-report.
+   - Create the review file at `$(scripts/review_path.sh)` (no
+     argument predicts the next PR number and zero-pads the
+     filename). Header is `# PR #<N> — <title>` followed by a
+     `## Summary` section containing the PR body. This section is
+     consumed verbatim by
+     `gh pr create --body-file <(scripts/extract_pr_body.sh N)`, so
+     write it as the PR description (what & why for a human
+     reviewer) — not a ship-report.
 
    This must happen *before* the local review — the reviewer agent
    reads the plan as context and should see the final version, and
