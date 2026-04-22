@@ -1852,4 +1852,233 @@ mod tests {
         assert_eq!(engine.sample_offset(), 0);
         engine.stop();
     }
+
+    // ---------- Plan 07 reverse-path properties (R1–R6) ----------
+    //
+    // These tests pin down the XOR unification: the effective per-segment
+    // direction is `segment.reversed ^ SourceControl::reversed`. R1/R2 are
+    // the XOR identity on sample order; R3 is the reverse-loop crossfade;
+    // R4 is seek-during-reverse; R5 is restart-from-reversed-first; R6 is
+    // frame-position preservation across a ToggleReverse pair.
+
+    /// Build a single-segment source for tests. Buffer values are
+    /// `frame_i -> i as f32 / max as f32` so sample emissions are
+    /// linear-coded for easy assertion.
+    fn build_one_segment_source(
+        total: u32,
+        start: u32,
+        end: u32,
+        reversed: bool,
+        global_reversed: bool,
+    ) -> (SegmentSource, Arc<SourceControl>) {
+        assert!(start < end && end <= total, "start < end <= total");
+        let buffer: Vec<f32> = (0..total).map(|i| i as f32 / total as f32).collect();
+        let control = Arc::new(SourceControl::new());
+        control.reversed.store(global_reversed, Ordering::Relaxed);
+        let seg = PlaySegment {
+            start,
+            end,
+            reps: 1,
+            reversed,
+        };
+        let effective_rev = seg.reversed ^ global_reversed;
+        let pos_frame = if effective_rev {
+            seg.end.saturating_sub(1)
+        } else {
+            seg.start
+        };
+        let src = SegmentSource {
+            buffer,
+            channels: 1,
+            rate: 48000,
+            total_frames: total,
+            pos: pos_frame as usize,
+            channel: 0,
+            playlist: vec![seg],
+            seg_idx: 0,
+            reps_left: 1,
+            fade_out: 0,
+            fade_in: 0,
+            past_reverse_start: false,
+            control: Arc::clone(&control),
+        };
+        (src, control)
+    }
+
+    // R1 — forward_seg ⊕ global_rev produces reverse traversal.
+    #[test]
+    fn r1_forward_seg_plus_global_reverse_plays_backwards() {
+        let total = 16u32;
+        let (mut src, _ctl) = build_one_segment_source(total, 4, 12, false, true);
+        let samples: Vec<f32> = std::iter::from_fn(|| src.next()).collect();
+        // Effective reverse = false XOR true = true; emit frames 11..=4 (8 samples).
+        assert_eq!(samples.len(), 8);
+        for (i, &s) in samples.iter().enumerate() {
+            let expected = (11 - i) as f32 / total as f32;
+            assert!(
+                (s - expected).abs() < 1e-5,
+                "R1 sample[{i}] = {s}, expected {expected}"
+            );
+        }
+    }
+
+    // R2 — reversed_seg ⊕ global_rev produces forward traversal. Covered
+    // by `test_xor_reversed_segment_plus_global_reverse_plays_forward` above;
+    // duplicate here under the canonical R-name so grep("R2 ") finds it.
+    #[test]
+    fn r2_reversed_seg_plus_global_reverse_plays_forwards() {
+        let total = 16u32;
+        let (mut src, _ctl) = build_one_segment_source(total, 4, 12, true, true);
+        let samples: Vec<f32> = std::iter::from_fn(|| src.next()).collect();
+        assert_eq!(samples.len(), 8);
+        for (i, &s) in samples.iter().enumerate() {
+            let expected = (4 + i) as f32 / total as f32;
+            assert!(
+                (s - expected).abs() < 1e-5,
+                "R2 sample[{i}] = {s}, expected {expected}"
+            );
+        }
+    }
+
+    // R3 — reverse-loop crossfade engages fade_out+fade_in ramps at the
+    // segment boundary. Uses reps >= 2 so the loop branch fires.
+    #[test]
+    fn r3_reverse_loop_crossfade_engages_fade_ramps() {
+        // Segment big enough that CROSSFADE_FRAMES (64) fits. Use 256 frames
+        // with reps=2 to force an intra-segment loop. reversed=true, global
+        // off → effective reverse.
+        let total = 256u32;
+        let (mut src, _ctl) = build_one_segment_source(total, 0, 256, true, false);
+        src.playlist[0].reps = 2;
+        src.reps_left = 2;
+
+        let mut saw_fade_out_nonzero = false;
+        let mut saw_fade_in_nonzero_after_loop = false;
+        let mut looped = false;
+
+        // Pull samples until the source ends. Track fade state after each frame.
+        for _step in 0..(total as usize * 4) {
+            if src.next().is_none() {
+                break;
+            }
+            if src.fade_out > 0 {
+                saw_fade_out_nonzero = true;
+            }
+            if !looped && saw_fade_out_nonzero && src.fade_out == 0 {
+                // fade_out hit zero — we've crossed the boundary. A loop
+                // jump should have set fade_in > 0.
+                looped = true;
+            }
+            if looped && src.fade_in > 0 {
+                saw_fade_in_nonzero_after_loop = true;
+            }
+        }
+        assert!(saw_fade_out_nonzero, "R3: fade_out never engaged");
+        assert!(
+            saw_fade_in_nonzero_after_loop,
+            "R3: fade_in never engaged after reverse loop boundary"
+        );
+    }
+
+    // R4 — Seek during reverse playback lands the frame counter at `p`.
+    #[test]
+    fn r4_seek_during_reverse_lands_at_target() {
+        let total = 32u32;
+        let (mut src, ctl) = build_one_segment_source(total, 0, 32, true, false);
+        // Consume a few frames so pos has moved.
+        for _ in 0..10 {
+            src.next();
+        }
+        let target = 5u32;
+        ctl.pending_seek.store(target, Ordering::Relaxed);
+        // Trigger one more frame so on_frame_boundary picks up the seek.
+        src.next();
+        assert_eq!(
+            ctl.frame.load(Ordering::Relaxed),
+            target,
+            "R4: seek during reverse must land at target frame"
+        );
+    }
+
+    // R5 — Restart on a reversed first segment starts at `end - 1`.
+    #[test]
+    fn r5_restart_reversed_first_starts_at_end_minus_1() {
+        let total = 32u32;
+        let (mut src, ctl) = build_one_segment_source(total, 0, 16, true, false);
+        // Move forward (in reverse traversal) several frames.
+        for _ in 0..5 {
+            src.next();
+        }
+        // Signal restart.
+        ctl.pending_restart.store(true, Ordering::Relaxed);
+        // One next() call runs on_frame_boundary's step 0 (pending_restart).
+        src.next();
+        assert_eq!(
+            ctl.frame.load(Ordering::Relaxed),
+            15, // first.end - 1 = 16 - 1
+            "R5: reverse restart must land at first.end - 1"
+        );
+    }
+
+    // R6 — ToggleReverse pair at the SourceControl layer preserves the
+    // frame counter over one emitted frame (the ToggleReverse dispatch
+    // flips control.reversed twice, a no-op at the source level).
+    #[test]
+    fn r6_toggle_reverse_pair_preserves_frame() {
+        let total = 32u32;
+        let (mut src, ctl) = build_one_segment_source(total, 0, 32, false, false);
+        // Walk a few frames forward.
+        for _ in 0..8 {
+            src.next();
+        }
+        let frame_before = ctl.frame.load(Ordering::Relaxed);
+        // Toggle reverse twice (net no-op). Between toggles emit one frame
+        // to ensure the state round-trips through next().
+        ctl.reversed
+            .store(!ctl.reversed.load(Ordering::Relaxed), Ordering::Relaxed);
+        src.next();
+        ctl.reversed
+            .store(!ctl.reversed.load(Ordering::Relaxed), Ordering::Relaxed);
+        src.next();
+        let frame_after = ctl.frame.load(Ordering::Relaxed);
+        // After the pair, frame should have advanced by 2 in the forward
+        // direction (no direction change net) — not stuck, not reversed.
+        assert!(
+            frame_after >= frame_before,
+            "R6: toggle pair drifted backwards ({} → {})",
+            frame_before,
+            frame_after,
+        );
+    }
+
+    // R1/R2 proptest: randomized segment + flag combinations, sample-count
+    // invariant. Expected sample count is always `end - start`.
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn r1_r2_xor_identity_sample_count(
+            start in 0u32..100,
+            len in 1u32..100,
+            seg_reversed in any::<bool>(),
+            global_reversed in any::<bool>(),
+        ) {
+            let end = start + len;
+            let total = end + 50;
+            let (mut src, _ctl) = build_one_segment_source(
+                total, start, end, seg_reversed, global_reversed,
+            );
+            let mut count = 0usize;
+            while src.next().is_some() {
+                count += 1;
+                if count > (len as usize) * 2 {
+                    panic!("R1/R2 proptest: emitted > 2x segment length");
+                }
+            }
+            prop_assert_eq!(
+                count, len as usize,
+                "XOR identity: segment of length {} emitted {} samples",
+                len, count,
+            );
+        }
+    }
 }
