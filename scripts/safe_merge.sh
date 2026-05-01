@@ -28,11 +28,6 @@
 # guard passes.
 set -euo pipefail
 
-if ! command -v gh >/dev/null 2>&1; then
-  echo "safe_merge.sh: gh CLI not found on PATH. Install GitHub CLI and authenticate before merging." >&2
-  exit 1
-fi
-
 if [ $# -eq 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
   cat >&2 <<'USAGE'
 usage: safe_merge.sh [<gh-pr-merge-args...>]
@@ -42,6 +37,11 @@ if that local branch is ahead of its remote tracking ref. All
 arguments are forwarded to `gh pr merge` once the guard passes.
 USAGE
   exit 0
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "safe_merge.sh: gh CLI not found on PATH. Install GitHub CLI and authenticate before merging." >&2
+  exit 1
 fi
 
 # Resolve the PR's head ref. `gh pr view` accepts the same first-arg
@@ -73,6 +73,11 @@ repo_args=()
 expect_repo_value=false
 for arg in "$@"; do
   if [ "$expect_repo_value" = true ]; then
+    if [ "${arg#-}" != "$arg" ]; then
+      echo "safe_merge.sh: missing value for -R/--repo." >&2
+      echo "  usage: scripts/safe_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
+      exit 1
+    fi
     repo_args+=("$arg")
     expect_repo_value=false
     continue
@@ -87,6 +92,11 @@ for arg in "$@"; do
       ;;
   esac
 done
+if [ "$expect_repo_value" = true ]; then
+  echo "safe_merge.sh: missing value for -R/--repo." >&2
+  echo "  usage: scripts/safe_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
+  exit 1
+fi
 
 declare -a pr_selector
 pr_selector_text=''
@@ -103,8 +113,17 @@ else
   head_ref_cmd=(gh pr view "${repo_args[@]}" --json headRefName --jq .headRefName)
 fi
 
+head_ref_cmd_display=''
+for arg in "${head_ref_cmd[@]}"; do
+  printf -v quoted_arg '%q' "$arg"
+  if [ -n "$head_ref_cmd_display" ]; then
+    head_ref_cmd_display+=" "
+  fi
+  head_ref_cmd_display+="$quoted_arg"
+done
+
 if ! head_ref=$("${head_ref_cmd[@]}" 2>/dev/null); then
-  echo "safe_merge.sh: failed to resolve PR head ref via 'gh pr view $pr_selector_text'." >&2
+  echo "safe_merge.sh: failed to resolve PR head ref via: $head_ref_cmd_display" >&2
   echo "  is the PR specifier valid, and are you authenticated to gh?" >&2
   exit 1
 fi
@@ -129,6 +148,7 @@ fi
 # Resolve local branches that could contain unpushed commits for this
 # PR head. Usually the local branch has the same name as the PR head,
 # but a differently named branch can also track origin/<head_ref>.
+declare -a local_refs
 local_refs=()
 if local_sha=$(git rev-parse --verify --quiet "refs/heads/$head_ref"); then
   local_refs+=("$head_ref:$local_sha")
@@ -162,7 +182,11 @@ Per doc/workflow.md, the merge transition starts from gh_review (push
 complete), not round_unpushed. Push first, then re-run:
 
 EOF
-  printf '    git push origin %q\n' "$head_ref" >&2
+  if [ "$local_branch" = "$head_ref" ]; then
+    printf '    git push origin %q\n' "$head_ref" >&2
+  else
+    printf '    git push origin %q:refs/heads/%q\n' "$local_branch" "$head_ref" >&2
+  fi
   printf '    %q' "$0" >&2
   printf ' %q' "$@" >&2
   printf '\n\n' >&2
