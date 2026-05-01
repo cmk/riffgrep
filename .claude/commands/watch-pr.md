@@ -138,24 +138,28 @@ for each thread: scripts/reply_review.py <N> <in_reply_to_id> "<body>"
 # Mirror replies back into the review doc
 scripts/pull_reviews.py <N>
 
-# Single atomic commit: code edits (if any) + mirrored doc.
-# Conditional on having staged changes — an all-`ask` round with no
-# doc delta produces nothing to commit.
-git add -A
-if git diff --cached --quiet; then
-    # Nothing staged — branch stays at gh_review. Step 5's
-    # "no commit" report branch fires.
+# Single atomic commit: code edits (if any) + mirrored replies.
+# If every new item was `ask`, do not stage the pull-only review doc
+# delta from Step 1; leave it for a later substantive round.
+if [ "$auto_fix_count" -eq 0 ] && [ "$reply_count" -eq 0 ]; then
     :
 else
-    # Pick prefix based on staged content:
-    #   fix:  any staged change outside doc/reviews/*.md
-    #   doc:  only doc/reviews/<file>.md changed (replies-only round)
-    if git diff --cached --name-only | grep -Eqv '^doc/reviews/.*\.md$'; then
-        commit_prefix=fix
+    git add -A
+    if git diff --cached --quiet; then
+        # Nothing staged — branch stays at gh_review. Step 5's
+        # "no commit" report branch fires.
+        :
     else
-        commit_prefix=doc
+        # Pick prefix based on staged content:
+        #   fix:  any staged change outside doc/reviews/*.md
+        #   doc:  only doc/reviews/<file>.md changed (replies-only round)
+        if git diff --cached --name-only | grep -Eqv '^doc/reviews/.*\.md$'; then
+            commit_prefix=fix
+        else
+            commit_prefix=doc
+        fi
+        git commit -m "$commit_prefix: Address review feedback on PR #<N>"
     fi
-    git commit -m "$commit_prefix: Address review feedback on PR #<N>"
 fi
 ```
 

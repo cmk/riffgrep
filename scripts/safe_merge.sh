@@ -41,8 +41,19 @@ fi
 
 # Resolve the PR's head ref. `gh pr view` accepts the same first-arg
 # shapes as `gh pr merge` — number, URL, branch name, or no arg
-# (defaulting to the current branch's open PR). The first arg is a
-# selector iff it doesn't start with `-`.
+# (defaulting to the current branch's open PR). To keep the guard and
+# forwarded merge command checking the same PR, require any explicit
+# selector to come before flags.
+if [ $# -ge 1 ] && [ "${1#-}" != "$1" ]; then
+  for arg in "$@"; do
+    if [ "${arg#-}" = "$arg" ]; then
+      echo "safe_merge.sh: PR selector must come before merge flags: $arg" >&2
+      echo "  usage: scripts/safe_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
+      exit 1
+    fi
+  done
+fi
+
 if [ $# -ge 1 ] && [ "${1#-}" = "$1" ]; then
   pr_selector=("$1")
 else
