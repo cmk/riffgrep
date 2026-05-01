@@ -26,7 +26,9 @@ if [ -n "$pr_number" ]; then
   review_file=$(scripts/review_path.sh "$pr_number")
 elif [ -n "${WORKFLOW_REVIEW_FILE:-}" ]; then
   review_file="$WORKFLOW_REVIEW_FILE"
-else
+elif [ "${WORKFLOW_STATE_ALLOW_REVIEW_PATH_FALLBACK:-0}" = '1' ]; then
+  # Opt-in only: the no-arg fallback may consult GitHub to predict the
+  # next PR number, which is too expensive for the default quick probe.
   review_file=$(scripts/review_path.sh 2>/dev/null || true)
 fi
 
