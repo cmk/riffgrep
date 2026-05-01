@@ -48,17 +48,6 @@ if ! grep -q '^## Summary[[:space:]]*$' "$review_file"; then
   exit 1
 fi
 
-plan_context=''
-latest_plan=$(ls -t doc/plans/plan-*.md 2>/dev/null | head -1 || true)
-if [ -n "$latest_plan" ]; then
-  plan_context=$(printf '\n## Sprint plan candidate: %s\n\n' "$latest_plan"; cat "$latest_plan")
-fi
-
-calibration_context=''
-if [ -f doc/reviews/review-calibration.md ]; then
-  calibration_context=$(printf '\n## Review calibration examples\n\n'; cat doc/reviews/review-calibration.md)
-fi
-
 branch=$(git branch --show-current)
 commits=$(git rev-list --count origin/main..HEAD)
 date=$(date +%F)

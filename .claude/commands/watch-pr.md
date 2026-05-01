@@ -139,10 +139,11 @@ for each thread: scripts/reply_review.py <N> <in_reply_to_id> "<body>"
 scripts/pull_reviews.py <N>
 
 # Single atomic commit: code edits (if any) + mirrored replies.
-# If every new item was `ask`, do not stage the pull-only review doc
-# delta from Step 1; leave it for a later substantive round.
+# If every new item was `ask`, do not stage or keep the pull-only
+# review-doc delta from Step 1; restore doc/reviews/ so the next tick
+# still starts from a clean tree.
 if [ "$auto_fix_count" -eq 0 ] && [ "$reply_count" -eq 0 ]; then
-    :
+    git restore --source=HEAD --worktree -- doc/reviews
 else
     git add -A
     if git diff --cached --quiet; then

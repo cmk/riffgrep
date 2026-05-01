@@ -83,17 +83,33 @@ if ! git rev-parse --verify --quiet "$upstream" >/dev/null; then
   exit 1
 fi
 
-# Resolve the local copy of the PR's head ref. If the branch isn't
-# checked out anywhere, there can't be unpushed local commits — the
-# guard isn't meaningful, and the merge is safe.
-if ! local_sha=$(git rev-parse --verify --quiet "refs/heads/$head_ref"); then
+# Resolve local branches that could contain unpushed commits for this
+# PR head. Usually the local branch has the same name as the PR head,
+# but a differently named branch can also track origin/<head_ref>.
+local_refs=()
+if local_sha=$(git rev-parse --verify --quiet "refs/heads/$head_ref"); then
+  local_refs+=("$head_ref:$local_sha")
+fi
+while IFS=' ' read -r local_branch local_upstream; do
+  if [ "$local_upstream" = "$upstream" ] && [ "$local_branch" != "$head_ref" ]; then
+    local_sha=$(git rev-parse --verify "refs/heads/$local_branch")
+    local_refs+=("$local_branch:$local_sha")
+  fi
+done < <(git for-each-ref --format='%(refname:short) %(upstream:short)' refs/heads)
+
+if [ ${#local_refs[@]} -eq 0 ]; then
   exec gh pr merge "$@"
 fi
 
-ahead=$(git log "$upstream..$local_sha" --oneline)
-if [ -n "$ahead" ]; then
+for local_ref in "${local_refs[@]}"; do
+  local_branch=${local_ref%%:*}
+  local_sha=${local_ref#*:}
+  ahead=$(git log "$upstream..$local_sha" --oneline)
+  if [ -z "$ahead" ]; then
+    continue
+  fi
   cat >&2 <<EOF
-safe_merge.sh: REFUSING TO MERGE — local branch '$head_ref' is ahead of $upstream.
+safe_merge.sh: REFUSING TO MERGE — local branch '$local_branch' is ahead of $upstream.
 
 Unpushed commits would be silently dropped by the merge:
 
@@ -108,6 +124,6 @@ EOF
   printf ' %q' "$@" >&2
   printf '\n\n' >&2
   exit 1
-fi
+done
 
 exec gh pr merge "$@"
