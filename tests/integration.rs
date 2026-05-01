@@ -203,7 +203,7 @@ fn sqlite_count_mode() {
     let db_path = std::env::temp_dir().join("riffgrep_e2e_count.db");
     let _ = std::fs::remove_file(&db_path);
 
-    riffgrep()
+    riffgrep_raw()
         .args([
             "--index",
             "--db-path",
@@ -213,7 +213,7 @@ fn sqlite_count_mode() {
         .assert()
         .success();
 
-    riffgrep()
+    riffgrep_raw()
         .args(["--count", "--db-path", db_path.to_str().unwrap()])
         .assert()
         .success()

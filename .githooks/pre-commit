@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit — git-side pre-commit gate.
+#
+# Companion to the Claude Code `PreToolUse` hook in
+# `.claude/settings.json`. The two layers complement each other:
+#
+#   - `.claude/settings.json` runs DURING agent iteration, before
+#     the Bash call that invokes git fires. Catches issues without
+#     the agent needing to actually invoke git, which is faster
+#     feedback. But: it sees the staged diff at PreToolUse time,
+#     which means a chained command like `git add file && git
+#     commit -m ...` slips through — the `git add` half hasn't
+#     run yet at hook fire, so `check-pii.sh` reads an empty
+#     pre-add staged diff. Issue #8 documents this.
+#
+#   - `.githooks/pre-commit` (this file) runs at git's standard
+#     `pre-commit` hook point — AFTER staging, BEFORE the commit
+#     object is created. So it sees the actual staged content
+#     regardless of how the commit was invoked: chained `git add
+#     && git commit`, agent-invoked Bash calls that bypass the
+#     Claude Code hook, terminal commits, IDE commits, all paths.
+#
+# This file is the unbypassable safety net at commit time. Activate
+# it on a fresh clone with:
+#
+#     git config core.hooksPath .githooks
+#
+# Bypass with `--no-verify` only when explicitly authorized.
+#
+# Exit codes follow git convention: nonzero blocks the commit.
+
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+# 1. cargo fmt — blocking. Drift aborts the commit. Run
+#    `cargo fmt --all` to fix.
+cargo fmt --all -- --check
+
+# 2. PII / secret scan — blocking.
+scripts/check-pii.sh
+
+# 3. Test suite — blocking.
+cargo test --workspace --quiet
+
+# 4. Lints — blocking; matches CI.
+cargo clippy --all-targets --quiet -- -D warnings
