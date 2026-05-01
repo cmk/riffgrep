@@ -28,6 +28,11 @@
 # guard passes.
 set -euo pipefail
 
+if ! command -v gh >/dev/null 2>&1; then
+  echo "safe_merge.sh: gh CLI not found on PATH. Install GitHub CLI and authenticate before merging." >&2
+  exit 1
+fi
+
 if [ $# -eq 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
   cat >&2 <<'USAGE'
 usage: safe_merge.sh [<gh-pr-merge-args...>]
@@ -45,23 +50,61 @@ fi
 # forwarded merge command checking the same PR, require any explicit
 # selector to come before flags.
 if [ $# -ge 1 ] && [ "${1#-}" != "$1" ]; then
+  previous_takes_value=false
   for arg in "$@"; do
-    if [ "${arg#-}" = "$arg" ]; then
+    if [ "$previous_takes_value" = true ]; then
+      previous_takes_value=false
+    elif [ "${arg#-}" = "$arg" ]; then
       echo "safe_merge.sh: PR selector must come before merge flags: $arg" >&2
       echo "  usage: scripts/safe_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
       exit 1
+    else
+      case "$arg" in
+        -A|--author-email|-b|--body|-F|--body-file|--match-head-commit|-t|--subject|-R|--repo)
+          previous_takes_value=true
+          ;;
+      esac
     fi
   done
 fi
 
+declare -a repo_args
+repo_args=()
+expect_repo_value=false
+for arg in "$@"; do
+  if [ "$expect_repo_value" = true ]; then
+    repo_args+=("$arg")
+    expect_repo_value=false
+    continue
+  fi
+  case "$arg" in
+    -R|--repo)
+      repo_args+=("$arg")
+      expect_repo_value=true
+      ;;
+    --repo=*)
+      repo_args+=("$arg")
+      ;;
+  esac
+done
+
+declare -a pr_selector
+pr_selector_text=''
 if [ $# -ge 1 ] && [ "${1#-}" = "$1" ]; then
   pr_selector=("$1")
+  pr_selector_text="$1"
 else
   pr_selector=()
 fi
 
-if ! head_ref=$(gh pr view "${pr_selector[@]}" --json headRefName --jq .headRefName 2>/dev/null); then
-  echo "safe_merge.sh: failed to resolve PR head ref via 'gh pr view ${pr_selector[*]}'." >&2
+if [ ${#pr_selector[@]} -gt 0 ]; then
+  head_ref_cmd=(gh pr view "${pr_selector[@]}" "${repo_args[@]}" --json headRefName --jq .headRefName)
+else
+  head_ref_cmd=(gh pr view "${repo_args[@]}" --json headRefName --jq .headRefName)
+fi
+
+if ! head_ref=$("${head_ref_cmd[@]}" 2>/dev/null); then
+  echo "safe_merge.sh: failed to resolve PR head ref via 'gh pr view $pr_selector_text'." >&2
   echo "  is the PR specifier valid, and are you authenticated to gh?" >&2
   exit 1
 fi
