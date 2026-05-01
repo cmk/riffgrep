@@ -43,7 +43,7 @@ while IFS= read -r -d '' f; do
   [ -z "$matches" ] && continue
 
   if [ -f .pii-allow ]; then
-    allow_patterns=$(grep -vE '^\s*(#|$)' .pii-allow || true)
+    allow_patterns=$(grep -vE '^[[:space:]]*(#|$)' .pii-allow || true)
     if [ -n "$allow_patterns" ]; then
       matches=$(printf '%s\n' "$matches" \
         | grep -vE -f <(printf '%s\n' "$allow_patterns") || true)

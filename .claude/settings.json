@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ cargo fmt --all -- --check || echo '[warn] cargo fmt found formatting differences (non-blocking; run: cargo fmt --all)'; } && scripts/check-pii.sh && cargo test --workspace --quiet 2>&1 && cargo clippy --all-targets --quiet -- -D warnings 2>&1"
+            "command": "cargo fmt --all -- --check && scripts/check-pii.sh && cargo test --workspace --quiet 2>&1 && cargo clippy --all-targets --quiet -- -D warnings 2>&1"
           }
         ]
       }

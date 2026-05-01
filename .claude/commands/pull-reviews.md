@@ -51,22 +51,22 @@ the file is skipped. Note: it is **not** safe to assume a single
 different sequences, so max-id across both would silently drop later
 items from the lower-numbered sequence. Set membership avoids this.
 
-## Step 3: Let the file ride with the next fix commit
+## Step 3: Let the file ride with the next round commit
 
 The review file is not committed on its own. It rides with the **next
-review round's fix commit** — the commit that addresses the comments
-you just pulled.
+review round's commit** — the atomic commit that bundles the code
+fixes, posted replies, and mirrored doc together.
 
 The `/reply-reviews` command enforces this: it posts replies, runs
-`pull_reviews.py`, and `git commit --amend`s the mutated doc into the
-pre-push fix commit, so one push delivers everything in order.
+`pull_reviews.py` to mirror them, then `git add -A && git commit`s
+everything in one shot. One push delivers the whole round.
 
 If you invoked `/pull-reviews` standalone (no paired reply round), the
 file stays modified-but-uncommitted on disk. A later `/reply-reviews`
 will pick it up and fold it in. Do **not** open a standalone
 `doc: update review-NNNNN.md` commit just to land it — that forces a CI
-round-trip for no code change and was the ordering bug the unified
-`/reply-reviews` was designed to eliminate.
+round-trip for no code change and breaks the one-commit-per-round
+atomicity that the unified `/reply-reviews` exists to provide.
 
 If there were no new items (script reported `no new items`), there is
 nothing staged and nothing to do.
@@ -118,7 +118,7 @@ Reply (has `in_reply_to_id`):
 ## Notes
 
 - **The script does not auto-commit.** The file rides with the next
-  round's fix commit (see Step 3); don't land a standalone `doc:`
+  round's atomic commit (see Step 3); don't land a standalone `doc:`
   commit just to attach the audit trail.
 - **Idempotent** via set membership on `<!-- gh-id: -->` markers (not
   max-id, which would be unsound across review/comment sequences).

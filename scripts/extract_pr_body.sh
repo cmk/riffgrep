@@ -2,19 +2,18 @@
 # Extracts the PR body from doc/reviews/review-NNNNN.md.
 #
 # The review file's `## Summary` section is the single source of truth
-# for the PR body (see CLAUDE.md "Tier 1 — Local review"). This script
+# for the PR body (see AGENTS.md "Tier 1 — Local review"). This script
 # extracts that section so `gh pr create --body-file` can feed it
 # straight to GitHub:
 #
 #     gh pr create --title "..." \
 #       --body-file <(scripts/extract_pr_body.sh 17)
 #
-# Content is taken between the `## Summary` heading (exclusive) and
-# the first review-round marker (exclusive) — `## Local review` from
-# /sprint-review or `<!-- gh-id: N -->` from pull_reviews.py. The
-# extracted region is written to stdout; bash's command substitution
-# normalizes trailing newlines, so a caller using `<(...)` sees the
-# body minus any trailing blank lines.
+# Content is taken between the `## Summary` heading (exclusive) and the
+# first review marker (exclusive): `## Local review (` from
+# /sprint-review or `<!-- gh-id: ` from pull_reviews.py. Sibling
+# sections like `## Test plan` are NOT truncated. Printed verbatim to
+# stdout.
 #
 # Fails loudly with a nonzero exit and a message on stderr if:
 #   - the argument is missing or not numeric
@@ -49,9 +48,11 @@ if [ ! -f "$file" ]; then
 fi
 
 # Extract between `## Summary` (exclusive) and the first review-round
-# marker (exclusive). Stopping at review markers (rather than any
-# `## ` heading) lets the PR body contain sibling sections like
-# `## Test plan` without being truncated.
+# marker (exclusive). Review markers are `## Local review (YYYY-MM-DD)`
+# from /sprint-review and `<!-- gh-id: N -->` from pull_reviews.py.
+# Stopping at review markers (rather than any `## ` heading) lets the
+# PR body contain sibling sections like `## Test plan` without being
+# truncated.
 if ! body=$(awk '
   !found && /^## Summary[[:space:]]*$/                  { in_s = 1; found = 1; next }
   in_s && (/^## Local review \(/ || /^<!-- gh-id: /)    { in_s = 0 }
