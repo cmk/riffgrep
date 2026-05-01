@@ -66,23 +66,10 @@ date=$(date +%F)
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
-{
-  cat <<'EOF'
-You are reviewing code on a local feature branch before it is pushed to
-GitHub. This is a pre-push quality gate. Review the diff between
-origin/main and the branch HEAD.
-
-Be direct and specific. Prioritize bugs, behavioral regressions,
-missing tests, and violations of repo workflow. Cite file paths and
-line numbers where possible. Separate must-fix issues from follow-ups.
-
-Use the repo conventions and calibration examples below as context.
-EOF
-  printf '\n## Repo conventions\n\n'
-  cat AGENTS.md
-  printf '%s\n' "$plan_context"
-  printf '%s\n' "$calibration_context"
-} | codex review --base origin/main - >"$tmp"
+# Codex CLI 0.125 rejects a custom prompt together with --base, even
+# though help advertises both. AGENTS.md is discovered from the repo
+# root, so use the supported base-review invocation.
+codex review --base origin/main >"$tmp"
 
 {
   printf '\n## Local review (%s)\n\n' "$date"

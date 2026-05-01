@@ -26,6 +26,8 @@ if [ -n "$pr_number" ]; then
   review_file=$(scripts/review_path.sh "$pr_number")
 elif [ -n "${WORKFLOW_REVIEW_FILE:-}" ]; then
   review_file="$WORKFLOW_REVIEW_FILE"
+else
+  review_file=$(scripts/review_path.sh 2>/dev/null || true)
 fi
 
 review_summary='unknown'
@@ -75,15 +77,18 @@ elif [ "$base_commits" != 'unknown' ] && [ "$base_commits" -gt 0 ]; then
   state='impl_green'
 fi
 
-cat <<EOF
-state: $state
-branch: $branch
-origin_main_commits: $base_commits
-origin_branch_ahead: $ahead
-origin_branch_behind: $behind
-working_tree: $(if [ -z "$status" ]; then printf clean; else printf dirty; fi)
-pr_number: ${pr_number:-none}
-review_file: ${review_file:-unknown}
-review_summary: $review_summary
-local_review: $local_review
-EOF
+working_tree=dirty
+if [ -z "$status" ]; then
+  working_tree=clean
+fi
+
+printf 'state: %s\n' "$state"
+printf 'branch: %s\n' "$branch"
+printf 'origin_main_commits: %s\n' "$base_commits"
+printf 'origin_branch_ahead: %s\n' "$ahead"
+printf 'origin_branch_behind: %s\n' "$behind"
+printf 'working_tree: %s\n' "$working_tree"
+printf 'pr_number: %s\n' "${pr_number:-none}"
+printf 'review_file: %s\n' "${review_file:-unknown}"
+printf 'review_summary: %s\n' "$review_summary"
+printf 'local_review: %s\n' "$local_review"
