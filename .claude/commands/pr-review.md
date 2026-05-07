@@ -91,7 +91,7 @@ Read these files and include them in the reviewer prompt:
 
 - `AGENTS.md` — repo conventions, workspace layout, TDD workflow, commit
   style, feature-gate conventions
-- `doc/reviews/calibration.md` — if it exists, include as few-shot
+- `doc/reviews/review-calibration.md` — if it exists, include as few-shot
   examples. If absent, skip (the reviewer prompt has built-in guidance).
 
 ## Step 4: Launch the reviewer
@@ -105,7 +105,7 @@ The prompt must be self-contained. Include:
 2. The commit log
 3. The repo conventions from AGENTS.md
 4. The plan text (if found), clearly labeled as optional context
-5. Calibration examples from `doc/reviews/calibration.md` (if found)
+5. Calibration examples from `doc/reviews/review-calibration.md` (if found)
 6. The review instructions (below)
 
 ### Reviewer voice and calibration
@@ -164,7 +164,7 @@ tested, and follows conventions. If the plan specifies verification criteria
 {IF calibration examples exist:}
 ## Examples of high-quality review comments
 
-{doc/reviews/calibration.md contents}
+{doc/reviews/review-calibration.md contents}
 
 Match this style: cite the contract (doc, plan, or naming), show how the
 code violates it, and name the consequence. When something is fine, one
@@ -202,9 +202,8 @@ sentence is enough — don't pad.
 
 - For any module that parses, encodes, or transforms data: are there
   property tests? If not, flag this as a gap.
-- Do fixture-gated tests use `fixture_or_skip!` from
-  `project_core::testing` (return early when fixture is absent, don't
-  panic, don't `#[ignore]`)?
+- Do fixture-gated tests use the repo's `fixture_or_skip!` helper
+  (return early when fixture is absent, don't panic, don't `#[ignore]`)?
 - What edge cases do the tests miss? Be specific — "what happens if the
   TCP connection drops mid-NRPN" is useful; "more tests would be good"
   is not.
@@ -300,9 +299,9 @@ Use the prefix that matches the nature of the fixes:
 `doc:` (doc nits). Mix-and-match isn't possible in one commit — if
 the auto items split across categories, pick the predominant one.
 
-The pre-commit hook runs `cargo fmt --check`, `scripts/check_pii.sh`,
-and `scripts/check_layers.sh`. The pre-push hook runs
-`cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`.
+The pre-commit hook runs `cargo fmt --check` and `scripts/check_pii.sh`.
+The pre-push hook runs `cargo test` and
+`cargo clippy --all-targets -- -D warnings`.
 If either fails:
 
 - Read the failure. If a specific auto-fix caused the breakage,

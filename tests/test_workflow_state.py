@@ -86,6 +86,52 @@ class WorkflowStateTests(unittest.TestCase):
             self.assertEqual(fields["review_file"], "unknown")
             self.assertEqual(fields["local_review"], "unknown")
 
+    def test_branch_review_file_is_inferred_without_gh(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            remote = root / "origin.git"
+            repo = root / "repo"
+
+            subprocess.run(["git", "init", "--bare", remote], check=True, capture_output=True)
+            repo.mkdir()
+            git(repo, "init", "--initial-branch=main")
+            git(repo, "config", "user.name", "Workflow Test")
+            git(repo, "config", "user.email", "workflow@example.invalid")
+
+            scripts = repo / "scripts"
+            bin_dir = root / "bin"
+            review_dir = repo / "doc" / "reviews"
+            scripts.mkdir(parents=True)
+            bin_dir.mkdir()
+            review_dir.mkdir(parents=True)
+            gh = bin_dir / "gh"
+            gh.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(1)\n", encoding="utf-8")
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            script = scripts / "workflow_state.sh"
+            script.write_text(WORKFLOW_STATE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+            script.chmod(script.stat().st_mode | stat.S_IXUSR)
+            (repo / "README.md").write_text("seed\n", encoding="utf-8")
+
+            git(repo, "add", ".")
+            git(repo, "commit", "-m", "initial")
+            git(repo, "remote", "add", "origin", str(remote))
+            git(repo, "push", "-u", "origin", "main")
+
+            git(repo, "switch", "-c", "with-review")
+            (review_dir / "review-00001.md").write_text(
+                "# PR #1 — Test\n\n## Summary\n\nBody.\n\n"
+                "## Local review (2026-05-07)\n\nClean.\n",
+                encoding="utf-8",
+            )
+            git(repo, "add", ".")
+            git(repo, "commit", "-m", "doc: add review")
+
+            fields = run_state(repo, script, bin_dir)
+            self.assertEqual(fields["state"], "local_reviewed")
+            self.assertEqual(fields["review_file"], "doc/reviews/review-00001.md")
+            self.assertEqual(fields["review_summary"], "present")
+            self.assertEqual(fields["local_review"], "present")
+
 
 if __name__ == "__main__":
     unittest.main()

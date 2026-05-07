@@ -160,6 +160,17 @@ while IFS=' ' read -r local_branch local_upstream; do
   fi
 done < <(git for-each-ref --format='%(refname:short) %(upstream:short)' refs/heads)
 
+if [ -n "$(git status --porcelain)" ]; then
+  cat >&2 <<'EOF'
+git_merge.sh: REFUSING TO MERGE — working tree has uncommitted changes.
+
+Commit, stash, or discard the local changes before merging. Review-doc
+updates from scripts/pr_report.py reviews must be committed before the
+PR is merged, or they will be left out of the PR history.
+EOF
+  exit 1
+fi
+
 if [ ${#local_refs[@]} -eq 0 ]; then
   exec gh pr merge "$@"
 fi
