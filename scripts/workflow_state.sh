@@ -28,6 +28,18 @@ elif [ -n "${WORKFLOW_REVIEW_FILE:-}" ]; then
   review_file="$WORKFLOW_REVIEW_FILE"
 fi
 
+if [ -z "$review_file" ] && git rev-parse --verify --quiet origin/main >/dev/null; then
+  # Local-only pre-PR inference: a finalized branch adds exactly one
+  # numbered review file against origin/main, and this avoids a GitHub
+  # request in the common state-check path.
+  review_file=$(
+    git diff --name-only origin/main...HEAD -- 'doc/reviews/review-[0-9][0-9][0-9][0-9][0-9].md' \
+      | grep -v 'doc/reviews/review-00000.md' \
+      | sort \
+      | tail -1 || true
+  )
+fi
+
 if [ -z "$review_file" ] && [ "${WORKFLOW_STATE_ALLOW_REVIEW_PATH_FALLBACK:-0}" = '1' ]; then
   # Opt-in only: the no-arg fallback may consult GitHub to predict the
   # next PR number, which is too expensive for the default quick probe.

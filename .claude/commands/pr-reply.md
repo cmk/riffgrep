@@ -189,9 +189,9 @@ else
 fi
 ```
 
-The pre-commit hook runs `cargo fmt --check`, `scripts/check_pii.sh`,
-and `scripts/check_layers.sh`. The pre-push hook runs
-`cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`.
+The pre-commit hook runs `cargo fmt --check` and `scripts/check_pii.sh`.
+The pre-push hook runs `cargo test` and
+`cargo clippy --all-targets -- -D warnings`.
 If either fails:
 
 - Read the failure. Fix the code or revert the offending edit.

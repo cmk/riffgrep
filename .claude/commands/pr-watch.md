@@ -51,14 +51,17 @@ Do **not** touch it.
 ```
 git fetch --quiet origin "$branch" || true
 unpushed=$(git log "origin/$branch..HEAD" --oneline)
+failed_marker=".pr-watch/pr-<N>.push-failed"
+failed_head=$(cat "$failed_marker" 2>/dev/null || true)
+head=$(git rev-parse HEAD)
 ```
 
-If `unpushed` is non-empty, a previous tick's `git push` (Step 5)
-failed and the round commit is stranded locally. Try one push to
-recover:
+If `unpushed` is non-empty and `failed_head` equals `head`, a previous
+tick's `git push` (Step 5) failed and the watcher-owned round commit is
+stranded locally. Try one push to recover:
 
 ```
-git push origin "$branch"
+git push origin "$branch" && rm -f "$failed_marker"
 ```
 
 If the push succeeds, continue to Step 1 (the round is now
@@ -67,6 +70,10 @@ fails again, exit with one line: `paused at round_unpushed: push
 failed (<error>)`. Do not poll, do not fix, do not reply — surface
 the issue and let the user investigate. The next loop tick will
 retry.
+
+If `unpushed` is non-empty and the marker does not match `HEAD`, pause
+instead of pushing. The local commit may be user work or a deliberately
+unpushed `/pr-reply` round.
 
 ## Step 1: Poll for new activity
 
@@ -154,11 +161,16 @@ for each thread: scripts/pr_reply.py <N> <in_reply_to_id> "<body>"
 scripts/pr_report.py reviews <N>
 
 # Single atomic commit: code edits (if any) + mirrored replies.
-# If every new item was `ask`, do not stage or keep the pull-only
-# review-doc delta from Step 1; restore doc/reviews/ so the next tick
-# still starts from a clean tree.
+# If every new item was `ask`, still commit the review-doc mirror so
+# gh-id markers are preserved and the next tick does not reprocess the
+# same comments as new.
 if [ "$auto_fix_count" -eq 0 ] && [ "$reply_count" -eq 0 ]; then
-    git restore --source=HEAD --worktree -- doc/reviews
+    git add doc/reviews
+    if git diff --cached --quiet; then
+        :
+    else
+        git commit -m "doc: Mirror ask-only review activity on PR #<N>"
+    fi
 else
     git add -A
     if git diff --cached --quiet; then
@@ -179,9 +191,9 @@ else
 fi
 ```
 
-The pre-commit hook runs `cargo fmt --check`, `scripts/check_pii.sh`,
-and `scripts/check_layers.sh`. The pre-push hook runs
-`cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`.
+The pre-commit hook runs `cargo fmt --check` and `scripts/check_pii.sh`.
+The pre-push hook runs `cargo test` and
+`cargo clippy --all-targets -- -D warnings`.
 If either fails:
 
 - Read the failure. If a specific auto-fix caused the breakage, revert
@@ -215,14 +227,21 @@ review the PR as a whole before invoking `gh pr merge` /
 `scripts/git_merge.sh`. A round commit reaching origin without
 their merge is the normal mid-PR state, not a risk to gate on.
 
-If Step 4 produced no commit (no auto-fix items AND no replies
-posted — every item was `ask`), skip this step. There is nothing to
+If Step 4 produced no commit (no new mirrored items, no auto-fix
+items, and no replies posted), skip this step. There is nothing to
 push. The branch stays at `gh_review` (its original state).
 
 If `git push` fails (network, auth, non-fast-forward because someone
-else pushed), exit with the error and leave the round commit local.
-The next tick's Step 0d will see the unpushed commit and surface the
-state to the user.
+else pushed), record the failed watcher-owned push before exiting:
+
+```
+mkdir -p .pr-watch
+echo "$(git rev-parse HEAD)" > ".pr-watch/pr-<N>.push-failed"
+```
+
+Then exit with the error and leave the round commit local. The next
+tick's Step 0d will see the marker and retry only that known
+watcher-owned push.
 
 **Never merge.** `gh pr merge` is a manual user step.
 
@@ -247,8 +266,8 @@ pr-watch PR #<N> — round complete at gh_review (commit pushed)
                `gh pr merge` / `scripts/git_merge.sh` when ready.
 ```
 
-If Step 4 produced no commit (no auto-fix items AND no replies
-posted — all items were `ask`):
+If Step 4 produced no commit (no new mirrored items, no auto-fix
+items, and no replies posted):
 
 ```
 pr-watch PR #<N> — round complete at gh_review (no commit needed)
@@ -257,7 +276,7 @@ pr-watch PR #<N> — round complete at gh_review (no commit needed)
   deferred:    0
   needs you:   <count>
     - path:line — one-line summary
-  round commit: none — all items classified as `ask`, no replies posted
+  round commit: none — no staged delta
   next step:   PR is mergeable when reviewers stop posting.
 ```
 

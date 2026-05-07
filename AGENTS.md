@@ -251,7 +251,7 @@ Once pushed, CI (`.github/workflows/ci.yml`) runs build, clippy, test, and
 fmt checks. Claude Code Action and/or GitHub Copilot perform a second-round
 review on the PR automatically.
 
-After GitHub review activity, run `/pull-reviews <N>` to fetch the PR's
+After GitHub review activity, run `/pr-report <N>` to fetch the PR's
 review bodies and inline comments and **append them chronologically to the
 same `doc/reviews/review-NNNNN.md`** used by Tier 1. The command is
 idempotent — it records `<!-- gh-id: NNNNN -->` markers for each appended
@@ -286,7 +286,7 @@ Use `scripts/git_merge.sh <pr-args>` instead of `gh pr merge` —
 the wrapper refuses to invoke the merge while the local branch
 is ahead of origin.
 
-`/pull-reviews <N>` remains available as a lower-level primitive for
+`/pr-report <N>` remains available as a lower-level primitive for
 fetching comments without posting. Use it standalone only to refresh
 the doc right before the final pre-merge push, to capture any trailing
 reviewer comments; its output rides with the next round commit, never as

@@ -10,7 +10,7 @@ if [ "${1:-}" = "--check" ]; then
   command -v codex >/dev/null
   codex review --help >/dev/null
   command -v gh >/dev/null
-  scripts/pr_report.py path 1 >/dev/null
+  scripts/pr_report.py path >/dev/null
   scripts/workflow_state.sh
   exit 0
 fi
@@ -78,5 +78,13 @@ codex review --base origin/main >"$tmp"
   cat "$tmp"
   printf '\n'
 } >>"$review_file"
+
+review_name=$(basename "$review_file")
+review_number=${review_name#review-}
+review_number=${review_number%.md}
+pr_number=$((10#$review_number))
+
+git add "$review_file"
+git commit -m "doc: Append local review for PR #$pr_number"
 
 printf 'local review appended: %s\n' "$review_file"
