@@ -23,13 +23,15 @@ fi
 
 review_file=''
 if [ -n "$pr_number" ]; then
-  review_file=$(scripts/review_path.sh "$pr_number")
+  review_file=$(scripts/pr_report.py path "$pr_number")
 elif [ -n "${WORKFLOW_REVIEW_FILE:-}" ]; then
   review_file="$WORKFLOW_REVIEW_FILE"
-elif [ "${WORKFLOW_STATE_ALLOW_REVIEW_PATH_FALLBACK:-0}" = '1' ]; then
+fi
+
+if [ -z "$review_file" ] && [ "${WORKFLOW_STATE_ALLOW_REVIEW_PATH_FALLBACK:-0}" = '1' ]; then
   # Opt-in only: the no-arg fallback may consult GitHub to predict the
   # next PR number, which is too expensive for the default quick probe.
-  review_file=$(scripts/review_path.sh 2>/dev/null || true)
+  review_file=$(scripts/pr_report.py path 2>/dev/null || true)
 fi
 
 review_summary='unknown'
@@ -67,7 +69,8 @@ elif [ "$ahead" != 'unknown' ] && [ "$ahead" -gt 0 ]; then
   state='round_unpushed'
 elif [ -n "$pr_number" ]; then
   state='gh_review'
-elif [ "$ahead" = '0' ] && [ "$behind" = '0' ] && [ "$local_review" = 'present' ]; then
+elif [ "$ahead" = '0' ] && [ "$behind" = '0' ] \
+    && [ "$base_commits" != 'unknown' ] && [ "$base_commits" -gt 0 ]; then
   state='pushed'
 elif [ "$local_review" = 'present' ]; then
   state='local_reviewed'

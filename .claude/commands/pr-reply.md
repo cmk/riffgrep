@@ -1,9 +1,9 @@
 ---
-description: Finalize a PR review round before push. Apply fix edits to the working tree first, then run this command — it posts replies, mirrors them back into review-NNNNN.md via pull_reviews.py, and produces ONE atomic commit containing both the code fix and the mirrored reply doc. One push delivers the whole round. Refuses to run if the branch already has unpushed commits (which would create a bisect-bisecting two-commit round).
+description: Finalize a PR review round before push. Apply fix edits to the working tree first, then run this command — it posts replies, mirrors them back into review-NNNNN.md via scripts/pr_report.py reviews, and produces ONE atomic commit containing both the code fix and the mirrored reply doc. One push delivers the whole round. Refuses to run if the branch already has unpushed commits (which would create a split two-commit review round).
 argument-hint: <pr-number>
 ---
 
-# /reply-reviews — Finalize a Review Round (Before Push)
+# /pr-reply — Finalize a PR Round (Before Push)
 
 Apply fix edits to the working tree, then run this command. It posts
 replies to each unresolved PR review thread, mirrors them back into
@@ -58,7 +58,7 @@ unpushed=$(git log "origin/$branch..HEAD" --oneline)
 - If `unpushed` is non-empty: **refuse**. Print:
   > Branch '$branch' has unpushed commits. Per doc/workflow.md, a new
   > review round starts from `gh_review` — push the existing commit
-  > first (`git push`), then re-run `/reply-reviews`. If the existing
+  > first (`git push`), then re-run `/pr-reply`. If the existing
   > commit is itself a stale round-1, just push it.
 
   Do not post replies.
@@ -78,13 +78,13 @@ is fine and does not break the FSM.
 
 ## Step 1: Refresh the review doc before deciding what to reply to
 
-Even though we'll run `pull_reviews.py` again in Step 5 to mirror our
+Even though we'll run `pr_report.py reviews` again in Step 5 to mirror our
 own replies, run it **first** so the "unreplied threads" analysis is
 against the latest GitHub state and so partial-failure recovery
 (see Recovery section below) works correctly:
 
 ```
-scripts/pull_reviews.py <N>
+scripts/pr_report.py reviews <N>
 ```
 
 If the script reports new items, read them — a reviewer may have
@@ -136,7 +136,7 @@ Rules:
 For each composed reply:
 
 ```
-scripts/reply_review.py <PR> <in_reply_to_id> "<body>"
+scripts/pr_reply.py <PR> <in_reply_to_id> "<body>"
 ```
 
 `<in_reply_to_id>` is the `gh-id` from the top-level comment's
@@ -144,7 +144,7 @@ scripts/reply_review.py <PR> <in_reply_to_id> "<body>"
 body to read from stdin for long or multi-line replies:
 
 ```
-scripts/reply_review.py 5 3098547699 - <<'EOF'
+scripts/pr_reply.py 5 3098547699 - <<'EOF'
 Fixed — ...
 EOF
 ```
@@ -157,7 +157,7 @@ Step 1 + Step 2's filter dedupes already-posted threads.
 ## Step 5: Mirror the replies back into the review doc
 
 ```
-scripts/pull_reviews.py <N>
+scripts/pr_report.py reviews <N>
 ```
 
 The script appends the replies you just posted (plus anything else new)
@@ -189,9 +189,10 @@ else
 fi
 ```
 
-The pre-commit hook runs `cargo fmt --check`, `scripts/check-pii.sh`,
-`cargo test --workspace`, and `cargo clippy --all-targets -- -D
-warnings`. If it fails:
+The pre-commit hook runs `cargo fmt --check`, `scripts/check_pii.sh`,
+and `scripts/check_layers.sh`. The pre-push hook runs
+`cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`.
+If either fails:
 
 - Read the failure. Fix the code or revert the offending edit.
 - Retry `git commit` — staging is preserved.
@@ -202,7 +203,7 @@ There is no `--amend` step. The commit either succeeds (whole round
 captured, state advances to `round_unpushed`) or:
 
 - The pre-commit hook fails: working tree still dirty, replies on
-  GitHub but no mirror committed yet — re-run `/reply-reviews` to
+  GitHub but no mirror committed yet — re-run `/pr-reply` to
   redo Step 5+6.
 - Nothing was staged: branch stays at `gh_review`. No state change.
 
@@ -220,7 +221,7 @@ the wire. Two terminal shapes:
   transition starts from `gh_review`, which requires push.
 - **Next step for the user:** `git push` (or `git push -u origin
   <branch>` if this is the first push for the branch). Then merge
-  via `scripts/safe_merge.sh <pr-args>` rather than `gh pr merge` —
+  via `scripts/git_merge.sh <pr-args>` rather than `gh pr merge` —
   the wrapper refuses to invoke the merge while the local branch is
   ahead of origin, which is the only protection against silently
   dropping an unpushed round.
@@ -242,19 +243,19 @@ Do **not** push. The user runs the push explicitly as the last step.
 
 ## Recovery: partial reply-post failure
 
-If `scripts/reply_review.py` fails partway through Step 4, abort the
+If `scripts/pr_reply.py` fails partway through Step 4, abort the
 run before Step 5. Working tree has the code edits but no mirrored
 replies. Some replies are on GitHub, some aren't. Re-run
-`/reply-reviews`:
+`/pr-reply`:
 
-1. Step 1's `pull_reviews.py` mirrors the already-posted replies into
+1. Step 1's `pr_report.py reviews` mirrors the already-posted replies into
    the doc.
 2. Step 2's "unreplied threads" filter skips threads that now have
    `↳ {user}` mirrored replies — only the unposted threads remain.
 3. Steps 3–5 cover the missing posts and re-mirror.
 4. Step 6 commits everything.
 
-`reply_review.py` is **not** idempotent server-side — calling it twice
+`pr_reply.py` is **not** idempotent server-side — calling it twice
 with the same `in_reply_to_id` posts twice. Idempotency comes from
 the Step 1 mirror happening *before* Step 2's filter; don't bypass
 Step 1 on retry.
@@ -266,7 +267,7 @@ all uncommitted. Fix the test/clippy/PII issue, then either:
 
 - **`git commit` manually**: same staging, same message. The
   pre-commit hook re-runs.
-- **Re-run `/reply-reviews`**: Step 0b sees no unpushed commits, Step
+- **Re-run `/pr-reply`**: Step 0b sees no unpushed commits, Step
   1+2 see no unreplied threads (all already mirrored), Steps 3–5 are
   no-ops, Step 6 retries the commit.
 

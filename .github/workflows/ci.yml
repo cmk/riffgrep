@@ -53,6 +53,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Run workflow helper tests
+        run: python -m unittest
+
       - name: Install test dependencies
         # Only the lightweight deps needed for the default suite. CLAP-
         # and FAISS-gated tests skip cleanly via the `requires_clap_model`

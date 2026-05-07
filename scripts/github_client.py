@@ -1,9 +1,9 @@
-"""Shared helpers for the scripts/pull_reviews.py and scripts/reply_review.py
+"""Shared helpers for the scripts/pr_report.py reviews and scripts/pr_reply.py
 GitHub-review CLIs.
 
 Private sibling module so updates land in one place. Scripts invoked as
 `scripts/foo.py` get `scripts/` on `sys.path[0]` automatically, which is
-enough for `from _gh import ...` to resolve without any package setup.
+enough for `from github_client import ...` to resolve without any package setup.
 """
 
 from __future__ import annotations
@@ -40,18 +40,16 @@ def gh_repo() -> str:
 def resolve_repo(pr: int, repo_override: str | None) -> str:
     """Pick the target repo, verifying the PR exists in it.
 
-    If `--repo` was passed, trust its target (explicit beats inferred)
-    but still pre-flight the PR via `gh api repos/{repo}/pulls/{pr}`
-    so a typoed `--repo` fails immediately instead of producing an
+    If `--repo` was passed, trust it (explicit beats inferred).
+    Otherwise auto-detect via `gh repo view` from cwd, then pre-flight
+    `gh api repos/{repo}/pulls/{pr}`. On 404, error with both the
+    detected repo and cwd so a user whose shell drifted into the wrong
+    directory sees the mismatch immediately instead of getting an
     opaque 404 from the reply/review endpoints later.
-
-    If `--repo` was omitted, auto-detect via `gh repo view` from cwd
-    before the same pre-flight. On 404, error with both the detected
-    repo and cwd so a user whose shell drifted into the wrong
-    directory sees the mismatch immediately.
     """
-    detected_from_cwd = repo_override is None
-    repo = repo_override or gh_repo()
+    if repo_override:
+        return repo_override
+    repo = gh_repo()
     try:
         subprocess.run(
             ["gh", "api", f"repos/{repo}/pulls/{pr}"],
@@ -69,24 +67,15 @@ def resolve_repo(pr: int, repo_override: str | None) -> str:
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip()
         if "Not Found" in detail or "404" in detail:
-            if detected_from_cwd:
-                cwd = os.getcwd()
-                lines = [
-                    f"error: couldn't verify PR #{pr} in {repo} "
-                    f"(repo detected from cwd: {cwd}).",
-                    "  The PR may be in a different repo — pass "
-                    "--repo owner/name to override.",
-                ]
-            else:
-                lines = [
-                    f"error: couldn't verify PR #{pr} in {repo}.",
-                    "  Double-check the `--repo owner/name` value — "
-                    "typos here otherwise fall through to downstream 404s.",
-                ]
-            lines.append(
+            cwd = os.getcwd()
+            lines = [
+                f"error: couldn't verify PR #{pr} in {repo} "
+                f"(repo detected from cwd: {cwd}).",
+                "  The PR may be in a different repo — pass "
+                "--repo owner/name to override.",
                 "  A 404 here can also mean your gh token lacks access "
-                "to this repo/PR."
-            )
+                "to this repo/PR.",
+            ]
             if detail:
                 lines.append(f"  gh api detail: {detail}")
             print("\n".join(lines), file=sys.stderr)

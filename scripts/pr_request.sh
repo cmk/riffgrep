@@ -18,7 +18,7 @@
 # file has to be renamed to match the number GitHub actually assigned.
 #
 # Usage:
-#     scripts/next_pr_number.sh [owner/name]
+#     scripts/pr_request.sh [owner/name]
 #
 # If `owner/name` is omitted, the repo is inferred via `gh repo view`.
 #
@@ -27,19 +27,32 @@
 # go to stderr.
 set -euo pipefail
 
+repo_err=''
+api_err=''
+trap 'rm -f "${repo_err:-}" "${api_err:-}"' EXIT
+
+if ! command -v gh >/dev/null; then
+  echo "error: gh CLI not found on PATH" >&2
+  exit 1
+fi
+
 if [ $# -ge 1 ] && [ -n "$1" ]; then
   repo="$1"
 else
-  if ! repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null); then
+  repo_err=$(mktemp)
+  if ! repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>"$repo_err"); then
     echo "error: could not determine repo; pass owner/name or run inside a gh-configured clone" >&2
+    sed 's/^/  gh: /' "$repo_err" >&2
     exit 1
   fi
 fi
 
+api_err=$(mktemp)
 if ! last=$(gh api -X GET "repos/$repo/issues" \
     -f state=all -f per_page=1 -f sort=created -f direction=desc \
-    --jq '.[0].number // 0' 2>/dev/null); then
+    --jq '.[0].number // 0' 2>"$api_err"); then
   echo "error: gh api failed for repos/$repo/issues (check auth and network)" >&2
+  sed 's/^/  gh: /' "$api_err" >&2
   exit 1
 fi
 

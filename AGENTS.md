@@ -60,16 +60,16 @@ Do not skip, reorder, or replace a transition with an ad hoc command
 that merely looks equivalent. Use the repo scripts and commands for
 workflow-sensitive actions:
 
-- Local review: Claude Code uses `/sprint-review`; Codex and shell
-  users use `scripts/local_review.sh`. Claude Code's built-in
+- Local review: Claude Code uses `/pr-review`; Codex and shell
+  users use `scripts/pr_review.sh`. Claude Code's built-in
   `/review [PR]` is optional post-push review help, not the canonical
   pre-push transition.
-- PR body pathing: `scripts/review_path.sh` and
-  `scripts/extract_pr_body.sh`.
-- GitHub review ingestion: `scripts/pull_reviews.py`.
-- Review replies: `/reply-reviews` or the underlying
-  `scripts/reply_review.py` + `scripts/pull_reviews.py` flow.
-- Merge: `scripts/safe_merge.sh`, not raw `gh pr merge`.
+- PR body pathing: `scripts/pr_report.py path` and
+  `scripts/pr_report.py body`.
+- GitHub review ingestion: `scripts/pr_report.py reviews`.
+- Review replies: `/pr-reply` or the underlying
+  `scripts/pr_reply.py` + `scripts/pr_report.py reviews` flow.
+- Merge: `scripts/git_merge.sh`, not raw `gh pr merge`.
 
 ## Architecture
 
@@ -119,15 +119,18 @@ src/
 
 ## Repository conventions
 
-- **Each commit must leave the repo in a state where `cargo test` passes.**
+- **Each pushed commit must leave the repo green** (`cargo test`
+  + `cargo clippy --all-targets -- -D warnings`).
   Do not commit a library module without the tests that cover it in the
-  same commit. Never commit a red test suite.
+  same commit. Intra-branch commits can be transiently red between
+  commit and push; the pre-push hook is the gate, and CI verifies the
+  pushed state.
 - **No merge commits.** Always rebase onto main — never `git merge`. The
   history must be linear.
 - **CI-repair commits must be fixups.** If a commit on this branch broke
   CI and the follow-up exists only to repair it, commit with
   `git commit --fixup=<broken-sha>` instead of a standalone `fix:`.
-  Before pushing, run `scripts/autosquash.sh` (a thin wrapper over
+  Before pushing, run `scripts/git_squash.sh` (a thin wrapper over
   `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main`) so the
   fixups collapse into their targets. This keeps main's linear history
   free of commits that temporarily broke the build. Review-round commits
@@ -196,26 +199,26 @@ Keep subjects under 72 characters. Use the body for non-obvious decisions.
 ## Code Review Workflow
 
 `doc/workflow.md` has mermaid state diagrams for the review-round
-lifecycle and the `/watch-pr` loop — useful when debugging an
+lifecycle and the `/pr-watch` loop — useful when debugging an
 unexpected situation (stuck fix commit, loop that won't quit). The
 prose below is authoritative; the diagrams are derived views.
 
 ### Tier 1 — Local Review (pre-push)
 
-The coding agent makes atomic commits as it works. Each commit must pass
-`cargo test` and `cargo clippy` (enforced by the pre-commit hooks in
-`.claude/settings.json` and `.githooks/pre-commit`). Commits can be as small as desired.
+The coding agent makes atomic commits as it works. Commits can be as
+small as desired; the pushed branch tip must pass `cargo test` and
+`cargo clippy --all-targets -- -D warnings` via `.githooks/pre-push`.
 
 Step 7 of the TDD workflow creates the PR's review file with the
 sprint's PR description under a `## Summary` heading. The path comes
-from `scripts/review_path.sh` — no argument, it predicts the next PR
-number (via `scripts/next_pr_number.sh`) and emits the zero-padded
-filename, e.g. `doc/reviews/review-00017.md`. `next_pr_number.sh`
+from `scripts/pr_report.py path` — no argument, it predicts the next PR
+number (via `scripts/pr_request.sh`) and emits the zero-padded
+filename, e.g. `doc/reviews/review-00017.md`. `pr_request.sh`
 queries the repo's highest existing issue/PR number via `gh api` and
 adds one (GitHub shares its numbering sequence between issues and
 PRs). The `## Summary` section is the single source of truth for the
 PR body: open the PR with
-`gh pr create --body-file <(scripts/extract_pr_body.sh N)` so the
+`gh pr create --body-file <(scripts/pr_report.py body N)` so the
 GitHub body is a direct copy of the file. Because the description is
 committed *before* push, a PR that gets no review comments merges
 without any extra round-trip — the body is already in history.
@@ -223,8 +226,8 @@ without any extra round-trip — the body is already in history.
 `00001`.
 
 Before pushing, run the local review transition. Claude Code uses the
-repo-specific `/sprint-review` command. Codex and shell users use
-`scripts/local_review.sh`, which invokes `codex review --base
+repo-specific `/pr-review` command. Codex and shell users use
+`scripts/pr_review.sh`, which invokes `codex review --base
 origin/main` with the repo conventions and calibration examples. Both
 paths examine `git diff origin/main...HEAD` and the commit log, then
 append findings as a `## Local review (YYYY-MM-DD)` section below the
@@ -235,8 +238,8 @@ is not the canonical pre-push FSM transition.
 
 If another issue or PR is opened between running step 7 and opening
 this branch's PR, the predicted number can drift — re-run
-`scripts/review_path.sh` before pushing and `mv` the old file to the
-new path if needed. `/sprint-review` re-predicts on each run, so the
+`scripts/pr_report.py path` before pushing and `mv` the old file to the
+new path if needed. `/pr-review` re-predicts on each run, so the
 rename keeps it pointed at the same file.
 
 If must-fix items exist, resolve them before pushing. If the review
@@ -257,29 +260,29 @@ appends new comments. The result is one file per PR containing the full
 local + GitHub review history in order.
 
 Once the findings are addressed as **uncommitted edits in the working
-tree**, run `/reply-reviews <N>`. The command does the whole round
+tree**, run `/pr-reply <N>`. The command does the whole round
 in order: posts replies to each unresolved thread, runs
-`scripts/pull_reviews.py` to mirror the replies into `review-NNNNN.md`,
+`scripts/pr_report.py reviews` to mirror the replies into `review-NNNNN.md`,
 then makes ONE atomic commit containing both the code edits and the
 mirrored doc. You then `git push` once — code + replies + review doc
 land in a single round trip.
 
-**Do not commit the fix yourself before running `/reply-reviews`.**
+**Do not commit the fix yourself before running `/pr-reply`.**
 The command runs on the `gh_review → items_pulled → round_unpushed`
 arrow per `doc/workflow.md` — it expects to start from `gh_review`
 (local at-or-behind origin) and produce the round commit itself.
 Pre-committing a fix would put the branch at an unpushed-state that
 breaks the precondition; if you have a stranded pre-existing fix
-commit, push it first, then re-run. `/reply-reviews` refuses to run
+commit, push it first, then re-run. `/pr-reply` refuses to run
 if the branch already has unpushed commits.
 
 **Do not merge before pushing the round commit.** Per
 `doc/workflow.md`'s state machine, the merge transition is
 `gh_review → merged` — there is no edge from `round_unpushed → merged`.
-Merging from `round_unpushed` (the state after `/reply-reviews`
+Merging from `round_unpushed` (the state after `/pr-reply`
 makes its commit but before push) silently drops the local commit
 because `gh pr merge` is GitHub-side and doesn't see local state.
-Use `scripts/safe_merge.sh <pr-args>` instead of `gh pr merge` —
+Use `scripts/git_merge.sh <pr-args>` instead of `gh pr merge` —
 the wrapper refuses to invoke the merge while the local branch
 is ahead of origin.
 
@@ -297,15 +300,15 @@ conversational flow and keeps the review record in one place.
 ### PR Polling (optional)
 
 For PRs where you don't want to manually ping "check the replies", pair
-`/watch-pr <N>` with `/loop`:
+`/pr-watch <N>` with `/loop`:
 
 ```
-/loop 10m /watch-pr 17
+/loop 10m /pr-watch 17
 ```
 
 Each tick does one of: (a) heartbeat if no new activity, (b) one
 finish-the-round cycle — auto-fix the trivially-clear items, push back
-or defer the rest, run the `/reply-reviews` flow, **push the round
+or defer the rest, run the `/pr-reply` flow, **push the round
 commit**, or (c) `paused at round_unpushed: push failed` if the push
 itself errored (network, non-fast-forward).
 
@@ -317,7 +320,7 @@ is classified as **needs you** and surfaced in the round report with
 
 The command never **merges**. The merge is the user's safety gate:
 each PR is reviewed manually before `gh pr merge` /
-`scripts/safe_merge.sh`. Pushing the round commit advances the
+`scripts/git_merge.sh`. Pushing the round commit advances the
 branch to `gh_review` so CI re-runs and the reviewer sees replies
 attached to the right tip — that's normal mid-PR motion, not a risk
 worth gating on.
@@ -349,22 +352,22 @@ One slug, three places.
    - Append Deferred and Review sections to the plan document. If any
      property tests were `#[ignore]`d during implementation, document
      the reason and the re-enablement plan here.
-   - Create the review file at `$(scripts/review_path.sh)` (no
+   - Create the review file at `$(scripts/pr_report.py path)` (no
      argument predicts the next PR number and zero-pads the
      filename). Header is `# PR #<N> — <title>` followed by a
      `## Summary` section containing the PR body. This section is
      consumed verbatim by
-     `gh pr create --body-file <(scripts/extract_pr_body.sh N)`, so
+     `gh pr create --body-file <(scripts/pr_report.py body N)`, so
      write it as the PR description (what & why for a human
      reviewer) — not a ship-report.
 
    This must happen *before* the local review — the reviewer agent
    reads the plan as context and should see the final version, and
-   `/sprint-review` aborts if the review file is missing its
+   `/pr-review` aborts if the review file is missing its
    `## Summary`. Commit as `doc: Finalize plan NN and PR description`.
 8. Run the local review transition before pushing:
-   - Claude Code: `/sprint-review`
-   - Codex/shell: `scripts/local_review.sh`
+   - Claude Code: `/pr-review`
+   - Codex/shell: `scripts/pr_review.sh`
 9. Rebase and land on main. First, on the feature branch:
    `git fetch origin && git rebase origin/main`. Then fast-forward main:
    - **Branch case**: `git checkout main && git merge --ff-only plan/YYYY-MM-DD-NN`.
@@ -375,9 +378,9 @@ One slug, three places.
 10. Clean up: `git worktree remove ../<repo>.plan-YYYY-MM-DD-NN`
     (worktree case only), then `git branch -d plan/YYYY-MM-DD-NN`.
 
-### Pre-Commit Hooks
+### Git Hooks
 
-Two complementary layers guard every commit:
+Three complementary layers guard local changes:
 
 **Layer 1 — Claude Code `PreToolUse`** (`.claude/settings.json`):
 fires on agent-invoked Bash calls matching `git commit*`. Catches
@@ -385,36 +388,41 @@ issues during agent iteration without invoking git for real.
 Limitation: `PreToolUse` runs *before* the matched Bash call's body
 executes, so a chained command like `git add file && git commit -m
 "..."` sees an empty pre-add staged diff at hook time and slips
-through `check-pii.sh`. Use separate `git add` and `git commit`
+through `check_pii.sh`. Use separate `git add` and `git commit`
 calls to keep this layer effective.
 
 **Layer 2 — Git `pre-commit`** (`.githooks/pre-commit`): fires at
 git's standard hook point (after staging, before commit object
 creation). Sees the actual staged content regardless of how the
 commit was invoked — chained Bash, terminal, IDE, anything. This is
-the unbypassable safety net.
+the cheap commit-time safety net.
 
-Activate Layer 2 on a fresh clone:
+**Layer 3 — Git `pre-push`** (`.githooks/pre-push`): fires once per
+push for non-delete refs. It runs the expensive test and clippy suite
+on the exact state being sent to the remote.
+
+Activate Layers 2 and 3 on a fresh clone:
 
 ```
 git config core.hooksPath .githooks
 ```
 
-Both layers run the same check chain, in order. Every step is
-blocking — the chain short-circuits on the first failure and the
-commit is aborted:
+The commit-time chain is blocking:
 
 1. `cargo fmt --all -- --check` — fmt drift aborts the commit. Run
    `cargo fmt --all` to fix.
-2. `scripts/check-pii.sh` — grep the staged diff for absolute
+2. `scripts/check_pii.sh` — grep the staged diff for absolute
    user-home paths (`/Users/...` on macOS, `/home/...` on Linux),
    private-key headers, and common API-token shapes. Fail fast on
    any match. Allow-list exceptions go in `.pii-allow`.
-3. `cargo test --workspace` — all tests must pass.
-4. `cargo clippy --all-targets -- -D warnings` — matches CI.
+
+The push-time chain is also blocking:
+
+1. `cargo test` — all tests must pass.
+2. `cargo clippy --all-targets -- -D warnings` — matches CI.
 
 This is the automated quality gate; the local review transition
-(`/sprint-review` for Claude Code, `scripts/local_review.sh` for
+(`/pr-review` for Claude Code, `scripts/pr_review.sh` for
 Codex/shell) is the manual one. Bypass with `--no-verify` only when
 explicitly authorized.
 

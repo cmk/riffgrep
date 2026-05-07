@@ -57,7 +57,7 @@ while IFS= read -r -d '' f; do
   done <<< "$matches"
 done < <(
   git diff --cached --name-only -z --diff-filter=ACMR -- \
-    . ':(exclude)scripts/check-pii.sh' ':(exclude).pii-allow'
+    . ':(exclude)scripts/check_pii.sh' ':(exclude).pii-allow'
 )
 
 if [ -z "$report" ]; then

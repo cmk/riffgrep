@@ -8,7 +8,7 @@
 # the build.
 #
 # Usage:
-#     scripts/autosquash.sh [base]
+#     scripts/git_squash.sh [base]
 #
 # `base` defaults to origin/main.
 set -euo pipefail
