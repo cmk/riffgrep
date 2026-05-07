@@ -1,9 +1,9 @@
 ---
-description: Poll a PR for new review comments; auto-address the trivially-clear ones, run the full /reply-reviews flow, then push the round commit. Designed for /loop-driven automation (e.g., `/loop 10m /watch-pr 17`). Never merges — the user merges manually, which is the real safety gate.
+description: Poll a PR for new review comments; auto-address the trivially-clear ones, run the full /pr-reply flow, then push the round commit. Designed for /loop-driven automation (e.g., `/loop 10m /pr-watch 17`). Never merges — the user merges manually, which is the real safety gate.
 argument-hint: <pr-number>
 ---
 
-# /watch-pr — Automated review-round driver
+# /pr-watch — Automated review-round driver
 
 One tick of the polling loop: check for new reviewer activity, handle
 the clear-cut items, leave everything else for the user, push the
@@ -17,7 +17,7 @@ PR shows the latest replies is a normal step in the loop — not a
 risk worth gating on, since the user can always revert or push more
 fixes before deciding to merge.
 
-Designed for `/loop 10m /watch-pr <N>` (or similar cadence). Each tick
+Designed for `/loop 10m /pr-watch <N>` (or similar cadence). Each tick
 runs one round or exits quickly with a heartbeat.
 
 ---
@@ -71,11 +71,11 @@ retry.
 ## Step 1: Poll for new activity
 
 ```
-scripts/pull_reviews.py <N>
+scripts/pr_report.py reviews <N>
 ```
 
 - If output is `PR #N: no new items (...)` → exit with a one-line
-  heartbeat (`watch-pr: no new activity on PR #N`). Round is over.
+  heartbeat (`pr-watch: no new activity on PR #N`). Round is over.
 - If output is `PR #N: appended K items -> <path>` → continue.
 
 ## Step 2: Triage the new items
@@ -141,17 +141,17 @@ only).
 
 For each **auto-fix**, **push-back**, and **defer** thread from Step 2,
 compose a 1–3 sentence reply per the rules in
-`.claude/commands/reply-reviews.md` (acknowledge / push back / defer).
+`.claude/commands/pr-reply.md` (acknowledge / push back / defer).
 Skip **ask** threads entirely — they stay unreplied on GitHub.
 
 Then:
 
 ```
 # Post replies
-for each thread: scripts/reply_review.py <N> <in_reply_to_id> "<body>"
+for each thread: scripts/pr_reply.py <N> <in_reply_to_id> "<body>"
 
 # Mirror replies back into the review doc
-scripts/pull_reviews.py <N>
+scripts/pr_report.py reviews <N>
 
 # Single atomic commit: code edits (if any) + mirrored replies.
 # If every new item was `ask`, do not stage or keep the pull-only
@@ -179,9 +179,10 @@ else
 fi
 ```
 
-The pre-commit hook runs `cargo fmt --check`, `scripts/check-pii.sh`,
-`cargo test --workspace`, and `cargo clippy --all-targets -- -D
-warnings`. If it fails:
+The pre-commit hook runs `cargo fmt --check`, `scripts/check_pii.sh`,
+and `scripts/check_layers.sh`. The pre-push hook runs
+`cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`.
+If either fails:
 
 - Read the failure. If a specific auto-fix caused the breakage, revert
   that one edit and reclassify the corresponding thread as
@@ -192,11 +193,11 @@ warnings`. If it fails:
   to the user. Do not `git checkout --` — that would discard the
   fixes the replies reference.
 
-If `reply_review.py` fails partway through the post loop (network /
+If `pr_reply.py` fails partway through the post loop (network /
 rate limit), abort before mirror+commit. Re-running this step is
 clean: the next tick's Step 1 mirrors the already-posted replies, the
 "unreplied threads" filter skips them, and the missing posts go
-through. (Same as `/reply-reviews`'s Recovery section.)
+through. (Same as `/pr-reply`'s Recovery section.)
 
 ## Step 5: Push the round commit
 
@@ -211,7 +212,7 @@ This advances the branch to `gh_review` so CI re-runs against the
 latest state and the reviewer (Copilot, the user) sees the replies
 attached to the right tip. The user is still the merge gate — they
 review the PR as a whole before invoking `gh pr merge` /
-`scripts/safe_merge.sh`. A round commit reaching origin without
+`scripts/git_merge.sh`. A round commit reaching origin without
 their merge is the normal mid-PR state, not a risk to gate on.
 
 If Step 4 produced no commit (no auto-fix items AND no replies
@@ -234,7 +235,7 @@ true on the wire.
 If Step 5 pushed a commit:
 
 ```
-watch-pr PR #<N> — round complete at gh_review (commit pushed)
+pr-watch PR #<N> — round complete at gh_review (commit pushed)
   auto-fixed:  <count>   (e.g., "unused import, typo in doc")
   pushed-back: <count>   (e.g., "proposed rename conflicts with crate boundary")
   deferred:    <count>
@@ -243,14 +244,14 @@ watch-pr PR #<N> — round complete at gh_review (commit pushed)
     - path:line — one-line summary
   round commit: <sha>    (pushed — fix: or doc:)
   next step:   wait for CI + Copilot re-review, then merge with
-               `gh pr merge` / `scripts/safe_merge.sh` when ready.
+               `gh pr merge` / `scripts/git_merge.sh` when ready.
 ```
 
 If Step 4 produced no commit (no auto-fix items AND no replies
 posted — all items were `ask`):
 
 ```
-watch-pr PR #<N> — round complete at gh_review (no commit needed)
+pr-watch PR #<N> — round complete at gh_review (no commit needed)
   auto-fixed:  0
   pushed-back: 0
   deferred:    0
@@ -263,7 +264,7 @@ watch-pr PR #<N> — round complete at gh_review (no commit needed)
 If Step 5's `git push` failed:
 
 ```
-watch-pr PR #<N> — paused at round_unpushed (push failed)
+pr-watch PR #<N> — paused at round_unpushed (push failed)
   auto-fixed:  <count>
   ...
   round commit: <sha>    (LOCAL ONLY — push failed: <error>)
@@ -274,7 +275,7 @@ Do not start another round synchronously.
 
 ## Step 7: Schedule the next tick (or quit)
 
-This command is designed for `/loop /watch-pr <N>` **without an
+This command is designed for `/loop /pr-watch <N>` **without an
 interval** — dynamic/self-paced mode — so the schedule below actually
 takes effect. If invoked with a fixed `/loop 10m …`, the runtime
 overrides the schedule; see "Fixed vs. dynamic" below.
@@ -285,7 +286,7 @@ overrides the schedule; see "Fixed vs. dynamic" below.
 BACKOFF_MINUTES=(5 5 5 10 10)   # quit on the 6th quiet tick (after the 5 slots are exhausted)
 ```
 
-State is a single integer in `.watch-pr/pr-<N>.count` (gitignored,
+State is a single integer in `.pr-watch/pr-<N>.count` (gitignored,
 created on first use). It counts consecutive **unproductive** ticks —
 ticks that exited at Step 0d (push_failed, after recovery push also
 failed), Step 1 (no new activity), or Step 4 with nothing posted.
@@ -297,7 +298,7 @@ the counter to 0.
 Read the counter (default 0 if the file doesn't exist):
 
 ```
-count=$(cat .watch-pr/pr-<N>.count 2>/dev/null || echo 0)
+count=$(cat .pr-watch/pr-<N>.count 2>/dev/null || echo 0)
 ```
 
 Classify this tick's outcome:
@@ -314,7 +315,7 @@ N_SLOTS=${#BACKOFF_MINUTES[@]}     # 5
 
 if [ "$new" -gt "$N_SLOTS" ]; then
   # Out of schedule. End the loop.
-  rm -f ".watch-pr/pr-<N>.count"
+  rm -f ".pr-watch/pr-<N>.count"
   echo "loop ending: $((N_SLOTS + 1)) consecutive quiet ticks (backoff exhausted after $(( 5+5+5+10+10 ))min)"
   # DO NOT call ScheduleWakeup.
 else
@@ -323,11 +324,11 @@ else
   else
     delay_min=${BACKOFF_MINUTES[$((new - 1))]}
   fi
-  mkdir -p .watch-pr
-  echo "$new" > ".watch-pr/pr-<N>.count"
+  mkdir -p .pr-watch
+  echo "$new" > ".pr-watch/pr-<N>.count"
   # Call ScheduleWakeup:
   #   delaySeconds = delay_min * 60
-  #   prompt       = "/watch-pr <N>"
+  #   prompt       = "/pr-watch <N>"
   #   reason       = concise status, e.g.:
   #                  "PR #<N> quiet <new>/<N_SLOTS>, next in <delay_min>min"
   #                  or "PR #<N> addressed <K> comments, next in 5min"
@@ -338,7 +339,7 @@ Then emit the `ScheduleWakeup` tool call (if not quitting).
 
 ### Resulting cadence
 
-Assuming no activity from the moment of `/loop /watch-pr <N>`:
+Assuming no activity from the moment of `/loop /pr-watch <N>`:
 
 | Tick | Elapsed | Outcome     | Next wait |
 |------|---------|-------------|-----------|
@@ -356,10 +357,10 @@ can run if reviewers are active.
 
 ### Fixed vs. dynamic
 
-- `/loop /watch-pr <N>` — **dynamic**, backoff+quit as above.
+- `/loop /pr-watch <N>` — **dynamic**, backoff+quit as above.
   Recommended for Copilot-on-push rounds where silence means "review
   is done, go home."
-- `/loop 5m /watch-pr <N>` — fixed 5m, no backoff, no auto-quit.
+- `/loop 5m /pr-watch <N>` — fixed 5m, no backoff, no auto-quit.
   Use if you want the loop to run indefinitely until you kill it
   (e.g., waiting on a slow human reviewer).
-- `/loop 10m /watch-pr <N>` — fixed 10m. Same as above, lazier cadence.
+- `/loop 10m /pr-watch <N>` — fixed 10m. Same as above, lazier cadence.

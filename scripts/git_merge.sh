@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# safe_merge.sh — guard `gh pr merge` against the `round_unpushed`
+# git_merge.sh — guard `gh pr merge` against the `round_unpushed`
 # trap.
 #
 # `doc/workflow.md`'s state machine has no edge from `round_unpushed`
@@ -12,17 +12,17 @@
 #
 # This script is the local-side enforcement: it resolves the PR's head
 # branch (via `gh pr view`, *not* the currently-checked-out branch —
-# safe_merge.sh 17 might be invoked from main), then refuses to invoke
+# git_merge.sh 17 might be invoked from main), then refuses to invoke
 # `gh pr merge` if that PR's local branch is ahead of its remote
 # tracking ref. Re-run after `git push`.
 #
 # Usage:
-#   scripts/safe_merge.sh [<gh-pr-merge-args...>]
+#   scripts/git_merge.sh [<gh-pr-merge-args...>]
 #
 # Examples:
-#   scripts/safe_merge.sh 17                      # interactive
-#   scripts/safe_merge.sh 17 --rebase --delete-branch
-#   scripts/safe_merge.sh --rebase                # current branch's open PR
+#   scripts/git_merge.sh 17                      # interactive
+#   scripts/git_merge.sh 17 --rebase --delete-branch
+#   scripts/git_merge.sh --rebase                # current branch's open PR
 #
 # All arguments are forwarded verbatim to `gh pr merge` after the
 # guard passes.
@@ -30,7 +30,7 @@ set -euo pipefail
 
 if [ $# -eq 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
   cat >&2 <<'USAGE'
-usage: safe_merge.sh [<gh-pr-merge-args...>]
+usage: git_merge.sh [<gh-pr-merge-args...>]
 
 Resolves the PR's head branch via `gh pr view`, then refuses to run
 if that local branch is ahead of its remote tracking ref. All
@@ -40,7 +40,7 @@ USAGE
 fi
 
 if ! command -v gh >/dev/null 2>&1; then
-  echo "safe_merge.sh: gh CLI not found on PATH. Install GitHub CLI and authenticate before merging." >&2
+  echo "git_merge.sh: gh CLI not found on PATH. Install GitHub CLI and authenticate before merging." >&2
   exit 1
 fi
 
@@ -55,8 +55,8 @@ if [ $# -ge 1 ] && [ "${1#-}" != "$1" ]; then
     if [ "$previous_takes_value" = true ]; then
       previous_takes_value=false
     elif [ "${arg#-}" = "$arg" ]; then
-      echo "safe_merge.sh: PR selector must come before merge flags: $arg" >&2
-      echo "  usage: scripts/safe_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
+      echo "git_merge.sh: PR selector must come before merge flags: $arg" >&2
+      echo "  usage: scripts/git_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
       exit 1
     else
       case "$arg" in
@@ -74,8 +74,8 @@ expect_repo_value=false
 for arg in "$@"; do
   if [ "$expect_repo_value" = true ]; then
     if [ "${arg#-}" != "$arg" ]; then
-      echo "safe_merge.sh: missing value for -R/--repo." >&2
-      echo "  usage: scripts/safe_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
+      echo "git_merge.sh: missing value for -R/--repo." >&2
+      echo "  usage: scripts/git_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
       exit 1
     fi
     repo_args+=("$arg")
@@ -93,8 +93,8 @@ for arg in "$@"; do
   esac
 done
 if [ "$expect_repo_value" = true ]; then
-  echo "safe_merge.sh: missing value for -R/--repo." >&2
-  echo "  usage: scripts/safe_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
+  echo "git_merge.sh: missing value for -R/--repo." >&2
+  echo "  usage: scripts/git_merge.sh [<pr>] [<gh-pr-merge-flags...>]" >&2
   exit 1
 fi
 
@@ -123,12 +123,12 @@ for arg in "${head_ref_cmd[@]}"; do
 done
 
 if ! head_ref=$("${head_ref_cmd[@]}" 2>/dev/null); then
-  echo "safe_merge.sh: failed to resolve PR head ref via: $head_ref_cmd_display" >&2
+  echo "git_merge.sh: failed to resolve PR head ref via: $head_ref_cmd_display" >&2
   echo "  is the PR specifier valid, and are you authenticated to gh?" >&2
   exit 1
 fi
 if [ -z "$head_ref" ]; then
-  echo "safe_merge.sh: 'gh pr view' returned empty headRefName." >&2
+  echo "git_merge.sh: 'gh pr view' returned empty headRefName." >&2
   exit 1
 fi
 
@@ -140,7 +140,7 @@ git fetch --quiet origin "$head_ref" || true
 
 upstream="origin/$head_ref"
 if ! git rev-parse --verify --quiet "$upstream" >/dev/null; then
-  echo "safe_merge.sh: no remote tracking ref '$upstream'." >&2
+  echo "git_merge.sh: no remote tracking ref '$upstream'." >&2
   echo "  push the branch first, then re-run." >&2
   exit 1
 fi
@@ -172,7 +172,7 @@ for local_ref in "${local_refs[@]}"; do
     continue
   fi
   cat >&2 <<EOF
-safe_merge.sh: REFUSING TO MERGE — local branch '$local_branch' is ahead of $upstream.
+git_merge.sh: REFUSING TO MERGE — local branch '$local_branch' is ahead of $upstream.
 
 Unpushed commits would be silently dropped by the merge:
 

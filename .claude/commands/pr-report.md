@@ -1,15 +1,15 @@
 ---
-description: Fetch GitHub PR review bodies and inline comments for a PR and append new ones chronologically to doc/reviews/review-NNNNN.md. Lower-level primitive — normally invoked by /reply-reviews, but usable standalone to refresh the doc before final push.
+description: Fetch GitHub PR review bodies and inline comments for a PR and append new ones chronologically to doc/reviews/review-NNNNN.md. Lower-level primitive — normally invoked by /pr-reply, but usable standalone to refresh the doc before final push.
 argument-hint: <pr-number>
 ---
 
-# Pull Reviews — Fetch GitHub Comments to Local File
+# PR Report — Fetch GitHub Comments to Local File
 
 Fetch review comments from a GitHub PR and append new ones chronologically
 to `doc/reviews/review-NNNNN.md`. The heavy lifting lives in
-`scripts/pull_reviews.py`; this command is a thin wrapper around it.
+`scripts/pr_report.py reviews`; this command is a thin wrapper around it.
 
-**In the normal review-round workflow, `/reply-reviews` invokes this
+**In the normal review-round workflow, `/pr-reply` invokes this
 internally** after posting replies, so you rarely run it by hand.
 Standalone use is for: (a) refreshing `review-NNNNN.md` right before the
 final pre-merge push to capture any trailing reviewer comments; or
@@ -20,7 +20,7 @@ to the PR.
 
 ## Step 1: Parse the PR number
 
-The user provides a PR number as an argument (e.g., `/pull-reviews 17`).
+The user provides a PR number as an argument (e.g., `/pr-report 17`).
 Argument: `$ARGUMENTS`
 
 If omitted, check if the current branch has an open PR:
@@ -34,7 +34,7 @@ If no PR is found, ask the user for the number.
 ## Step 2: Run the script
 
 ```
-scripts/pull_reviews.py <N>
+scripts/pr_report.py reviews <N>
 ```
 
 The script handles everything: fetches reviews and inline comments by
@@ -57,16 +57,16 @@ The review file is not committed on its own. It rides with the **next
 review round's commit** — the atomic commit that bundles the code
 fixes, posted replies, and mirrored doc together.
 
-The `/reply-reviews` command enforces this: it posts replies, runs
-`pull_reviews.py` to mirror them, then `git add -A && git commit`s
+The `/pr-reply` command enforces this: it posts replies, runs
+`pr_report.py reviews` to mirror them, then `git add -A && git commit`s
 everything in one shot. One push delivers the whole round.
 
-If you invoked `/pull-reviews` standalone (no paired reply round), the
-file stays modified-but-uncommitted on disk. A later `/reply-reviews`
+If you invoked `/pr-report` standalone (no paired reply round), the
+file stays modified-but-uncommitted on disk. A later `/pr-reply`
 will pick it up and fold it in. Do **not** open a standalone
 `doc: update review-NNNNN.md` commit just to land it — that forces a CI
 round-trip for no code change and breaks the one-commit-per-round
-atomicity that the unified `/reply-reviews` exists to provide.
+atomicity that the unified `/pr-reply` exists to provide.
 
 If there were no new items (script reported `no new items`), there is
 nothing staged and nothing to do.

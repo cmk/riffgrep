@@ -3,7 +3,7 @@ description: Tier-1 local pre-push code review. Spawns an independent reviewer a
 argument-hint: (no args)
 ---
 
-# Sprint Review — Tier 1 (Local)
+# PR Review — Tier 1 (Local)
 
 You are orchestrating the Claude Code implementation of the
 `plan_finalized → local_reviewed` FSM transition: a **local, pre-push**
@@ -32,7 +32,7 @@ git fetch --quiet origin main
 git -c color.ui=never log --oneline origin/main..HEAD | grep -E '^[0-9a-f]+ fixup!' || true
 ```
 
-If any fixups exist, run `scripts/autosquash.sh` to collapse them.
+If any fixups exist, run `scripts/git_squash.sh` to collapse them.
 Abort if the working tree is dirty (the script checks this). After
 autosquash, re-run the fixup check to confirm the branch is clean.
 
@@ -64,20 +64,20 @@ git log origin/main..HEAD --oneline
 If the branch has not diverged from `origin/main`, abort with a
 message — there's nothing to review.
 
-**Verify the review file exists.** `/sprint-review` appends to a
+**Verify the review file exists.** `/pr-review` appends to a
 file created by TDD step 7; it never creates the file itself. Get
 its path:
 
 - If a PR already exists for this branch:
   ```
-  scripts/review_path.sh "$(gh pr view --json number --jq .number)"
+  scripts/pr_report.py path "$(gh pr view --json number --jq .number)"
   ```
 - Otherwise (the normal pre-push case):
   ```
-  scripts/review_path.sh
+  scripts/pr_report.py path
   ```
 
-`review_path.sh` predicts (or accepts) the PR number and emits the
+`pr_report.py path` predicts (or accepts) the PR number and emits the
 zero-padded filename — no need to compose the path by hand. Then
 confirm the returned path exists **and contains a `## Summary`
 section**. If either is missing, abort and tell the user to run TDD
@@ -91,7 +91,7 @@ Read these files and include them in the reviewer prompt:
 
 - `AGENTS.md` — repo conventions, workspace layout, TDD workflow, commit
   style, feature-gate conventions
-- `doc/reviews/review-calibration.md` — if it exists, include as few-shot
+- `doc/reviews/calibration.md` — if it exists, include as few-shot
   examples. If absent, skip (the reviewer prompt has built-in guidance).
 
 ## Step 4: Launch the reviewer
@@ -105,7 +105,7 @@ The prompt must be self-contained. Include:
 2. The commit log
 3. The repo conventions from AGENTS.md
 4. The plan text (if found), clearly labeled as optional context
-5. Calibration examples from `doc/reviews/review-calibration.md` (if found)
+5. Calibration examples from `doc/reviews/calibration.md` (if found)
 6. The review instructions (below)
 
 ### Reviewer voice and calibration
@@ -164,7 +164,7 @@ tested, and follows conventions. If the plan specifies verification criteria
 {IF calibration examples exist:}
 ## Examples of high-quality review comments
 
-{doc/reviews/review-calibration.md contents}
+{doc/reviews/calibration.md contents}
 
 Match this style: cite the contract (doc, plan, or naming), show how the
 code violates it, and name the consequence. When something is fine, one
@@ -266,7 +266,7 @@ review rounds:
 
 For each item in the reviewer's **Must fix before push** and
 **Follow-up (future work)** sections, classify into exactly one
-bucket — same heuristic as `/watch-pr`:
+bucket — same heuristic as `/pr-watch`:
 
 - **auto** — change is local (one file, under ~20 lines),
   non-destructive (no API removal, no file deletion), and does not
@@ -292,7 +292,7 @@ Then commit:
 
 ```
 git add <edited files>
-git commit -m "<prefix>: Address sprint-review feedback"
+git commit -m "<prefix>: Address pr-review feedback"
 ```
 
 Use the prefix that matches the nature of the fixes:
@@ -300,9 +300,10 @@ Use the prefix that matches the nature of the fixes:
 `doc:` (doc nits). Mix-and-match isn't possible in one commit — if
 the auto items split across categories, pick the predominant one.
 
-The pre-commit hook runs `cargo fmt --check`, `scripts/check-pii.sh`,
-`cargo test --workspace`, and `cargo clippy --all-targets -- -D
-warnings`. If it fails:
+The pre-commit hook runs `cargo fmt --check`, `scripts/check_pii.sh`,
+and `scripts/check_layers.sh`. The pre-push hook runs
+`cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`.
+If either fails:
 
 - Read the failure. If a specific auto-fix caused the breakage,
   revert that one edit, reclassify the corresponding item as
@@ -310,9 +311,9 @@ warnings`. If it fails:
 - If the commit still fails: leave the working tree dirty so the
   user can investigate. Surface the failure in the report.
 
-**Do not loop `/sprint-review` recursively.** One pass of auto-fixes
+**Do not loop `/pr-review` recursively.** One pass of auto-fixes
 is the contract — the agent applies what it confidently can, then
-hands off. The user can re-run `/sprint-review` for another pass if
+hands off. The user can re-run `/pr-review` for another pass if
 they want one.
 
 ## Step 7: Report and hand off
@@ -320,7 +321,7 @@ they want one.
 Print a structured summary, ≤ 15 lines:
 
 ```
-sprint-review for <branch>
+pr-review for <branch>
   must-fix items:        <total>
     auto-applied:        <n>
     needs you:           <m>   ← these need your decision
@@ -338,7 +339,7 @@ Then:
   confirmation):
   ```
   gh pr create --title "<title>" \
-    --body-file <(scripts/extract_pr_body.sh NNNNN)
+    --body-file <(scripts/pr_report.py body NNNNN)
   ```
   This makes the GitHub body a direct copy of the `## Summary`
   section — the two can't drift. Tier 2 (CI + GitHub review) runs

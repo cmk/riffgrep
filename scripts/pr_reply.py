@@ -8,8 +8,8 @@ new comment's id and html_url on success.
 Requires: `gh` CLI authenticated for the current repo.
 
 Usage:
-    scripts/reply_review.py <PR> <IN_REPLY_TO_ID> <BODY>
-    scripts/reply_review.py <PR> <IN_REPLY_TO_ID> -    # read body from stdin
+    scripts/pr_reply.py <PR> <IN_REPLY_TO_ID> <BODY>
+    scripts/pr_reply.py <PR> <IN_REPLY_TO_ID> -    # read body from stdin
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import json
 import subprocess
 import sys
 
-from _gh import resolve_repo
+from github_client import resolve_repo
 
 
 def main() -> int:
