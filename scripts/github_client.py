@@ -38,7 +38,7 @@ def gh_repo() -> str:
 
 
 def resolve_repo(pr: int, repo_override: str | None) -> str:
-    """Pick the target repo, verifying the PR exists in it.
+    """Pick the target repo and verify auto-detected PR context.
 
     If `--repo` was passed, trust it (explicit beats inferred).
     Otherwise auto-detect via `gh repo view` from cwd, then pre-flight

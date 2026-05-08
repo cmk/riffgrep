@@ -7,7 +7,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -72,14 +71,7 @@ class WorkflowStateTests(unittest.TestCase):
             git(repo, "commit", "-m", "feat: branch work")
             git(repo, "push", "-u", "origin", branch)
 
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "WORKFLOW_REVIEW_FILE": "doc/reviews/review-99999.md",
-                    "WORKFLOW_STATE_ALLOW_REVIEW_PATH_FALLBACK": "1",
-                },
-            ):
-                fields = run_state(repo, script, bin_dir)
+            fields = run_state(repo, script, bin_dir)
             self.assertEqual(fields["state"], "pushed")
             self.assertEqual(fields["origin_branch_ahead"], "0")
             self.assertEqual(fields["origin_branch_behind"], "0")
