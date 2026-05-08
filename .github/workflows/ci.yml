@@ -40,6 +40,9 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Workflow helper tests
+        run: python3 -m unittest
+
       - name: Formatting
         run: cargo fmt --all -- --check
 
@@ -52,9 +55,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Run workflow helper tests
-        run: python -m unittest
 
       - name: Install test dependencies
         # Only the lightweight deps needed for the default suite. CLAP-
