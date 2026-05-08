@@ -29,7 +29,11 @@ set -euo pipefail
 
 repo_err=''
 api_err=''
-trap 'rm -f "${repo_err:-}" "${api_err:-}"' EXIT
+cleanup() {
+  [ -n "${repo_err:-}" ] && rm -f -- "$repo_err"
+  [ -n "${api_err:-}" ] && rm -f -- "$api_err"
+}
+trap cleanup EXIT
 
 if ! command -v gh >/dev/null; then
   echo "error: gh CLI not found on PATH" >&2
