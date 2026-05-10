@@ -19,7 +19,7 @@ push motion that `/pr-reply` enforces.
 stateDiagram-v2
     [*] --> main_clean
     main_clean --> on_branch: git worktree add / git switch -c
-    on_branch --> plan_committed: write plan + `plan:` commit
+    on_branch --> plan_committed: write plan + plan-prefixed commit
     plan_committed --> impl_green: TDD loop (tests + feat/fix commits)
     impl_green --> plan_finalized: append Deferred + Review, draft PR body
     plan_finalized --> local_reviewed: /pr-review or scripts/pr_review.sh
