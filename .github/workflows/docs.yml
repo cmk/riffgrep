@@ -50,9 +50,32 @@ jobs:
       contents: read
       pages: write
       id-token: write
+      deployments: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+      - name: Prune previous github-pages deployments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Best-effort cleanup. The artifact has already published by
+          # this point; any failure here (list, parse, or per-id
+          # mutation) is logged and ignored so a transient gh/jq error
+          # doesn't redden the deploy job. Stragglers get caught on the
+          # next push.
+          ids=$(
+            gh api "repos/$GH_REPO/deployments?environment=github-pages&per_page=100" \
+              | jq -r 'sort_by(.created_at) | reverse | .[1:] | .[].id'
+          ) || { echo "warn: could not list deployments to prune"; ids=; }
+          printf '%s\n' "$ids" | while read -r id; do
+            [ -n "$id" ] || continue
+            gh api --silent -X POST "repos/$GH_REPO/deployments/$id/statuses" \
+              -f state=inactive \
+              || echo "warn: could not mark $id inactive"
+            gh api --silent -X DELETE "repos/$GH_REPO/deployments/$id" \
+              || echo "warn: could not delete $id"
+          done
