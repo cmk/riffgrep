@@ -67,9 +67,17 @@ jobs:
           # mutation) is logged and ignored so a transient gh/jq error
           # doesn't redden the deploy job. Stragglers get caught on the
           # next push.
+          #
+          # `pipefail` makes a failing `gh api` propagate through the
+          # pipe so the `|| { warn }` fallback actually fires;
+          # otherwise jq exits 0 on empty input and we'd silently
+          # prune nothing.
+          # `--paginate` + `jq -s 'add // []'` covers >100 records, so
+          # a long-disabled workflow can still drain its backlog.
+          set -o pipefail
           ids=$(
-            gh api "repos/$GH_REPO/deployments?environment=github-pages&per_page=100" \
-              | jq -r 'sort_by(.created_at) | reverse | .[1:] | .[].id'
+            gh api --paginate "repos/$GH_REPO/deployments?environment=github-pages&per_page=100" \
+              | jq -s -r 'add // [] | sort_by(.created_at) | reverse | .[1:] | .[].id'
           ) || { echo "warn: could not list deployments to prune"; ids=; }
           printf '%s\n' "$ids" | while read -r id; do
             [ -n "$id" ] || continue
